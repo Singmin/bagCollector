@@ -50,6 +50,7 @@ BagCollect 是一款“私人视觉陈列柜”应用。用户可以把纸袋、
 - [x] 配置 App、单元测试和 UI 测试三个 Target。
 - [x] 配置共享 `BagCollect` Scheme。
 - [x] 设置最低部署版本为 iOS 17.0。
+- [x] 配置 Personal Team 自动签名，可使用免费 Apple 账户进行真机调试。
 - [x] 建立 Models、Services、Utilities、Views 分层目录。
 - [x] 支持浅色和深色系统颜色。
 - [x] 配置浅色与深色 Accent Color。
@@ -140,7 +141,7 @@ BagCollect 是一款“私人视觉陈列柜”应用。用户可以把纸袋、
 
 | 事项 | 当前状态 | 尚缺内容 |
 |---|---|---|
-| iCloud / CloudKit 同步 | 已有条件编译代码和兼容数据模型 | 尚未配置开发者账号、Entitlements、CloudKit Container，也未进行双设备验证 |
+| iCloud / CloudKit 同步 | 已有条件编译代码、兼容数据模型和 Personal Team 真机签名 | 尚未配置可用于 CloudKit 的付费开发者会员、Entitlements、CloudKit Container，也未进行双设备验证 |
 | 同步状态页面 | 能显示账号是否可用 | 尚未显示最近同步时间、真实同步进度和具体同步错误 |
 | 冲突处理 | 模型具有 `updatedAt` 和稳定排序值 | 尚未实现或验证跨设备同时修改时的“最新修改覆盖”策略 |
 | 展示架拖动排序 | 架内拖放和持久化已实现 | 拖到屏幕边缘时的自动滚动尚未专门实现和验证 |
@@ -176,7 +177,7 @@ BagCollect 是一款“私人视觉陈列柜”应用。用户可以把纸袋、
 
 ### P1：iCloud 同步
 
-- [ ] 确认有效 Apple Developer 账号和 App Bundle ID。
+- [ ] 确认可用于 CloudKit 的 Apple Developer Program 会员资格和 App Bundle ID。
 - [ ] 添加 iCloud、CloudKit 和 Remote Notifications Capabilities。
 - [ ] 创建并绑定私有 CloudKit Container。
 - [ ] 为正式构建启用 `CLOUDKIT_ENABLED` 编译标记。
@@ -209,7 +210,7 @@ BagCollect 是一款“私人视觉陈列柜”应用。用户可以把纸袋、
 
 ## 7. 当前验证结果
 
-截至 2026-09-13，已完成以下工程验证：
+截至 2026-09-14，已完成以下工程验证：
 
 - [x] `xcodebuild -list` 能正确识别工程、3 个 Target 和共享 Scheme。
 - [x] iOS Simulator Debug 构建成功。
@@ -218,6 +219,11 @@ BagCollect 是一款“私人视觉陈列柜”应用。用户可以把纸袋、
 - [x] 11 项单元测试通过。
 - [x] 1 项 UI 启动测试通过。
 - [x] 测试总计 12 项，通过 12 项，失败 0 项，跳过 0 项。
+- [x] 实体 iPhone 已通过数据线与 Xcode 完成配对。
+- [x] Personal Team 自动签名已生成开发证书和设备描述文件。
+- [x] 面向实体 iPhone 的 Debug 构建与代码签名成功。
+- [x] `BagCollect.app` 已成功安装到已配对的实体 iPhone。
+- [ ] 首次真机启动尚未完成：设备仍需在系统设置中显式信任个人开发者签名。
 
 当前测试覆盖：
 
