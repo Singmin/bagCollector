@@ -1,0 +1,110 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-bagcollect}
+      POSTGRES_USER: ${POSTGRES_USER:-bagcollect}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      TZ: Asia/Shanghai
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    image: ${API_IMAGE:?set API_IMAGE}
+    command: ["pnpm", "db:deploy"]
+    env_file: ${BAGCOLLECT_RUNTIME_ENV_FILE:-.env.deploy}
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-bagcollect}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bagcollect}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    image: ${API_IMAGE:?set API_IMAGE}
+    restart: unless-stopped
+    env_file: ${BAGCOLLECT_RUNTIME_ENV_FILE:-.env.deploy}
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-bagcollect}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bagcollect}
+      REDIS_URL: redis://redis:6379
+      NODE_ENV: production
+      STORAGE_DRIVER: cos
+    ports:
+      - "127.0.0.1:${API_HOST_PORT:-3001}:3001"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/api/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  worker:
+    image: ${WORKER_IMAGE:?set WORKER_IMAGE}
+    restart: unless-stopped
+    env_file: ${BAGCOLLECT_RUNTIME_ENV_FILE:-.env.deploy}
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-bagcollect}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bagcollect}
+      REDIS_URL: redis://redis:6379
+      NODE_ENV: production
+      STORAGE_DRIVER: cos
+      MATTING_DRIVER: rembg
+      REMBG_URL: http://rembg:7000
+      REMBG_MODEL: birefnet-general-lite
+      REMBG_TIMEOUT_MS: 120000
+      REMBG_MAX_RESPONSE_BYTES: 83886080
+      REMBG_MAX_CONCURRENCY: 1
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      rembg:
+        condition: service_healthy
+
+  rembg:
+    image: ${REMBG_IMAGE:?set REMBG_IMAGE}
+    restart: unless-stopped
+    environment:
+      REMBG_HOME: /models
+      OMP_NUM_THREADS: 1
+    volumes:
+      - rembg-models:/models
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7000/openapi.json', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  admin:
+    image: ${ADMIN_IMAGE:?set ADMIN_IMAGE}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${ADMIN_HOST_PORT:-8081}:80"
+
+volumes:
+  postgres-data:
+  redis-data:
+  rembg-models:

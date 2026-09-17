@@ -1,0 +1,24 @@
+{
+  "name": "BagCollect",
+  "appid": "__UNI__BAGCOLLECT",
+  "description": "私人视觉陈列柜",
+  "versionName": "0.1.0",
+  "versionCode": 100,
+  "transformPx": false,
+  "mp-weixin": {
+    "appid": "touristappid",
+    "setting": {
+      "urlCheck": false,
+      "es6": true,
+      "minified": true,
+      "postcss": true
+    },
+    "permission": {
+      "scope.camera": {
+        "desc": "用于拍摄需要整理到私人展示架中的收藏品"
+      }
+    },
+    "usingComponents": true
+  },
+  "vueVersion": "3"
+}

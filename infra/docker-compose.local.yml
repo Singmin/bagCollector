@@ -1,0 +1,66 @@
+name: bagcollect-local
+
+services:
+  postgres-dev:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: bagcollect
+      POSTGRES_USER: bagcollect
+      POSTGRES_PASSWORD: bagcollect_local
+      TZ: Asia/Shanghai
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-dev-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bagcollect -d bagcollect"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis-dev:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis-dev-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  postgres-test:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: bagcollect_test
+      POSTGRES_USER: bagcollect
+      POSTGRES_PASSWORD: bagcollect_test
+      TZ: Asia/Shanghai
+    ports:
+      - "127.0.0.1:5433:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bagcollect -d bagcollect_test"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis-test:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:6380:6379"
+    tmpfs:
+      - /data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  postgres-dev-data:
+  redis-dev-data:

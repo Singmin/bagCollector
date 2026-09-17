@@ -1,0 +1,228 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum ShelfTheme {
+  SAGE
+  AMBER
+  SKY
+  ROSE
+  GRAPHITE
+}
+
+enum ProcessingStatus {
+  UPLOADING
+  NORMALIZING
+  AWAITING_CROP
+  MATTING
+  READY
+  FAILED
+}
+
+enum AssetKind {
+  ORIGINAL
+  STANDARD
+  CROPPED
+  CUTOUT
+  DISPLAY
+  THUMBNAIL
+}
+
+enum AssetStatus {
+  RESERVED
+  AVAILABLE
+  FAILED
+}
+
+enum JobType {
+  NORMALIZE
+  MATTING
+  CLEANUP
+}
+
+enum JobStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
+model User {
+  id                String          @id @default(cuid())
+  openid            String          @unique
+  unionid           String?
+  status            UserStatus      @default(ACTIVE)
+  storageUsedBytes  BigInt          @default(0)
+  storageQuotaBytes BigInt
+  collectibleQuota  Int
+  dailyMattingQuota Int
+  lastLoginAt       DateTime        @default(now())
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+  sessions          Session[]
+  shelves           Shelf[]
+  collectibles      Collectible[]
+  tags              Tag[]
+  imageAssets       ImageAsset[]
+  processingJobs    ProcessingJob[]
+  auditLogs         AuditLog[]
+}
+
+model Session {
+  id               String    @id @default(cuid())
+  userId           String
+  refreshTokenHash String    @unique
+  deviceName       String?
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  lastUsedAt       DateTime  @default(now())
+  createdAt        DateTime  @default(now())
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+}
+
+model Shelf {
+  id           String        @id @default(cuid())
+  userId       String
+  name         String
+  theme        ShelfTheme    @default(SAGE)
+  sortOrder    Float         @default(0)
+  isSystem     Boolean       @default(false)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  collectibles Collectible[]
+
+  @@unique([userId, name])
+  @@unique([id, userId])
+  @@index([userId, sortOrder])
+}
+
+model Collectible {
+  id                String           @id @default(cuid())
+  userId            String
+  shelfId           String
+  name              String           @default("未命名收藏")
+  notes             String           @default("")
+  shelfOrder        Float            @default(0)
+  processingStatus  ProcessingStatus @default(UPLOADING)
+  processingError   String?
+  processingVersion Int              @default(1)
+  cropX             Float?
+  cropY             Float?
+  cropWidth         Float?
+  cropHeight        Float?
+  cropRotation      Int?
+  addedAt           DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  user              User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  shelf             Shelf            @relation(fields: [shelfId, userId], references: [id, userId], onDelete: Restrict)
+  tags              CollectibleTag[]
+  imageAssets       ImageAsset[]
+  processingJobs    ProcessingJob[]
+
+  @@unique([id, userId])
+  @@index([userId, addedAt])
+  @@index([userId, shelfId, shelfOrder])
+  @@index([userId, processingStatus])
+}
+
+model Tag {
+  id           String           @id @default(cuid())
+  userId       String
+  normalized   String
+  displayName  String
+  user         User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  collectibles CollectibleTag[]
+
+  @@unique([userId, normalized])
+  @@index([userId])
+}
+
+model CollectibleTag {
+  collectibleId String
+  tagId         String
+  collectible   Collectible @relation(fields: [collectibleId], references: [id], onDelete: Cascade)
+  tag           Tag         @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([collectibleId, tagId])
+  @@index([tagId])
+}
+
+model ImageAsset {
+  id                   String      @id @default(cuid())
+  userId               String
+  collectibleId        String
+  kind                 AssetKind
+  status               AssetStatus @default(RESERVED)
+  objectKey            String      @unique
+  contentType          String
+  declaredByteSize     BigInt      @default(0)
+  byteSize             BigInt      @default(0)
+  reservationExpiresAt DateTime?
+  width                Int?
+  height               Int?
+  version              Int         @default(1)
+  createdAt            DateTime    @default(now())
+  updatedAt            DateTime    @updatedAt
+  user                 User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  collectible          Collectible @relation(fields: [collectibleId, userId], references: [id, userId], onDelete: Cascade)
+
+  @@unique([collectibleId, kind, version])
+  @@index([userId, collectibleId, kind])
+}
+
+model ProcessingJob {
+  id             String      @id @default(cuid())
+  userId         String
+  collectibleId  String
+  type           JobType
+  status         JobStatus   @default(QUEUED)
+  idempotencyKey String      @unique
+  attemptCount   Int         @default(0)
+  errorMessage   String?
+  startedAt      DateTime?
+  finishedAt     DateTime?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  user           User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  collectible    Collectible @relation(fields: [collectibleId, userId], references: [id, userId], onDelete: Cascade)
+
+  @@index([userId, status, createdAt])
+}
+
+model Admin {
+  id           String     @id @default(cuid())
+  username     String     @unique
+  passwordHash String
+  isActive     Boolean    @default(true)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  auditLogs    AuditLog[]
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  adminId   String?
+  userId    String?
+  action    String
+  targetId  String?
+  metadata  Json?
+  createdAt DateTime @default(now())
+  admin     Admin?   @relation(fields: [adminId], references: [id], onDelete: SetNull)
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([userId, createdAt])
+}

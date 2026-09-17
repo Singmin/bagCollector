@@ -12,3 +12,27 @@ build/
 
 # macOS
 .DS_Store
+
+# JavaScript / TypeScript
+node_modules/
+dist/
+coverage/
+.turbo/
+*.tsbuildinfo
+pnpm-debug.log*
+
+# Environment and deployment secrets
+.env
+.env.*
+!.env.example
+!infra/.env.*.example
+*.pem
+private.*.key
+
+# WeChat developer tools
+apps/miniapp/project.private.config.json
+apps/miniapp/miniprogram_npm/
+
+# Runtime data
+data/
+backups/

@@ -1,0 +1,15 @@
+{
+  "description": "BagCollect 私人视觉陈列柜",
+  "compileType": "miniprogram",
+  "libVersion": "latest",
+  "appid": "touristappid",
+  "projectname": "BagCollect",
+  "setting": {
+    "es6": true,
+    "postcss": true,
+    "minified": true,
+    "urlCheck": false,
+    "checkInvalidKey": true,
+    "enhance": true
+  }
+}

@@ -1,0 +1,4 @@
+{
+  "desc": "BagCollect 私人收藏，不提供公开内容索引",
+  "rules": [{ "action": "disallow", "page": "*" }]
+}

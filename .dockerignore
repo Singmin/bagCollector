@@ -1,0 +1,12 @@
+.git
+.github
+node_modules
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+DerivedData
+build
+.env
+.env.*
+*.pem
+project.private.config.json

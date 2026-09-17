@@ -1,0 +1,50 @@
+{
+  "name": "bagcollect-platform",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.18.3",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build": "pnpm --filter @bagcollect/contracts build && pnpm --filter @bagcollect/api build && pnpm --filter @bagcollect/worker build && pnpm --filter @bagcollect/admin build && pnpm --filter @bagcollect/miniapp build:mp-weixin",
+    "check:miniapp": "node scripts/check-miniapp.mjs",
+    "dev:api": "pnpm --filter @bagcollect/api dev",
+    "dev:worker": "pnpm --filter @bagcollect/worker dev",
+    "dev:rembg": "sh scripts/run-rembg-local.sh",
+    "dev:admin": "pnpm --filter @bagcollect/admin dev",
+    "warmup:rembg": "node scripts/warmup-rembg.mjs",
+    "build:miniapp:local": "pnpm --filter @bagcollect/miniapp build:mp-weixin:local",
+    "typecheck": "pnpm --filter @bagcollect/contracts build && pnpm -r --if-present typecheck",
+    "lint": "eslint apps packages",
+    "test": "vitest run",
+    "test:integration": "node scripts/test-api-integration.mjs",
+    "test:integration:local": "pnpm --filter @bagcollect/api build && pnpm --filter @bagcollect/worker build && DATABASE_URL=postgresql://bagcollect:bagcollect_test@127.0.0.1:5433/bagcollect_test REDIS_URL=redis://127.0.0.1:6380 JWT_SECRET=local-test-secret-with-at-least-thirty-two-characters WECHAT_AUTH_MOCK=true node scripts/test-api-integration.mjs",
+    "test:image-flow:local": "node scripts/test-local-image-flow.mjs",
+    "test:watch": "vitest",
+    "infra:local:up": "docker compose -f infra/docker-compose.local.yml up -d --wait",
+    "infra:local:status": "docker compose -f infra/docker-compose.local.yml ps",
+    "db:generate": "prisma generate --schema apps/api/prisma/schema.prisma",
+    "db:migrate": "prisma migrate dev --schema apps/api/prisma/schema.prisma",
+    "db:deploy": "prisma migrate deploy --schema apps/api/prisma/schema.prisma",
+    "db:local:deploy": "DATABASE_URL=postgresql://bagcollect:bagcollect_local@127.0.0.1:5432/bagcollect prisma migrate deploy --schema apps/api/prisma/schema.prisma",
+    "db:test:deploy": "DATABASE_URL=postgresql://bagcollect:bagcollect_test@127.0.0.1:5433/bagcollect_test prisma migrate deploy --schema apps/api/prisma/schema.prisma",
+    "db:seed": "tsx apps/api/prisma/seed.ts",
+    "verify": "pnpm lint && pnpm typecheck && pnpm check:miniapp && pnpm test && pnpm build"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.0",
+    "@prisma/client": "^6.19.0",
+    "@types/node": "^22.18.0",
+    "eslint": "^9.39.0",
+    "eslint-plugin-react-hooks": "^7.0.0",
+    "globals": "^16.4.0",
+    "miniprogram-ci": "^2.0.39",
+    "prisma": "^6.19.0",
+    "sharp": "^0.34.4",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.0",
+    "vitest": "^3.2.4"
+  }
+}

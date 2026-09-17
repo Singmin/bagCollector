@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: bagcollect_test
+          POSTGRES_USER: bagcollect
+          POSTGRES_PASSWORD: bagcollect
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U bagcollect -d bagcollect_test"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+      redis:
+        image: redis:7.4-alpine
+        ports: ["6379:6379"]
+    env:
+      DATABASE_URL: postgresql://bagcollect:bagcollect@localhost:5432/bagcollect_test
+      REDIS_URL: redis://localhost:6379
+      JWT_SECRET: ci-only-secret-with-at-least-thirty-two-characters
+      WECHAT_AUTH_MOCK: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 10.18.3 }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm db:generate
+      - run: pnpm db:deploy
+      - run: pnpm verify
+      - run: pnpm test:integration
+      - name: Build Docker targets
+        run: |
+          docker build --target api -f infra/Dockerfile .
+          docker build --target worker -f infra/Dockerfile .
+          docker build --target admin -f infra/Dockerfile .
+          docker build --target rembg -f infra/Dockerfile .

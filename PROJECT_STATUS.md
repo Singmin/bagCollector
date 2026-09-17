@@ -1,5 +1,7 @@
 # BagCollect 项目开发进度
 
+> 2026-09-17 方向更新：发布主线已切换为 uni-app（Vue 3 + TypeScript）开发的微信小程序，只构建 `mp-weixin`。新平台实现与部署说明见 `README.md` 和 `docs/WECHAT_NATIVE.md`；下文保留为原 SwiftUI 工程的历史状态，SwiftUI 代码未删除。
+
 > 最后更新：2026-09-14
 >
 > 当前阶段：第一版可运行 MVP，核心流程已贯通，尚未达到 TestFlight 或 App Store 发布标准。
