@@ -1,78 +1,260 @@
 <script setup lang="ts">
 import { ref } from 'vue';
-import type { UploadPolicy } from '../../../types';
+import { onLoad } from '@dcloudio/uni-app';
+import type { Shelf, UploadPolicy } from '../../../types';
 import { api, authorizedHeaders } from '../../../services/http';
 import { dataService } from '../../../services/data';
 
+const systemInfo = uni.getSystemInfoSync();
+const statusBarHeight = systemInfo.statusBarHeight ?? 20;
+const isDevtools = systemInfo.platform === 'devtools';
+
 const filePath = ref('');
-const fileSize = ref(0);
+const flashOn = ref(false);
+const capturing = ref(false);
 const uploading = ref(false);
+const compressing = ref(false);
 const progress = ref(0);
 const errorMessage = ref('');
 
+// 原图直传在慢网下要几十秒，而服务端最终只保留最长边 4096 的版本，
+// 所以超过阈值就先在本地压一次。阈值以下的照片不动，避免无谓的重编码损失。
+const COMPRESS_THRESHOLD_BYTES = 1_500_000;
+const COMPRESS_QUALITY = 85;
+
 function contentType(path: string) {
   const extension = path.split('.').pop()?.toLocaleLowerCase();
-  return ({ png: 'image/png', webp: 'image/webp', heic: 'image/heic', heif: 'image/heif' } as Record<string, string>)[extension || ''] || 'image/jpeg';
+  return ({ jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', heic: 'image/heic', heif: 'image/heif' } as Record<string, string>)[extension ?? ''] ?? 'image/jpeg';
 }
 
-function choose() {
-  uni.chooseMedia({
-    count: 1, mediaType: ['image'], sourceType: ['album', 'camera'], sizeType: ['original'],
-    success(result) {
-      const file = result.tempFiles[0];
-      if (!file) return;
-      if (file.size > 30 * 1024 * 1024) return void uni.showToast({ title: '图片不能超过 30MB', icon: 'none' });
-      filePath.value = file.tempFilePath; fileSize.value = file.size; errorMessage.value = '';
-    }
+function fileSize(path: string) {
+  return new Promise<number>((resolve, reject) => {
+    uni.getFileInfo({
+      filePath: path,
+      success: (result) => resolve(result.size),
+      fail: (error) => reject(new Error(error.errMsg || '无法读取照片'))
+    });
   });
 }
 
-async function upload(path: string, policy: UploadPolicy) {
+function compress(path: string) {
+  return new Promise<string>((resolve) => {
+    uni.compressImage({
+      src: path,
+      quality: COMPRESS_QUALITY,
+      success: (result) => resolve(result.tempFilePath || path),
+      fail: () => resolve(path)
+    });
+  });
+}
+
+// 压缩失败、平台不支持或压缩后反而更大时，一律回退原图，不能让压缩挡掉上传。
+async function prepareUpload(path: string) {
+  let originalSize = 0;
+  try {
+    originalSize = await fileSize(path);
+  } catch {
+    return path;
+  }
+  if (originalSize <= COMPRESS_THRESHOLD_BYTES) return path;
+  const compressed = await compress(path);
+  if (compressed === path) return path;
+  try {
+    const compressedSize = await fileSize(compressed);
+    return compressedSize > 0 && compressedSize < originalSize ? compressed : path;
+  } catch {
+    return path;
+  }
+}
+
+async function targetShelfId() {
+  const shelves = await dataService.shelves();
+  if (shelves[0]) return shelves[0].id;
+  const shelf = await dataService.createShelf({ name: '未分类', theme: 'SAGE' });
+  return shelf.id;
+}
+
+async function uploadSource(path: string, policy: UploadPolicy) {
   const header = await authorizedHeaders();
   return new Promise<void>((resolve, reject) => {
     const task = uni.uploadFile({
-      url: policy.uploadUrl, filePath: path, name: 'file', formData: policy.formData, header,
-      success: (result) => result.statusCode >= 200 && result.statusCode < 300 ? resolve() : reject(new Error(`图片上传失败（${result.statusCode}）`)),
+      url: policy.uploadUrl,
+      filePath: path,
+      name: 'file',
+      formData: policy.formData,
+      header,
+      success: (result) => (result.statusCode >= 200 && result.statusCode < 300
+        ? resolve()
+        : reject(new Error(`图片上传失败（${result.statusCode}）`))),
       fail: (error) => reject(new Error(error.errMsg || '图片上传网络失败'))
     });
     task.onProgressUpdate((event) => { progress.value = event.progress; });
   });
 }
 
-async function next() {
-  if (!filePath.value || uploading.value) return;
-  uploading.value = true; progress.value = 0; errorMessage.value = '';
-  uni.showLoading({ title: '准备上传', mask: true });
+async function submit(sourcePath: string) {
+  if (uploading.value) return;
+  const sourceSize = await fileSize(sourcePath);
+  if (sourceSize > 30 * 1024 * 1024) {
+    uni.showToast({ title: '图片不能超过 30MB', icon: 'none' });
+    return;
+  }
+  filePath.value = sourcePath;
+  uploading.value = true;
+  compressing.value = true;
+  progress.value = 0;
+  errorMessage.value = '';
   try {
-    const collectible = await dataService.createCollectible();
-    const mime = contentType(filePath.value);
+    const path = await prepareUpload(sourcePath);
+    compressing.value = false;
+    const size = await fileSize(path);
+    const collectible = await dataService.createCollectible({ name: '未命名纸袋', shelfId: await targetShelfId() });
+    const sourceName = path.split('/').pop() || `paper-bag-${Date.now()}.jpg`;
     const policy = await api<UploadPolicy>('/uploads/policy', {
       method: 'POST',
-      data: { collectibleId: collectible.id, fileName: filePath.value.split('/').pop() || 'photo.jpg', contentType: mime, size: fileSize.value }
+      data: {
+        collectibleId: collectible.id,
+        fileName: sourceName.includes('.') ? sourceName : `${sourceName}.jpg`,
+        contentType: contentType(path),
+        size
+      }
     });
-    uni.hideLoading();
-    await upload(filePath.value, policy);
-    uni.showLoading({ title: '正在解析图片', mask: true });
-    await api('/uploads/complete', { method: 'POST', data: { assetId: policy.assetId, collectibleId: collectible.id, key: policy.key } });
-    uni.hideLoading();
+    await uploadSource(path, policy);
+    await api('/uploads/complete', {
+      method: 'POST',
+      data: { assetId: policy.assetId, collectibleId: collectible.id, key: policy.key }
+    });
     uni.redirectTo({ url: `/package-editor/pages/processing/index?id=${collectible.id}&stage=normalize` });
   } catch (error) {
-    uni.hideLoading();
-    errorMessage.value = error instanceof Error ? error.message : '上传失败，请重试';
-  } finally { uploading.value = false; }
+    compressing.value = false;
+    errorMessage.value = error instanceof Error ? error.message : '照片处理失败';
+    filePath.value = '';
+    uploading.value = false;
+  }
 }
+
+function takePhoto() {
+  if (capturing.value || uploading.value) return;
+  capturing.value = true;
+  uni.createCameraContext().takePhoto({
+    quality: 'high',
+    success: async (result) => {
+      try {
+        await submit(result.tempImagePath);
+      } catch (error) {
+        errorMessage.value = error instanceof Error ? error.message : '拍照失败';
+      } finally {
+        capturing.value = false;
+      }
+    },
+    fail: (error) => {
+      capturing.value = false;
+      errorMessage.value = error.errMsg || '拍照失败，请重试';
+    }
+  });
+}
+
+function chooseFromAlbum() {
+  if (capturing.value || uploading.value) return;
+  uni.chooseMedia({
+    count: 1,
+    mediaType: ['image'],
+    sourceType: ['album'],
+    sizeType: ['original'],
+    success: (result) => {
+      const file = result.tempFiles[0];
+      if (file) void submit(file.tempFilePath).catch((error) => {
+        errorMessage.value = error instanceof Error ? error.message : '相册选图失败';
+      });
+    },
+    fail: (error) => {
+      if (!error.errMsg?.includes('cancel')) errorMessage.value = error.errMsg || '相册打开失败';
+    }
+  });
+}
+
+function toggleFlash() {
+  flashOn.value = !flashOn.value;
+}
+
+function cameraError(event: any) {
+  if (isDevtools) return; // 开发者工具不支持 camera 组件，不展示错误文案
+  errorMessage.value = event.detail?.errMsg || '相机不可用，请检查相机权限';
+}
+
+function back() {
+  uni.navigateBack();
+}
+
+onLoad(() => {
+  void dataService.shelves().catch((error) => {
+    errorMessage.value = error instanceof Error ? error.message : '分类加载失败';
+  });
+});
 </script>
 
 <template>
-  <view class="page add-page">
-    <view class="editor-header"><text class="eyebrow">NEW OBJECT · 1 / 4</text><text class="display-title">选择照片</text><text class="intro">原图会加密保存在你的私人云端空间，只用于重新编辑。</text></view>
-    <button class="upload-zone" :class="{ 'has-image': filePath }" @tap="choose"><image v-if="filePath" :src="filePath" mode="aspectFit" /><template v-else><text class="plus">＋</text><text class="upload-title">从相册选择或拍摄</text><text class="upload-hint">支持 JPG、PNG、WebP、HEIC · 最大 30MB</text></template></button>
-    <view v-if="uploading" class="progress"><view :style="{ width: `${progress}%` }" /></view>
-    <text v-if="errorMessage" class="error">{{ errorMessage }}</text>
-    <button class="primary-button next" :disabled="!filePath || uploading" @tap="next">{{ uploading ? `正在上传 ${progress}%` : '继续裁剪' }}</button>
+  <view class="camera-page">
+    <view class="camera-header" :style="{ paddingTop: `${statusBarHeight}px` }">
+      <button class="back-button" aria-label="返回" @tap="back">
+        <image class="back-icon" src="/static/figma/back.svg" mode="aspectFit" />
+      </button>
+      <text class="camera-title">上传纸袋</text>
+    </view>
+
+    <view class="capture-stage">
+      <camera
+        v-if="!filePath"
+        class="camera-view"
+        device-position="back"
+        resolution="high"
+        :flash="flashOn ? 'on' : 'off'"
+        @error="cameraError"
+      />
+      <image v-else class="captured-image" :src="filePath" mode="aspectFit" />
+      <view class="guide-frame" />
+      <view v-if="uploading" class="upload-mask">
+        <view class="upload-spinner" />
+        <text>{{ compressing ? '正在压缩照片' : progress < 100 ? `正在上传 ${progress}%` : '正在启动自动抠图' }}</text>
+      </view>
+    </view>
+
+    <text v-if="errorMessage" class="camera-error">{{ errorMessage }}</text>
+
+    <view class="camera-controls">
+      <button class="round-button flash-button" :aria-label="flashOn ? '关闭闪光灯' : '打开闪光灯'" :disabled="uploading" @tap="toggleFlash">
+        <image class="control-icon" :src="flashOn ? '/static/figma/flash-on.svg' : '/static/figma/flash-off.svg'" mode="aspectFit" />
+      </button>
+      <button class="shutter" :disabled="capturing || uploading" aria-label="拍照" @tap="takePhoto">
+        <view class="shutter-core" />
+      </button>
+      <button class="round-button album-button" aria-label="从相册选择" :disabled="uploading" @tap="chooseFromAlbum">
+        <image class="control-icon" src="/static/figma/album.svg" mode="aspectFit" />
+      </button>
+    </view>
   </view>
 </template>
 
 <style scoped>
-.editor-header { margin: 20rpx 0 48rpx; }.editor-header .display-title { display: block; margin-top: 10rpx; }.intro { display: block; margin-top: 20rpx; color: #746d63; font-size: 25rpx; line-height: 1.65; }.upload-zone { width: 100%; height: 760rpx; margin: 0; padding: 34rpx; display: flex; flex-direction: column; justify-content: center; align-items: center; border: 2rpx dashed #bdb2a2; border-radius: 38rpx; background: rgba(255,253,248,.65); color: #28241f; overflow: hidden; }.upload-zone.has-image { border-style: solid; }.upload-zone image { width: 100%; height: 100%; }.plus { font-size: 80rpx; font-weight: 200; }.upload-title { margin-top: 20rpx; font-size: 30rpx; font-weight: 700; }.upload-hint { margin-top: 12rpx; color: #81796e; font-size: 22rpx; }.progress { height: 8rpx; margin: 28rpx 20rpx 0; border-radius: 999rpx; background: #dcd4c8; overflow: hidden; }.progress view { height: 100%; border-radius: inherit; background: #292520; transition: width .2s; }.error { display: block; margin-top: 24rpx; padding: 20rpx; border-radius: 18rpx; background: #fae2de; color: #943d37; font-size: 23rpx; }.next { margin-top: 36rpx; }.next[disabled] { opacity: .35; }
+.camera-page { height: 100vh; display: flex; flex-direction: column; overflow: hidden; background: #fff; color: #000; }
+.camera-header { position: relative; flex: 0 0 auto; padding-bottom: 24rpx; display: flex; align-items: center; justify-content: center; }
+.camera-title { font-size: 32rpx; font-weight: 500; line-height: 48rpx; }
+.back-button { position: absolute; left: 32rpx; width: 56rpx; height: 56rpx; margin: 0; padding: 0; display: grid; place-items: center; background: transparent; }
+.back-icon { width: 18rpx; height: 32rpx; }
+.capture-stage { position: relative; flex: 0 0 auto; height: 1000rpx; margin: 8rpx 34rpx 0; overflow: hidden; border-radius: 72rpx; background: #dbbba1; }
+.camera-view, .captured-image { position: absolute; inset: 0; width: 100%; height: 100%; }
+.guide-frame { position: absolute; z-index: 3; left: 62rpx; top: 190rpx; width: 560rpx; height: 634rpx; box-sizing: border-box; border: 8rpx dashed rgba(255, 255, 255, .6); border-radius: 48rpx; pointer-events: none; }
+.upload-mask { position: absolute; z-index: 5; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 30rpx; background: rgba(60, 37, 20, .48); color: #fff; font-size: 28rpx; font-weight: 600; }
+.upload-spinner { width: 76rpx; height: 76rpx; border: 7rpx solid rgba(255, 255, 255, .35); border-top-color: #fff; border-radius: 50%; animation: spin .9s linear infinite; }
+.camera-error { flex: 0 0 auto; margin: 16rpx 34rpx 0; color: #a12e2e; font-size: 24rpx; text-align: center; }
+.camera-controls { position: relative; flex: 0 0 auto; height: 156rpx; margin-top: auto; margin-bottom: calc(16rpx + env(safe-area-inset-bottom)); }
+.round-button { position: absolute; top: 24rpx; width: 108rpx; height: 108rpx; margin: 0; padding: 0; display: grid; place-items: center; border-radius: 50%; background: #fff; }
+.round-button[disabled] { opacity: .45; }
+.flash-button { left: 94rpx; }
+.album-button { left: 550rpx; }
+.control-icon { width: 56rpx; height: 56rpx; }
+.shutter { position: absolute; left: 298rpx; top: 0; width: 156rpx; height: 156rpx; margin: 0; padding: 6rpx; display: grid; place-items: center; box-sizing: border-box; border: 4rpx solid #c50405; border-radius: 50%; background: #fff; }
+.shutter[disabled] { opacity: .45; }
+.shutter-core { width: 136rpx; height: 136rpx; border-radius: 50%; background: #c50405; }
+@keyframes spin { to { transform: rotate(360deg); } }
 </style>

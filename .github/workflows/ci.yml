@@ -48,4 +48,8 @@ jobs:
           docker build --target api -f infra/Dockerfile .
           docker build --target worker -f infra/Dockerfile .
           docker build --target admin -f infra/Dockerfile .
-          docker build --target rembg -f infra/Dockerfile .
+          # 抠图已切换到腾讯云数据万象，rembg 不再参与生产链路。
+          # 对应 target 仍保留在 infra/Dockerfile 中作为可回退的兜底实现，
+          # 需要重新启用时取消下面一行注释，并同步恢复 compose 与部署脚本。详见
+          # docs/TENCENT_CI_MATTING.md。
+          # docker build --target rembg -f infra/Dockerfile .

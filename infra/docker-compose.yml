@@ -69,34 +69,42 @@ services:
       REDIS_URL: redis://redis:6379
       NODE_ENV: production
       STORAGE_DRIVER: cos
-      MATTING_DRIVER: rembg
-      REMBG_URL: http://rembg:7000
-      REMBG_MODEL: birefnet-general-lite
-      REMBG_TIMEOUT_MS: 120000
-      REMBG_MAX_RESPONSE_BYTES: 83886080
-      REMBG_MAX_CONCURRENCY: 1
+      # 抠图走腾讯云数据万象「通用抠图 AIPicMatting」，详见 docs/TENCENT_CI_MATTING.md。
+      # 万象是按次计费的云端接口，不是本机进程，因此 worker 不需要依赖任何推理服务。
+      CI_MATTING_PROCESS: ${CI_MATTING_PROCESS:-AIPicMatting}
+      CI_MATTING_TIMEOUT_MS: ${CI_MATTING_TIMEOUT_MS:-60000}
+      CI_MATTING_MAX_RESPONSE_BYTES: ${CI_MATTING_MAX_RESPONSE_BYTES:-83886080}
+      CI_MATTING_MAX_CONCURRENCY: ${CI_MATTING_MAX_CONCURRENCY:-4}
+      CI_MATTING_RETRY: ${CI_MATTING_RETRY:-1}
+      CI_MATTING_SIZE_MODE: ${CI_MATTING_SIZE_MODE:-rescale}
     depends_on:
       migrate:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
-      rembg:
-        condition: service_healthy
 
-  rembg:
-    image: ${REMBG_IMAGE:?set REMBG_IMAGE}
-    restart: unless-stopped
-    environment:
-      REMBG_HOME: /models
-      OMP_NUM_THREADS: 1
-    volumes:
-      - rembg-models:/models
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7000/openapi.json', timeout=3)"]
-      interval: 15s
-      timeout: 5s
-      retries: 20
-      start_period: 30s
+  # ---------------------------------------------------------------------------
+  # 自托管 rembg + BiRefNet 抠图服务。已不在主链路上（worker 不依赖它），
+  # 定义保留未删除，需要单独跑推理服务时再启用。
+  # ---------------------------------------------------------------------------
+  # rembg:
+  #   image: ${REMBG_IMAGE:?set REMBG_IMAGE}
+  #   restart: unless-stopped
+  #   environment:
+  #     REMBG_HOME: /models
+  #     # --threads 的服务端并发上限（不是推理线程数）。保持 1。
+  #     REMBG_SERVER_CONCURRENCY: ${REMBG_SERVER_CONCURRENCY:-1}
+  #     # 推理线程数：留空 = 交给 onnxruntime 按可用核数自行决定，实测最快。
+  #     # 只有当容器被 --cpus 限流时才需要显式设为配额内的数值。
+  #     REMBG_OMP_NUM_THREADS: ${REMBG_OMP_NUM_THREADS:-}
+  #   volumes:
+  #     - rembg-models:/models
+  #   healthcheck:
+  #     test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7000/openapi.json', timeout=3)"]
+  #     interval: 15s
+  #     timeout: 5s
+  #     retries: 20
+  #     start_period: 30s
 
   admin:
     image: ${ADMIN_IMAGE:?set ADMIN_IMAGE}
@@ -107,4 +115,5 @@ services:
 volumes:
   postgres-data:
   redis-data:
-  rembg-models:
+  # rembg 模型卷，仅在上面的 rembg 服务被启用时才需要。
+  # rembg-models:

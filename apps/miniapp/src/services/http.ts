@@ -1,8 +1,6 @@
 import { runtimeConfig } from '../config';
 import type { AuthTokens } from '../types';
-import { readCache, removeCache, writeCache } from './cache';
-
-const TOKEN_CACHE = 'tokens';
+import { readTokens, removeTokens, writeTokens } from './auth-storage';
 let loginPromise: Promise<void> | undefined;
 let refreshPromise: Promise<void> | undefined;
 
@@ -54,22 +52,22 @@ export async function login() {
       method: 'POST',
       data: { code: await wechatCode(), deviceName: systemName() }
     });
-    writeCache(TOKEN_CACHE, tokens);
+    writeTokens(tokens);
   })().finally(() => { loginPromise = undefined; });
   return loginPromise;
 }
 
 async function refresh() {
   refreshPromise ??= (async () => {
-    const current = readCache<AuthTokens>(TOKEN_CACHE);
+    const current = readTokens();
     if (!current?.refreshToken) return login();
     try {
       const tokens = await requestRaw<AuthTokens>('/auth/refresh', {
         method: 'POST', data: { refreshToken: current.refreshToken }
       });
-      writeCache(TOKEN_CACHE, tokens);
+      writeTokens(tokens);
     } catch {
-      removeCache(TOKEN_CACHE);
+      removeTokens();
       await login();
     }
   })().finally(() => { refreshPromise = undefined; });
@@ -77,18 +75,18 @@ async function refresh() {
 }
 
 export async function ensureLogin() {
-  if (!readCache<AuthTokens>(TOKEN_CACHE)?.accessToken) await login();
+  if (!readTokens()?.accessToken) await login();
 }
 
 export async function authorizedHeaders() {
   await ensureLogin();
-  const tokens = readCache<AuthTokens>(TOKEN_CACHE)!;
+  const tokens = readTokens()!;
   return { Authorization: `Bearer ${tokens.accessToken}` };
 }
 
 export async function api<T>(path: string, options: ApiRequestOptions = {}, didRetry = false): Promise<T> {
   await ensureLogin();
-  const tokens = readCache<AuthTokens>(TOKEN_CACHE)!;
+  const tokens = readTokens()!;
   try {
     return await requestRaw<T>(path, {
       ...options,
@@ -108,13 +106,9 @@ export async function api<T>(path: string, options: ApiRequestOptions = {}, didR
 }
 
 export async function logout() {
-  const tokens = readCache<AuthTokens>(TOKEN_CACHE);
+  const tokens = readTokens();
   if (tokens?.refreshToken) {
-    try {
-      await requestRaw('/auth/logout', { method: 'POST', data: { refreshToken: tokens.refreshToken } });
-    } catch {
-      // Local logout must still succeed when offline.
-    }
+    await requestRaw('/auth/logout', { method: 'POST', data: { refreshToken: tokens.refreshToken } });
   }
-  removeCache(TOKEN_CACHE);
+  removeTokens();
 }

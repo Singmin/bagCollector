@@ -1,10 +1,9 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
 import { JobStatus } from '@prisma/client';
 import { adminLoginSchema } from '@bagcollect/contracts';
 import { parseBody } from '../common/zod.js';
-import { AdminGuard, type AdminAuth } from './admin.guard.js';
+import { AdminGuard } from './admin.guard.js';
 import { AdminService } from './admin.service.js';
-import { CurrentAdmin } from './current-admin.js';
 
 @Controller('admin')
 export class AdminController {
@@ -26,11 +25,5 @@ export class AdminController {
   @UseGuards(AdminGuard)
   jobs(@Query('status') status?: JobStatus) {
     return this.admin.jobs(status);
-  }
-
-  @Post('jobs/:id/retry')
-  @UseGuards(AdminGuard)
-  retry(@CurrentAdmin() admin: AdminAuth, @Param('id') id: string) {
-    return this.admin.retryJob(admin.adminId, id);
   }
 }

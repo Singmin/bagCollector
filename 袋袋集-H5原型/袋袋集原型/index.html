@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#f4f0e9" />
+    <meta name="description" content="BagCollect 私人视觉陈列柜 H5 交互原型" />
+    <title>BagCollect · 私人陈列柜</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="phone-shell" aria-label="BagCollect H5 原型">
+      <div class="status-bar" aria-hidden="true">
+        <span>9:41</span>
+        <div class="dynamic-island"></div>
+        <span class="status-icons">▮▮▮ ⌁ ▰</span>
+      </div>
+
+      <div class="app-scroll" id="appScroll">
+        <section class="screen screen--active" data-screen="showcase" aria-label="陈列">
+          <!-- 首页头部：eyebrow / 38px 大标题 / 一句文案，右侧一枚「最近收藏 N」胶囊。
+               原来三枚统计 chip 已去掉，数字改由右侧胶囊承载。 -->
+          <header class="bags-header">
+            <div class="bags-header__text">
+              <p class="bags-subtitle">MY PRIVATE CABINET</p>
+              <h1 class="bags-title">袋袋集</h1>
+              <p class="bags-tagline">收集每一个纸袋的故事</p>
+            </div>
+            <button class="recent-pill" id="recentPill" type="button" aria-label="查看最近收藏">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="12" cy="12" r="8.4"/>
+                <path d="M12 7.6V12l3 1.8"/>
+              </svg>
+              <span class="recent-pill__label">最近收藏</span>
+              <span class="recent-pill__num" id="recentPillNum">0</span>
+            </button>
+          </header>
+
+          <!-- 主展位：白色液态玻璃卡片。
+               正面只放袋子（右上角一束斜光），轻点卡片 3D 翻面看背面详情。 -->
+          <section class="stage-section" aria-label="当前展品">
+            <div class="flip-card" id="rackHero" aria-live="polite">
+              <button class="flip-card__hit" id="rackHeroHit" type="button"
+                      aria-label="轻点翻面查看详情" aria-pressed="false"></button>
+
+              <!-- 正面：袋子 + 下方文字信息（品牌 / 名字 · 收藏日期） -->
+              <div class="flip-face flip-face--front">
+                <span class="glass-glow"></span>
+                <span class="light-beam"></span>
+                <span class="brand-badge" id="rackHeroBadge">最新</span>
+                <div class="flip-face__art" id="rackHeroPic"></div>
+
+                <div class="front-caption">
+                  <h3 class="front-caption__brand" id="rackHeroCaptionBrand">还没有最近收藏</h3>
+                  <p class="front-caption__sub">
+                    <span id="rackHeroCaptionName">—</span>
+                    <i class="front-caption__dot"></i>
+                    <span id="rackHeroCaptionDate"></span>
+                  </p>
+                </div>
+
+                <p class="flip-hint" id="rackHeroTip">轻点翻面 &middot; 查看详情</p>
+              </div>
+
+              <!-- 背面：详细信息 -->
+              <div class="flip-face flip-face--back">
+                <span class="glass-glow"></span>
+                <span class="light-beam light-beam--back"></span>
+                <button class="flip-back" id="rackHeroFlipBack" type="button" aria-label="翻回正面">
+                  <span>&#8634;</span>
+                </button>
+                <div class="back-inner">
+                  <p class="back-eyebrow" id="rackHeroEyebrow">NO.001</p>
+                  <h2 class="back-name" id="rackHeroName">还没有最近收藏</h2>
+                  <p class="back-brand" id="rackHeroMeta">最近 15 天内添加的藏品会出现在这里</p>
+                  <div class="back-divider"></div>
+                  <dl class="back-facts" id="rackHeroFacts"></dl>
+                  <div class="back-tags" id="rackHeroTags"></div>
+                  <p class="back-note" id="rackHeroNote" hidden></p>
+                  <button class="back-open" id="rackHeroOpen" type="button" hidden>查看大图 →</button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="rack-section" id="rackSection" aria-labelledby="recentTitle">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">RECENTLY ADDED</p>
+                <h2 id="recentTitle">最近收集</h2>
+              </div>
+              <div class="section-heading__actions">
+                <!-- 设置面板原本只能从首页右上角圆钮进入，圆钮改成「最近收藏 N」之后
+                     这里必须补一个入口，否则设置面板就点不开了。 -->
+                <button class="icon-action" data-open="settings" type="button" aria-label="打开设置">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.4a3.4 3.4 0 1 0 0-6.8 3.4 3.4 0 0 0 0 6.8Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.86 2.86-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21H9.5v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.88.34l-.06.06-2.86-2.86.06-.06A1.7 1.7 0 0 0 4 15a1.7 1.7 0 0 0-1.5-1H2.4V9.9h.1A1.7 1.7 0 0 0 4 8.8a1.7 1.7 0 0 0-.34-1.88l-.06-.06L6.46 4l.06.06A1.7 1.7 0 0 0 8.4 4.4a1.7 1.7 0 0 0 1-1.5v-.1h4.1v.1a1.7 1.7 0 0 0 1.1 1.5 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.86 2.86-.06.06A1.7 1.7 0 0 0 19 8.8a1.7 1.7 0 0 0 1.5 1h.1v4.1h-.1a1.7 1.7 0 0 0-1.1 1.1Z"/></svg>
+                </button>
+                <button class="text-action" data-nav="library">查看全部 <span>→</span></button>
+              </div>
+            </div>
+            <p class="stage-count" id="recentCountText">最近 15 天 · 0 件</p>
+            <div class="rack-stage" id="rackStage">
+              <div class="rack-bags" id="rackBags"></div>
+            </div>
+            <p class="rack-hint">&#8672; 按住卡片左右拨动 &middot; 轻点在上方查看 &#8674;</p>
+          </section>
+
+        </section>
+
+        <section class="screen" data-screen="library" aria-label="全部收藏">
+          <!-- 与首页 .bags-header 完全同构：eyebrow / 38px 大标题 / 统计行 / 右侧圆钮。
+               原来标题下还有一句 tagline，已按需求去掉。 -->
+          <header class="library-header">
+            <div class="library-header__text">
+              <p class="lib-subtitle">THE FULL ARCHIVE</p>
+              <h1 class="lib-title">全部收藏</h1>
+              <div class="library-stats">
+                <span class="library-chip"><span class="library-chip__num" id="libCount">12</span> 件收藏</span>
+                <span class="library-chip"><span class="library-chip__num" id="libShelfCount">3</span> 个展示架</span>
+                <span class="library-chip"><span class="library-chip__num" id="libTagCount">6</span> 个标签</span>
+              </div>
+            </div>
+            <button class="round-button round-button--layout" id="layoutToggle" type="button"
+                    aria-label="切换为网格视图" aria-pressed="false" title="切换布局">
+              <!-- 图标随当前布局切换：分组视图时显示「网格」图标提示可切过去 -->
+              <svg id="layoutIcon" viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="3" y="3" width="7.5" height="7.5" rx="1.6"/>
+                <rect x="13.5" y="3" width="7.5" height="7.5" rx="1.6"/>
+                <rect x="3" y="13.5" width="7.5" height="7.5" rx="1.6"/>
+                <rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.6"/>
+              </svg>
+            </button>
+          </header>
+          <label class="search-box">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m16 16 5 5"/></svg>
+            <input id="searchInput" type="search" placeholder="搜索名称或标签" autocomplete="off" />
+            <button id="clearSearch" aria-label="清空搜索" hidden>×</button>
+          </label>
+          <p class="result-count" id="resultCount">共 12 件</p>
+          <!-- 这一层承载视图切换：data-view="group"（按展示架横滑）/ "grid"（2 列网格） -->
+          <div class="library-body" id="libraryBody" data-view="group">
+            <div class="collection-groups" id="collectionGroups"></div>
+          </div>
+          <div class="empty-state" id="emptyState" hidden>
+            <div>⌕</div>
+            <h2>没有找到收藏</h2>
+            <p>换一个名称或标签试试。</p>
+          </div>
+        </section>
+      </div>
+
+      <nav class="bottom-nav" aria-label="主导航">
+        <button class="nav-item is-active" data-nav="showcase">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h16v11H4zM7 4h10l2 5H5l2-5Z"/></svg>
+          <span>陈列</span>
+        </button>
+        <button class="add-button" id="addButton" aria-label="添加收藏">
+          <span>＋</span>
+        </button>
+        <button class="nav-item" data-nav="library">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+          <span>全部收藏</span>
+        </button>
+      </nav>
+    </main>
+
+    <div class="sheet-backdrop" id="sheetBackdrop" hidden></div>
+
+    <!-- 详情：居中弹出卡片（复刻首页卡片背面的液态玻璃，整体放大）
+         分三层：玻璃背景层(1) / 滚动内容层(3) / 固定按钮层(4~5)。
+         玻璃层独立是为了让 backdrop-filter 只作用于背景，
+         滚动内容不会带着模糊一起位移。 -->
+    <div class="detail-card" id="detailSheet" role="dialog" aria-modal="true"
+         aria-hidden="true" aria-label="收藏详情">
+      <span class="detail-glass" aria-hidden="true">
+        <span class="glass-glow"></span>
+        <span class="light-beam light-beam--back"></span>
+      </span>
+      <button class="detail-back" data-close aria-label="关闭">×</button>
+      <div class="detail-scroll">
+        <div id="detailArtwork" class="detail-artwork"></div>
+        <p class="back-eyebrow" id="detailNumber">NO.001</p>
+        <h2 class="detail-name" id="detailName">收藏名称</h2>
+        <p class="detail-brand" id="detailBrand">展示架</p>
+        <div class="back-divider"></div>
+        <dl class="back-facts" id="detailFacts"></dl>
+        <div class="back-tags" id="detailTags"></div>
+        <p class="back-note" id="detailNote" hidden></p>
+      </div>
+      <button class="detail-done" data-close>完成</button>
+    </div>
+
+    <aside class="bottom-sheet add-sheet" id="addSheet" aria-hidden="true" aria-label="添加收藏">
+      <div class="sheet-handle"></div>
+      <button class="sheet-close" data-close aria-label="关闭">×</button>
+      <div class="step-kicker">NEW OBJECT · <span id="stepLabel">1 / 2</span></div>
+      <div class="add-step" data-add-step="1">
+        <h2>把新收藏放进来</h2>
+        <p>选择照片后，我们会在本机完成预览。原图不会上传。</p>
+        <label class="upload-zone" id="uploadZone">
+          <input id="fileInput" type="file" accept="image/*" />
+          <span class="upload-plus">＋</span>
+          <strong>从相册选择照片</strong>
+          <small>支持纸袋、书、票根、唱片等</small>
+          <img id="uploadPreview" alt="待添加收藏预览" hidden />
+        </label>
+        <button class="primary-button" id="toDetails" disabled>下一步</button>
+      </div>
+      <form class="add-step" data-add-step="2" hidden>
+        <h2>给它留一张标签</h2>
+        <div class="mini-preview"><img id="miniPreview" alt="收藏预览" /></div>
+        <label class="field-label">名称<input id="nameInput" type="text" placeholder="例如：蓝色书店纸袋" /></label>
+        <label class="field-label">展示架
+          <select id="shelfSelect">
+            <option>城市纸袋</option>
+          </select>
+        </label>
+        <label class="field-label">标签<input id="tagInput" type="text" placeholder="用空格分开，例如：蓝色 深圳" /></label>
+        <div class="form-actions">
+          <button type="button" class="secondary-button" id="backUpload">上一步</button>
+          <button type="submit" class="primary-button">保存收藏</button>
+        </div>
+      </form>
+    </aside>
+
+    <aside class="bottom-sheet settings-sheet" id="settingsSheet" aria-hidden="true" aria-label="设置">
+      <div class="sheet-handle"></div>
+      <button class="sheet-close" data-close aria-label="关闭">×</button>
+      <p class="eyebrow">SETTINGS</p>
+      <h2>我的陈列柜</h2>
+      <div class="settings-card"><span>收藏统计</span><strong><span id="settingsCount">12</span> 件</strong></div>
+      <div class="settings-card"><span>本地存储</span><strong>已启用</strong></div>
+      <div class="settings-card"><span>iCloud 同步</span><strong class="muted">尚未配置</strong></div>
+      <div class="settings-card settings-card--action">
+        <span>摇一摇互动</span>
+        <button class="ios-switch" id="motionToggle" type="button" role="switch" aria-checked="false">
+          <span class="ios-switch__knob"></span>
+        </button>
+      </div>
+      <p class="privacy-note settings-hint" id="motionHint">开启后，轻轻晃动手机会让"最近收集"的挂袋跟着摆动。仅在本机读取设备运动数据，不会上传。</p>
+      <p class="privacy-note">照片处理和收藏数据默认保存在此设备。原型不会上传或持久保存图片。</p>
+      <button class="primary-button" data-close>完成</button>
+    </aside>
+
+    <div class="toast" id="toast" role="status" aria-live="polite">已加入陈列柜</div>
+    <script src="./app.js"></script>
+  </body>
+</html>

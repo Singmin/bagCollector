@@ -17,16 +17,15 @@ export class ShelvesService {
       id: shelf.id,
       name: shelf.name,
       theme: shelf.theme,
-      isSystem: shelf.isSystem,
       sortOrder: shelf.sortOrder,
       itemCount: shelf._count.collectibles
     }));
   }
 
-  async create(userId: string, input: { name: string; theme?: ShelfTheme }) {
+  async create(userId: string, input: { name: string; theme: ShelfTheme }) {
     const count = await this.prisma.shelf.count({ where: { userId } });
     return this.prisma.shelf.create({
-      data: { userId, name: input.name, theme: input.theme ?? 'SAGE', sortOrder: count }
+      data: { userId, name: input.name, theme: input.theme, sortOrder: count }
     });
   }
 
@@ -51,13 +50,9 @@ export class ShelvesService {
   async remove(userId: string, id: string) {
     const shelf = await this.prisma.shelf.findFirst({ where: { id, userId } });
     if (!shelf) throw new ApiError('NOT_FOUND', '展示架不存在', HttpStatus.NOT_FOUND);
-    if (shelf.isSystem) throw new ApiError('FORBIDDEN', '系统展示架不能删除', HttpStatus.FORBIDDEN);
-    const fallback = await this.prisma.shelf.findFirst({ where: { userId, isSystem: true } });
-    if (!fallback) throw new ApiError('CONFLICT', '未找到系统展示架', HttpStatus.CONFLICT);
-    await this.prisma.$transaction([
-      this.prisma.collectible.updateMany({ where: { userId, shelfId: id }, data: { shelfId: fallback.id } }),
-      this.prisma.shelf.delete({ where: { id } })
-    ]);
+    const itemCount = await this.prisma.collectible.count({ where: { userId, shelfId: id } });
+    if (itemCount > 0) throw new ApiError('CONFLICT', '展示架中仍有收藏，无法删除', HttpStatus.CONFLICT);
+    await this.prisma.shelf.delete({ where: { id } });
     return { success: true };
   }
 }

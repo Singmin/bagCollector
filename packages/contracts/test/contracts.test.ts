@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cropSchema, updateCollectibleSchema } from '../src/index.js';
+import { createCollectibleSchema, createShelfSchema, cropSchema, updateCollectibleSchema } from '../src/index.js';
 
 describe('cropSchema', () => {
   it('accepts a normalized crop', () => {
@@ -20,5 +20,21 @@ describe('cropSchema', () => {
 describe('updateCollectibleSchema', () => {
   it('limits tags', () => {
     expect(() => updateCollectibleSchema.parse({ tags: Array.from({ length: 31 }, (_, index) => `tag-${index}`) })).toThrow();
+  });
+});
+
+describe('required creation fields', () => {
+  it('requires a collectible name and shelf', () => {
+    expect(() => createCollectibleSchema.parse({})).toThrow();
+    expect(() => createCollectibleSchema.parse({ name: '纸袋' })).toThrow();
+    expect(createCollectibleSchema.parse({ name: '纸袋', shelfId: 'shelf-1' })).toEqual({
+      name: '纸袋',
+      shelfId: 'shelf-1'
+    });
+  });
+
+  it('requires an explicit shelf theme', () => {
+    expect(() => createShelfSchema.parse({ name: '旅行' })).toThrow();
+    expect(createShelfSchema.parse({ name: '旅行', theme: 'SAGE' })).toEqual({ name: '旅行', theme: 'SAGE' });
   });
 });

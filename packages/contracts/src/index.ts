@@ -34,7 +34,7 @@ export type CropInput = z.infer<typeof cropSchema>;
 
 export const createShelfSchema = z.object({
   name: z.string().trim().min(1).max(30),
-  theme: z.enum(shelfThemes).default('SAGE')
+  theme: z.enum(shelfThemes)
 });
 
 export const updateShelfSchema = createShelfSchema.partial();
@@ -44,8 +44,8 @@ export const reorderSchema = z.object({
 });
 
 export const createCollectibleSchema = z.object({
-  name: z.string().trim().max(80).optional(),
-  shelfId: z.string().min(1).optional()
+  name: z.string().trim().min(1).max(80),
+  shelfId: z.string().min(1)
 });
 
 export const updateCollectibleSchema = z.object({
@@ -92,25 +92,33 @@ export interface ShelfDto {
   id: string;
   name: string;
   theme: ShelfTheme;
-  isSystem: boolean;
   sortOrder: number;
   itemCount: number;
 }
 
-export interface CollectibleDto {
+export interface CollectibleSummaryDto {
   id: string;
   name: string;
-  notes: string;
-  tags: string[];
   shelfId: string;
-  shelfName?: string;
+  shelfName: string;
   processingStatus: ProcessingStatus;
-  processingError?: string;
   thumbnailUrl?: string;
-  displayImageUrl?: string;
-  standardImageUrl?: string;
   addedAt: string;
   updatedAt: string;
+}
+
+export interface CollectiblePageDto {
+  items: CollectibleSummaryDto[];
+  nextCursor: string | null;
+  totalCount: number;
+}
+
+export interface CollectibleDto extends CollectibleSummaryDto {
+  notes: string;
+  tags: string[];
+  processingError?: string;
+  displayImageUrl?: string;
+  standardImageUrl?: string;
 }
 
 export interface ApiErrorBody {

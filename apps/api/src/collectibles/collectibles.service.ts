@@ -14,10 +14,8 @@ export class CollectiblesService {
     private readonly queues: QueueService
   ) {}
 
-  private async assertShelf(userId: string, shelfId?: string) {
-    const shelf = shelfId
-      ? await this.prisma.shelf.findFirst({ where: { id: shelfId, userId } })
-      : await this.prisma.shelf.findFirst({ where: { userId, isSystem: true } });
+  private async assertShelf(userId: string, shelfId: string) {
+    const shelf = await this.prisma.shelf.findFirst({ where: { id: shelfId, userId } });
     if (!shelf) throw new ApiError('NOT_FOUND', '展示架不存在', HttpStatus.NOT_FOUND);
     return shelf;
   }
@@ -53,6 +51,20 @@ export class CollectiblesService {
     };
   }
 
+  private async toSummary(collectible: any) {
+    const thumbnail = collectible.imageAssets[0];
+    return {
+      id: collectible.id,
+      name: collectible.name,
+      shelfId: collectible.shelfId,
+      shelfName: collectible.shelf.name,
+      processingStatus: collectible.processingStatus,
+      ...(thumbnail ? { thumbnailUrl: await this.assets.signedUrlForObjectKey(thumbnail.objectKey) } : {}),
+      addedAt: collectible.addedAt.toISOString(),
+      updatedAt: collectible.updatedAt.toISOString()
+    };
+  }
+
   private include() {
     return {
       shelf: true,
@@ -60,7 +72,18 @@ export class CollectiblesService {
     } satisfies Prisma.CollectibleInclude;
   }
 
-  async create(userId: string, input: { name?: string; shelfId?: string }) {
+  private listInclude() {
+    return {
+      shelf: true,
+      imageAssets: {
+        where: { kind: AssetKind.THUMBNAIL, status: AssetStatus.AVAILABLE },
+        orderBy: { version: 'desc' as const },
+        take: 1
+      }
+    } satisfies Prisma.CollectibleInclude;
+  }
+
+  async create(userId: string, input: { name: string; shelfId: string }) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       include: { _count: { select: { collectibles: true } } }
@@ -78,7 +101,7 @@ export class CollectiblesService {
       data: {
         userId,
         shelfId: shelf.id,
-        name: input.name?.trim() || '未命名收藏',
+        name: input.name.trim(),
         shelfOrder: (last._max.shelfOrder ?? -1) + 1
       },
       include: this.include()
@@ -89,30 +112,42 @@ export class CollectiblesService {
   async list(userId: string, query: { search?: string; shelfId?: string; cursor?: string; limit?: number }) {
     const limit = Math.min(Math.max(query.limit ?? 30, 1), 100);
     const search = query.search?.trim();
-    const items = await this.prisma.collectible.findMany({
-      where: {
-        userId,
-        ...(query.shelfId ? { shelfId: query.shelfId } : {}),
-        ...(search
-          ? {
-              OR: [
-                { name: { contains: search, mode: 'insensitive' } },
-                { notes: { contains: search, mode: 'insensitive' } },
-                { tags: { some: { tag: { displayName: { contains: search, mode: 'insensitive' } } } } }
-              ]
-            }
-          : {}),
-        ...(query.cursor ? { addedAt: { lt: new Date(query.cursor) } } : {})
-      },
-      include: this.include(),
-      orderBy: [{ addedAt: 'desc' }, { id: 'desc' }],
-      take: limit + 1
-    });
+    const where = {
+      userId,
+      processingStatus: ProcessingStatus.READY,
+      ...(query.shelfId ? { shelfId: query.shelfId } : {}),
+      // 搜索同时看「名称 / 备注 / 标签 / 展示架名」。展示架名要算进来，
+      // 是因为收藏架页的搜索框写的是「搜索名称 / 品牌 / 标签」——
+      // 品牌在数据里就是展示架名，漏掉它用户搜品牌会一个结果都搜不到。
+      ...(search
+        ? {
+            OR: [
+              { name: { contains: search, mode: 'insensitive' as const } },
+              { notes: { contains: search, mode: 'insensitive' as const } },
+              { shelf: { name: { contains: search, mode: 'insensitive' as const } } },
+              { tags: { some: { tag: { displayName: { contains: search, mode: 'insensitive' as const } } } } }
+            ]
+          }
+        : {})
+    } satisfies Prisma.CollectibleWhereInput;
+    const [items, totalCount] = await Promise.all([
+      this.prisma.collectible.findMany({
+        where: {
+          ...where,
+          ...(query.cursor ? { addedAt: { lt: new Date(query.cursor) } } : {})
+        },
+        include: this.listInclude(),
+        orderBy: [{ addedAt: 'desc' }, { id: 'desc' }],
+        take: limit + 1
+      }),
+      this.prisma.collectible.count({ where })
+    ]);
     const hasMore = items.length > limit;
     const page = hasMore ? items.slice(0, limit) : items;
     return {
-      items: await Promise.all(page.map((item) => this.toDto(item))),
-      nextCursor: hasMore ? page.at(-1)?.addedAt.toISOString() : null
+      items: await Promise.all(page.map((item) => this.toSummary(item))),
+      nextCursor: hasMore ? page.at(-1)?.addedAt.toISOString() : null,
+      totalCount
     };
   }
 
@@ -159,7 +194,7 @@ export class CollectiblesService {
     return this.detail(userId, id);
   }
 
-  private async enqueueMatting(userId: string, id: string, crop: CropInput, isRetry = false) {
+  private async enqueueMatting(userId: string, id: string, crop: CropInput) {
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
     const [collectible, user, todayJobs] = await Promise.all([
@@ -168,13 +203,13 @@ export class CollectiblesService {
       this.prisma.processingJob.count({ where: { userId, type: JobType.MATTING, createdAt: { gte: startOfDay } } })
     ]);
     if (!collectible || !user) throw new ApiError('NOT_FOUND', '收藏不存在', HttpStatus.NOT_FOUND);
-    if (!isRetry && collectible.processingStatus !== ProcessingStatus.AWAITING_CROP) {
+    if (collectible.processingStatus !== ProcessingStatus.AWAITING_CROP) {
       throw new ApiError('CONFLICT', '图片尚未准备好裁剪', HttpStatus.CONFLICT);
     }
     if (todayJobs >= user.dailyMattingQuota) {
       throw new ApiError('QUOTA_EXCEEDED', '今日自动抠图次数已用完', HttpStatus.TOO_MANY_REQUESTS);
     }
-    const version = isRetry ? collectible.processingVersion + 1 : collectible.processingVersion;
+    const version = collectible.processingVersion;
     const idempotencyKey = `matting:${id}:v${version}`;
     const job = await this.prisma.$transaction(async (transaction) => {
       await transaction.collectible.update({
@@ -202,50 +237,6 @@ export class CollectiblesService {
 
   crop(userId: string, id: string, crop: CropInput) {
     return this.enqueueMatting(userId, id, crop);
-  }
-
-  async retry(userId: string, id: string) {
-    const collectible = await this.prisma.collectible.findFirst({ where: { id, userId } });
-    if (!collectible) throw new ApiError('NOT_FOUND', '收藏不存在', HttpStatus.NOT_FOUND);
-    if (collectible.processingStatus !== ProcessingStatus.FAILED) {
-      throw new ApiError('CONFLICT', '当前任务不需要重试', HttpStatus.CONFLICT);
-    }
-    if (
-      collectible.cropX === null ||
-      collectible.cropY === null ||
-      collectible.cropWidth === null ||
-      collectible.cropHeight === null ||
-      collectible.cropRotation === null
-    ) {
-      throw new ApiError('CONFLICT', '缺少裁剪信息，请重新裁剪', HttpStatus.CONFLICT);
-    }
-    return this.enqueueMatting(
-      userId,
-      id,
-      {
-        x: collectible.cropX,
-        y: collectible.cropY,
-        width: collectible.cropWidth,
-        height: collectible.cropHeight,
-        rotation: collectible.cropRotation as CropInput['rotation']
-      },
-      true
-    );
-  }
-
-  async keepCrop(userId: string, id: string) {
-    const collectible = await this.prisma.collectible.findFirst({ where: { id, userId } });
-    if (!collectible) throw new ApiError('NOT_FOUND', '收藏不存在', HttpStatus.NOT_FOUND);
-    const fallback = await this.prisma.imageAsset.findFirst({
-      where: { collectibleId: id, userId, kind: AssetKind.DISPLAY, status: AssetStatus.AVAILABLE },
-      orderBy: { version: 'desc' }
-    });
-    if (!fallback) throw new ApiError('CONFLICT', '裁剪图尚未准备好', HttpStatus.CONFLICT);
-    await this.prisma.collectible.update({
-      where: { id },
-      data: { processingStatus: ProcessingStatus.READY, processingError: null }
-    });
-    return this.detail(userId, id);
   }
 
   async remove(userId: string, id: string) {

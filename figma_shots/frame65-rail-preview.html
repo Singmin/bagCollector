@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>首页挂绳优化预览 · Frame 65</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #dfe1e8; font-family: "PingFang SC", "Microsoft YaHei", sans-serif; display: flex; gap: 32px; justify-content: center; align-items: flex-start; padding: 32px; }
+  .phone { width: 375px; height: 700px; background: #f2f3f7; border-radius: 28px; overflow: hidden; box-shadow: 0 18px 48px rgba(0,0,0,.22); padding: 24px 15px 0; position: relative; }
+  .phone h3 { position: absolute; top: -28px; left: 4px; font-size: 14px; color: #555; font-weight: 500; }
+  .header { display: flex; justify-content: space-between; padding: 6px 0 0; }
+  .header .title { font-size: 24px; font-weight: 500; color: #000; line-height: 24px; }
+  .header .sub { font-size: 12px; color: #7a7c80; margin-top: 6px; }
+  .header .right { text-align: right; }
+  .header .count { font-size: 24px; font-weight: 500; color: #000; line-height: 24px; }
+  .scene { position: relative; margin: 22px -15px 0; }
+  .rope { position: absolute; left: 0; right: 0; top: 15px; height: 6px; border-radius: 999px;
+    background:
+      repeating-linear-gradient(115deg, rgba(255,244,222,.34) 0 3.5px, rgba(0,0,0,0) 3.5px 7.5px),
+      linear-gradient(180deg, #ad7c4b, #8a5f36);
+    box-shadow: 0 4px 6px rgba(79,48,20,.28); }
+  .row { position: relative; display: inline-flex; align-items: flex-start; gap: 7px; padding: 0 12px 11px; white-space: nowrap; }
+  .item { width: 77px; flex: 0 0 77px; display: flex; flex-direction: column; align-items: center; background: none; border: 0; cursor: pointer; font-family: inherit; }
+  .clip { width: 23px; height: 23px; margin-top: 6.5px; position: relative; z-index: 3; filter: drop-shadow(0 2px 3px rgba(0,0,0,.22)); }
+  .art { position: relative; z-index: 2; height: 112px; margin-top: -5px; display: flex; align-items: flex-end; justify-content: center; transform-origin: 50% 0; }
+  .tilt-left .art { animation: swayL 5.2s ease-in-out infinite alternate; }
+  .tilt-right .art { margin-top: 3px; animation: swayR 5.8s ease-in-out infinite alternate; }
+  @keyframes swayL { from { transform: rotate(-4deg); } to { transform: rotate(-1deg); } }
+  @keyframes swayR { from { transform: rotate(1deg); } to { transform: rotate(4deg); } }
+  .bag { width: 71px; height: 110px; filter: drop-shadow(0 5px 5px rgba(0,0,0,.22)); }
+  .copy { width: 100%; margin-top: 6px; }
+  .name { display: block; font-size: 12px; font-weight: 500; color: #1a1a1a; line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .meta { display: block; font-size: 11px; color: #7a7c80; line-height: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .featured { position: relative; width: 318px; height: 318px; margin: 16px auto 0; border: 1px solid rgba(255,255,255,.9); border-radius: 36px; overflow: hidden; background: linear-gradient(180deg, #ffffff 0%, #f7f3ec 100%); }
+  .featured .bag-big { position: absolute; left: 50%; top: 20px; width: 129px; height: 218px; transform: translateX(-50%); filter: drop-shadow(0 8px 12px rgba(127,82,44,.25)); }
+  .featured .fc { position: absolute; left: 14px; right: 14px; bottom: 18px; text-align: center; }
+  .featured .fname { font-size: 18px; font-weight: 700; color: #000; }
+  .featured .fmeta { font-size: 12px; color: #7a7c80; margin-top: 6px; }
+  .scroll { overflow-x: auto; scrollbar-width: none; } .scroll::-webkit-scrollbar { display: none; }
+</style>
+</head>
+<body>
+  <div style="position:relative">
+    <h3 class="phone-title" style="position:absolute;top:-30px;font-size:14px;color:#555">Frame 65 还原效果（优化后）</h3>
+    <div class="phone">
+      <div class="header">
+        <div><div class="title">袋袋集</div><div class="sub">收集每一个纸袋的故事</div></div>
+        <div class="right"><div class="count">8</div><div class="sub">最近收藏(件)</div></div>
+      </div>
+      <div class="featured">
+        <svg class="bag-big" viewBox="0 0 100 170"><path d="M20 40 Q50 8 80 40 L84 160 Q50 172 16 160 Z" fill="#8a5a33"/><path d="M20 40 Q50 8 80 40" fill="none" stroke="#c79a63" stroke-width="5"/><rect x="30" y="80" width="40" height="24" rx="3" fill="#f3e4c8"/><text x="50" y="97" font-size="11" text-anchor="middle" fill="#6d4a2a" font-family="Georgia" font-style="italic">Peet's</text></svg>
+        <div class="fc"><div class="fname">Peet's Coffee</div><div class="fmeta">经典复古牛皮纸袋｜2026/08/08</div></div>
+      </div>
+      <div class="scene">
+        <div class="scroll"><div class="row">
+          <div class="rope"></div>
+          <button class="item tilt-left"><svg class="clip" viewBox="0 0 48 48"><defs><radialGradient id="r1" cx="35%" cy="30%" r="80%"><stop offset="0%" stop-color="#e6c493"/><stop offset="70%" stop-color="#c69c63"/><stop offset="100%" stop-color="#a87f4e"/></radialGradient></defs><circle cx="24" cy="24" r="21" fill="url(#r1)"/><circle cx="24" cy="24" r="21" fill="none" stroke="#8f6a3e" stroke-width="1.6"/><circle cx="24" cy="24" r="14" fill="#f6f2e8"/><circle cx="24.6" cy="24.8" r="8.4" fill="#2b2320"/><circle cx="21.4" cy="21.2" r="3" fill="#fff"/></svg>
+            <div class="art"><svg class="bag" viewBox="0 0 100 155"><rect x="14" y="30" width="72" height="120" rx="4" fill="#7ea34a"/><path d="M30 30 Q50 4 70 30" fill="none" stroke="#5c7d35" stroke-width="6"/><rect x="26" y="66" width="48" height="40" rx="3" fill="#eef3df"/></svg></div>
+            <div class="copy"><span class="name">青柠手提袋</span><span class="meta">霸王茶姬 · 09/15</span></div>
+          </button>
+          <button class="item tilt-right"><svg class="clip" viewBox="0 0 48 48"><circle cx="24" cy="24" r="21" fill="#c69c63"/><circle cx="24" cy="24" r="21" fill="none" stroke="#8f6a3e" stroke-width="1.6"/><circle cx="24" cy="24" r="14" fill="#f6f2e8"/><circle cx="24.6" cy="24.8" r="8.4" fill="#2b2320"/><circle cx="21.4" cy="21.2" r="3" fill="#fff"/></svg>
+            <div class="art"><svg class="bag" viewBox="0 0 100 155"><rect x="14" y="28" width="72" height="122" rx="4" fill="#2f4f8f"/><path d="M30 28 Q50 4 70 28" fill="none" stroke="#1f3a6d" stroke-width="6"/><path d="M14 90 L86 60 L86 78 L14 108 Z" fill="#7fa8d9" opacity=".8"/></svg></div>
+            <div class="copy"><span class="name">拼色手提袋</span><span class="meta">霸王茶姬 · 09/15</span></div>
+          </button>
+          <button class="item tilt-left"><svg class="clip" viewBox="0 0 48 48"><circle cx="24" cy="24" r="21" fill="#c69c63"/><circle cx="24" cy="24" r="21" fill="none" stroke="#8f6a3e" stroke-width="1.6"/><circle cx="24" cy="24" r="14" fill="#f6f2e8"/><circle cx="24.6" cy="24.8" r="8.4" fill="#2b2320"/><circle cx="21.4" cy="21.2" r="3" fill="#fff"/></svg>
+            <div class="art"><svg class="bag" viewBox="0 0 100 155"><rect x="14" y="30" width="72" height="120" rx="4" fill="#26262a"/><path d="M30 30 Q50 4 70 30" fill="none" stroke="#111114" stroke-width="6"/><rect x="34" y="62" width="32" height="44" rx="2" fill="#e8ddc4"/></svg></div>
+            <div class="copy"><span class="name">简约手提袋</span><span class="meta">霸王茶姬 · 09/15</span></div>
+          </button>
+          <button class="item tilt-right"><svg class="clip" viewBox="0 0 48 48"><circle cx="24" cy="24" r="21" fill="#c69c63"/><circle cx="24" cy="24" r="21" fill="none" stroke="#8f6a3e" stroke-width="1.6"/><circle cx="24" cy="24" r="14" fill="#f6f2e8"/><circle cx="24.6" cy="24.8" r="8.4" fill="#2b2320"/><circle cx="21.4" cy="21.2" r="3" fill="#fff"/></svg>
+            <div class="art"><svg class="bag" viewBox="0 0 100 155"><rect x="14" y="28" width="72" height="122" rx="4" fill="#3d7d46"/><path d="M30 28 Q50 4 70 28" fill="none" stroke="#2b5d33" stroke-width="6"/><circle cx="50" cy="82" r="26" fill="#f2d24b" opacity=".9"/><circle cx="38" cy="74" r="9" fill="#e2574c"/><circle cx="62" cy="74" r="9" fill="#e2574c"/></svg></div>
+            <div class="copy"><span class="name">插画家手提袋</span><span class="meta">瑞幸咖啡 · 09/14</span></div>
+          </button>
+          <button class="item tilt-left"><svg class="clip" viewBox="0 0 48 48"><circle cx="24" cy="24" r="21" fill="#c69c63"/><circle cx="24" cy="24" r="21" fill="none" stroke="#8f6a3e" stroke-width="1.6"/><circle cx="24" cy="24" r="14" fill="#f6f2e8"/><circle cx="24.6" cy="24.8" r="8.4" fill="#2b2320"/><circle cx="21.4" cy="21.2" r="3" fill="#fff"/></svg>
+            <div class="art"><svg class="bag" viewBox="0 0 100 155"><rect x="14" y="28" width="72" height="122" rx="4" fill="#e884ad"/><path d="M30 28 Q50 4 70 28" fill="none" stroke="#c65e8b" stroke-width="6"/><text x="50" y="80" font-size="12" text-anchor="middle" fill="#fff" font-family="Arial" font-weight="bold">Hello</text><text x="50" y="96" font-size="12" text-anchor="middle" fill="#fff" font-family="Arial" font-weight="bold">Kitty</text></svg></div>
+            <div class="copy"><span class="name">简约手提袋</span><span class="meta">瑞幸咖啡 · 09/14</span></div>
+          </button>
+          <button class="item tilt-right"><svg class="clip" viewBox="0 0 48 48"><circle cx="24" cy="24" r="21" fill="#c69c63"/><circle cx="24" cy="24" r="21" fill="none" stroke="#8f6a3e" stroke-width="1.6"/><circle cx="24" cy="24" r="14" fill="#f6f2e8"/><circle cx="24.6" cy="24.8" r="8.4" fill="#2b2320"/><circle cx="21.4" cy="21.2" r="3" fill="#fff"/></svg>
+            <div class="art"><svg class="bag" viewBox="0 0 100 155"><rect x="14" y="30" width="72" height="120" rx="4" fill="#b8965a"/><path d="M30 30 Q50 4 70 30" fill="none" stroke="#96763f" stroke-width="6"/><rect x="30" y="70" width="40" height="26" rx="3" fill="#f3e4c8"/></svg></div>
+            <div class="copy"><span class="name">牛皮纸袋</span><span class="meta">未分类 · 09/12</span></div>
+          </button>
+        </div></div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

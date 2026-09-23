@@ -11,11 +11,24 @@ const mocks = vi.hoisted(() => {
   };
   return {
     prisma,
+    config: {
+      CI_MATTING_PROCESS: 'GoodsMatting',
+      CI_MATTING_TIMEOUT_MS: 60_000,
+      CI_MATTING_MAX_RESPONSE_BYTES: 83_886_080,
+      CI_MATTING_MAX_CONCURRENCY: 4,
+      CI_MATTING_SIGN_EXPIRES_SECONDS: 600,
+      CI_MATTING_SIZE_MODE: 'rescale',
+      CI_MATTING_RETRY: 1,
+      MAX_IMAGE_PIXELS: 60_000_000
+    },
     getObject: vi.fn(),
+    getSignedObjectUrl: vi.fn(),
     putObject: vi.fn(),
     deleteObjects: vi.fn(),
     upsertAssetRecord: vi.fn(),
-    removeBackground: vi.fn()
+    removeBackground: vi.fn(),
+    // processor.ts 在模块加载时就把签名解析器注册进万象实现，这里把它接出来单独断言。
+    signedUrlResolver: { current: undefined as undefined | ((key: string, query: Record<string, string>) => string) }
   };
 });
 
@@ -31,27 +44,21 @@ vi.mock('@prisma/client', async () => {
   };
 });
 
-vi.mock('../src/config.js', () => ({
-  config: {
-    MATTING_DRIVER: 'rembg',
-    REMBG_URL: 'http://127.0.0.1:7000',
-    REMBG_MODEL: 'birefnet-general-lite',
-    REMBG_TIMEOUT_MS: 120_000,
-    REMBG_MAX_RESPONSE_BYTES: 83_886_080,
-    REMBG_MAX_CONCURRENCY: 1,
-    MAX_IMAGE_PIXELS: 60_000_000
-  }
-}));
+vi.mock('../src/config.js', () => ({ config: mocks.config }));
 
 vi.mock('../src/object-store.js', () => ({
   getObject: mocks.getObject,
+  getSignedObjectUrl: mocks.getSignedObjectUrl,
   putObject: mocks.putObject,
   deleteObjects: mocks.deleteObjects
 }));
 
 vi.mock('../src/asset-record.js', () => ({ upsertAssetRecord: mocks.upsertAssetRecord }));
-vi.mock('../src/matting.js', () => ({
-  createBackgroundRemover: () => (input: Buffer) => mocks.removeBackground(input)
+vi.mock('../src/matting-tencent-ci.js', () => ({
+  createTencentCiBackgroundRemover: (_options: unknown, resolveSignedUrl: never) => {
+    mocks.signedUrlResolver.current = resolveSignedUrl;
+    return (target: unknown) => mocks.removeBackground(target);
+  }
 }));
 
 const { AssetKind, JobStatus, ProcessingStatus } = await import('@prisma/client');
@@ -90,6 +97,10 @@ beforeEach(async () => {
   mocks.prisma.imageAsset.findFirstOrThrow.mockResolvedValue({ objectKey: 'standard.jpg' });
   mocks.prisma.$transaction.mockImplementation(async (operations: Promise<unknown>[]) => Promise.all(operations));
   mocks.getObject.mockResolvedValue(await jpeg());
+  mocks.getSignedObjectUrl.mockImplementation(
+    (key: string, options: { query: Record<string, string> }) =>
+      `https://bucket.cos.ap-guangzhou.myqcloud.com/${key}?${new URLSearchParams(options.query).toString()}`
+  );
   mocks.putObject.mockResolvedValue(undefined);
   mocks.upsertAssetRecord.mockResolvedValue(undefined);
 });
@@ -116,40 +127,67 @@ describe('worker matting processor', () => {
     });
   });
 
-  it('keeps crop renditions but never creates a CUTOUT or READY state when matting fails', async () => {
-    mocks.removeBackground.mockRejectedValue(new Error('rembg unavailable'));
+  it('keeps only the crop asset and never creates renditions when matting fails', async () => {
+    mocks.removeBackground.mockRejectedValue(new Error('万象抠图请求失败（403）'));
 
-    await expect(matImage(jobData)).rejects.toThrow('rembg unavailable');
+    await expect(matImage(jobData)).rejects.toThrow('万象抠图请求失败（403）');
 
-    expect(mocks.upsertAssetRecord.mock.calls.map((call) => call[1].kind)).toEqual([
-      AssetKind.CROPPED,
-      AssetKind.DISPLAY,
-      AssetKind.THUMBNAIL
-    ]);
+    expect(mocks.upsertAssetRecord.mock.calls.map((call) => call[1].kind)).toEqual([AssetKind.CROPPED]);
     expect(mocks.upsertAssetRecord.mock.calls.some((call) => call[1].kind === AssetKind.CUTOUT)).toBe(false);
     expect(mocks.prisma.collectible.update).not.toHaveBeenCalled();
   });
 
-  it('returns a retryable job to QUEUED without marking the collectible failed', async () => {
-    await failProcessing(jobData, new Error('temporary failure'), false);
+  it('runs 万象 on the cropped object and writes a cutout at the crop size', async () => {
+    mocks.removeBackground.mockResolvedValue(await transparentPng());
 
-    expect(mocks.prisma.processingJob.update).toHaveBeenCalledWith({
-      where: { id: jobData.processingJobId },
-      data: { status: JobStatus.QUEUED, errorMessage: 'temporary failure', finishedAt: null }
+    await matImage(jobData);
+
+    expect(mocks.removeBackground).toHaveBeenCalledWith({
+      objectKey: expect.stringContaining('/cropped/v1.jpg'),
+      width: 4,
+      height: 4
     });
-    expect(mocks.prisma.collectible.update).not.toHaveBeenCalled();
+
+    const cutout = mocks.putObject.mock.calls.find((call) => String(call[0]).includes('/cutout/'));
+    const cutoutMeta = await sharp(cutout![1] as Buffer).metadata();
+    expect([cutoutMeta.width, cutoutMeta.height]).toEqual([4, 4]);
+    expect(mocks.upsertAssetRecord.mock.calls.map((call) => call[1].kind)).toEqual([
+      AssetKind.CROPPED,
+      AssetKind.CUTOUT,
+      AssetKind.DISPLAY,
+      AssetKind.THUMBNAIL
+    ]);
   });
 
-  it('marks both the job and collectible FAILED after the final attempt', async () => {
-    await failProcessing(jobData, new Error('final failure'), true);
+  it('signs the 万象 ci-process query onto the cropped COS URL', async () => {
+    mocks.removeBackground.mockResolvedValue(await transparentPng());
+
+    await matImage(jobData);
+
+    const resolver = mocks.signedUrlResolver.current;
+    expect(resolver).toBeTypeOf('function');
+    const url = resolver!('users/u/collectibles/c/cropped/v1.jpg', {
+      'ci-process': 'GoodsMatting',
+      'center-layout': '0'
+    });
+    expect(url).toContain('ci-process=GoodsMatting');
+    expect(url).toContain('center-layout=0');
+    expect(mocks.getSignedObjectUrl).toHaveBeenCalledWith('users/u/collectibles/c/cropped/v1.jpg', {
+      query: { 'ci-process': 'GoodsMatting', 'center-layout': '0' },
+      expiresSeconds: 600
+    });
+  });
+
+  it('marks both the job and collectible FAILED immediately', async () => {
+    await failProcessing(jobData, new Error('processing failure'));
 
     expect(mocks.prisma.processingJob.update).toHaveBeenCalledWith({
       where: { id: jobData.processingJobId },
-      data: { status: JobStatus.FAILED, errorMessage: 'final failure', finishedAt: expect.any(Date) }
+      data: { status: JobStatus.FAILED, errorMessage: 'processing failure', finishedAt: expect.any(Date) }
     });
     expect(mocks.prisma.collectible.update).toHaveBeenCalledWith({
       where: { id: jobData.collectibleId },
-      data: { processingStatus: ProcessingStatus.FAILED, processingError: 'final failure' }
+      data: { processingStatus: ProcessingStatus.FAILED, processingError: 'processing failure' }
     });
   });
 });

@@ -1,9 +1,27 @@
+/**
+ * 【已废弃 / DEPRECATED】自托管 rembg + BiRefNet 抠图实现
+ * =====================================================================
+ * 2026-09-21 起，生产抠图已切换为腾讯云数据万象，实现见 apps/worker/src/matting-tencent-ci.ts，
+ * 方案说明见 docs/TENCENT_CI_MATTING.md。
+ *
+ * 本文件连同下列配套资产一起保留，未删除、也不参与主链路：
+ * - infra/rembg-entrypoint.sh、infra/Dockerfile 的 `rembg` stage
+ * - infra/docker-compose.yml 中被注释掉的 `rembg` 服务
+ * - scripts/run-rembg-local.sh、scripts/warmup-rembg.mjs
+ * - scripts/measure-matting-throughput.mjs、scripts/diagnose-matting-perf.mjs、scripts/diagnose-ort-memory.py
+ * - docs/OPEN_SOURCE_MATTING.md
+ * - package.json 的 `dev:rembg` 与 `warmup:rembg`
+ *
+ * 保留原因：它记录了 BiRefNet 的推理性能、线程数与常驻内存实测数据，做模型对比时仍有参考价值。
+ *
+ * 它已经不在主链路上：processor.ts 不再 import 本文件，配置里也没有 rembg 相关开关，
+ * 生产与本地开发都不会走到这里。这是一段独立实现，必须显式传入 url 才会工作。
+ * 改动抠图行为请改 apps/worker/src/matting-tencent-ci.ts。
+ */
+
 import sharp from 'sharp';
 
-export type MattingDriver = 'rembg' | 'passthrough';
-
 export interface MattingOptions {
-  driver: MattingDriver;
   url: string;
   model: string;
   timeoutMs: number;
@@ -71,12 +89,15 @@ async function normalizeTransparentPng(input: Buffer, expectedWidth: number, exp
   }
   if (!metadata.hasAlpha) throw new Error('抠图结果缺少透明通道');
 
+  // 注意：不要改用 extractChannel('alpha') + stats() 来省一次通道统计。
+  // 当前 sharp 版本下 extractChannel 不会被 stats() 采纳，仍然返回全部通道，
+  // channels[0] 会取到红色通道，导致下面两项校验被静默跳过。
   const statistics = await sharp(input, { limitInputPixels: maxPixels }).stats();
   const alpha = statistics.channels[3];
   if (!alpha || alpha.min >= 255) throw new Error('抠图结果没有透明背景');
   if (alpha.max <= 0) throw new Error('抠图结果没有可见主体');
 
-  return sharp(input, { limitInputPixels: maxPixels }).png({ compressionLevel: 9 }).toBuffer();
+  return sharp(input, { limitInputPixels: maxPixels }).png({ compressionLevel: 6 }).toBuffer();
 }
 
 export function createBackgroundRemover(options: MattingOptions, fetchImpl: FetchLike = fetch) {
@@ -84,10 +105,6 @@ export function createBackgroundRemover(options: MattingOptions, fetchImpl: Fetc
 
   return (input: Buffer) =>
     limiter.run(async () => {
-      if (options.driver === 'passthrough') {
-        throw new Error('自动抠图未启用，可以保留裁剪图');
-      }
-
       let inputMetadata: sharp.Metadata;
       try {
         inputMetadata = await sharp(input, { limitInputPixels: options.maxImagePixels }).metadata();

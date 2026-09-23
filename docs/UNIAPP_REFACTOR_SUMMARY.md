@@ -2,6 +2,8 @@
 
 > 整理日期：2026-09-17
 > 当前阶段：代码架构与第一版业务流程已落地，可构建微信小程序开发版本；腾讯云、微信后台和生产服务器仍需使用正式配置完成联调与验收。
+>
+> **后续变更（2026-09-21，2026-09-22 修订）**：抠图已从自托管 rembg/BiRefNet 改为**腾讯云数据万象**，主链路只走万象；接口先从「商品抠图 GoodsMatting」切到当前的「通用抠图 AIPicMatting」（0.02 元/次，理由见方案文档 7.2 节）。本文中所有把 rembg 当作运行组件或部署前置条件的表述（第 2、6、9、10、11 节）都已过时，现行方案见 [腾讯云数据万象抠图实施方案](TENCENT_CI_MATTING.md)。以下历史描述保留原文以便对照。
 
 ## 1. 本次方向调整
 
@@ -85,7 +87,7 @@ VITE_API_BASE_URL=https://api.example.com/api \
 
 收藏详情分包 `package-library`：
 
-- `pages/detail/index`：查看、编辑、移动、重新裁剪、重试抠图、保留裁剪图和删除。
+- `pages/detail/index`：查看、编辑、移动和删除。
 
 设置分包 `package-settings`：
 
@@ -107,7 +109,7 @@ VITE_API_BASE_URL=https://api.example.com/api \
 
 - `src/services/http.ts`：请求、登录、刷新和错误处理。
 - `src/services/data.ts`：展示架、收藏、上传和任务 API。
-- `src/services/cache.ts`：首页和收藏列表只读缓存。
+- `src/services/auth-storage.ts`：仅持久化登录令牌。
 - `src/config.ts`：通过 `VITE_API_BASE_URL` 注入 API 地址。
 
 ### 3.4 图片流程
@@ -128,11 +130,7 @@ VITE_API_BASE_URL=https://api.example.com/api \
 UPLOADING → NORMALIZING → AWAITING_CROP → MATTING → READY / FAILED
 ```
 
-失败时支持：
-
-- 自动重试两次。
-- 用户手动重试抠图。
-- 保留裁剪图，不强制等待抠图成功。
+图片处理只执行一次。失败时记录真实错误，不生成备用展示图；小程序只允许删除失败记录并退出当前创建流程。
 
 ## 4. API 与身份隔离
 
@@ -166,8 +164,6 @@ POST   /api/collectibles
 GET    /api/collectibles/:id
 PATCH  /api/collectibles/:id
 POST   /api/collectibles/:id/crop
-POST   /api/collectibles/:id/retry
-POST   /api/collectibles/:id/keep-crop
 DELETE /api/collectibles/:id
 ```
 
@@ -186,7 +182,6 @@ GET  /api/processing-jobs/:id
 POST /api/admin/login
 GET  /api/admin/overview
 GET  /api/admin/jobs
-POST /api/admin/jobs/:id/retry
 ```
 
 健康检查：
@@ -340,7 +335,7 @@ Docker 镜像仍需由 GitHub Actions 或本机 Docker 完成实际构建验证�
 - 在实体 iPhone 与 Android 微信分别完成完整流程测试。
 - 使用两个微信账号验证用户数据和图片签名 URL 隔离。
 - 使用同一个微信账号在两台设备验证云端恢复。
-- 在 500 件收藏下验证分页、首屏、缓存、低内存恢复和包体积。
+- 在 500 件收藏下验证分页、首屏、低内存恢复和包体积。
 - 人工提交微信审核并发布正式版本。
 
 ## 11. 推荐的下一步执行顺序

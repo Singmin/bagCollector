@@ -23,7 +23,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        target: [api, worker, admin, rembg]
+        # 抠图已切换到腾讯云数据万象，不再构建 rembg 镜像。详见 docs/TENCENT_CI_MATTING.md。
+        target: [api, worker, admin]
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -71,5 +72,4 @@ jobs:
             export API_IMAGE="${{ needs.prepare.outputs.registry }}/bagcollect-api:${{ github.sha }}"
             export WORKER_IMAGE="${{ needs.prepare.outputs.registry }}/bagcollect-worker:${{ github.sha }}"
             export ADMIN_IMAGE="${{ needs.prepare.outputs.registry }}/bagcollect-admin:${{ github.sha }}"
-            export REMBG_IMAGE="${{ needs.prepare.outputs.registry }}/bagcollect-rembg:${{ github.sha }}"
             sh infra/deploy.sh

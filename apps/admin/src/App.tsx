@@ -90,15 +90,6 @@ export function App() {
     }
   }
 
-  async function retry(id: string) {
-    try {
-      await api(`/jobs/${id}/retry`, { method: 'POST' });
-      await load();
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : '重试失败');
-    }
-  }
-
   if (!token) {
     return (
       <main className="login-shell">
@@ -135,17 +126,16 @@ export function App() {
         <div className="panel-heading"><div><p className="eyebrow">PROCESSING QUEUE</p><h2>最近图片任务</h2></div><span>{jobs.length} 条</span></div>
         <div className="table-wrap">
           <table>
-            <thead><tr><th>收藏</th><th>任务</th><th>状态</th><th>尝试</th><th>时间</th><th></th></tr></thead>
+            <thead><tr><th>收藏</th><th>任务</th><th>状态</th><th>尝试</th><th>时间</th></tr></thead>
             <tbody>
               {jobs.map((job) => (
                 <tr key={job.id}>
                   <td><strong>{job.collectible.name}</strong>{job.errorMessage && <small>{job.errorMessage}</small>}</td>
                   <td>{job.type}</td><td><span className={`status status--${job.status.toLowerCase()}`}>{job.status}</span></td>
                   <td>{job.attemptCount}</td><td>{new Date(job.createdAt).toLocaleString('zh-CN')}</td>
-                  <td>{job.status === 'FAILED' && <button className="retry" onClick={() => void retry(job.id)}>重试</button>}</td>
                 </tr>
               ))}
-              {!jobs.length && <tr><td colSpan={6} className="empty">暂无任务</td></tr>}
+              {!jobs.length && <tr><td colSpan={5} className="empty">暂无任务</td></tr>}
             </tbody>
           </table>
         </div>

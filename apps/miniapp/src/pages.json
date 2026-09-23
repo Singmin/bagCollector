@@ -7,10 +7,10 @@
     {
       "root": "package-editor",
       "pages": [
-        { "path": "pages/add/index" },
+        { "path": "pages/add/index", "style": { "navigationStyle": "custom", "disableScroll": true } },
         { "path": "pages/crop/index", "style": { "disableScroll": true } },
-        { "path": "pages/processing/index" },
-        { "path": "pages/metadata/index" }
+        { "path": "pages/processing/index", "style": { "navigationBarTitleText": "自动抠图" } },
+        { "path": "pages/metadata/index", "style": { "navigationBarTitleText": "完善纸袋信息" } }
       ]
     },
     { "root": "package-library", "pages": [{ "path": "pages/detail/index" }] },
@@ -20,15 +20,18 @@
     }
   ],
   "globalStyle": {
-    "navigationStyle": "custom",
-    "backgroundColor": "#f2eee6",
+    "navigationStyle": "default",
+    "navigationBarTitleText": "袋袋集",
+    "navigationBarBackgroundColor": "#f2f3f7",
+    "navigationBarTextStyle": "black",
+    "backgroundColor": "#f2f3f7",
     "backgroundTextStyle": "dark"
   },
   "tabBar": {
     "custom": true,
-    "color": "#777064",
-    "selectedColor": "#211f1c",
-    "backgroundColor": "#fffdf8",
+    "color": "#9d9890",
+    "selectedColor": "#141414",
+    "backgroundColor": "#f2f3f7",
     "list": [
       { "pagePath": "pages/showcase/index", "text": "陈列" },
       { "pagePath": "pages/library/index", "text": "全部收藏" }

@@ -1,80 +1,994 @@
 <script setup lang="ts">
-import { ref } from 'vue';
-import { onPullDownRefresh, onReachBottom, onShow, onUnload } from '@dcloudio/uni-app';
-import CollectibleCard from '../../components/CollectibleCard.vue';
-import EmptyState from '../../components/EmptyState.vue';
-import type { Collectible, Shelf } from '../../types';
-import { readCache, writeCache } from '../../services/cache';
+import { computed, ref } from 'vue';
+import { onHide, onPullDownRefresh, onReachBottom, onShow } from '@dcloudio/uni-app';
+import type { Collectible, CollectibleSummary, Shelf } from '../../types';
 import { dataService } from '../../services/data';
+import { collectionRevision, shouldRefreshCollection } from '../../services/collection-state';
+import { daysAgoText, formattedDate } from '../../services/format';
+import { resolveCollectibleThumbnail } from '../../services/images';
+import { maskPageChrome } from '../../services/overlay';
+import { syncTabBar, setTabBarMasked } from '../../services/tab-bar';
+
+interface ShelfGroup extends Shelf { items: CollectibleSummary[] }
 
 const loading = ref(true);
+const initialized = ref(false);
+const refreshing = ref(false);
+const loadError = ref('');
 const loadingMore = ref(false);
-const search = ref('');
-const activeShelf = ref('');
 const nextCursor = ref<string | null>(null);
 const shelves = ref<Shelf[]>([]);
-const items = ref<Collectible[]>([]);
+const items = ref<CollectibleSummary[]>([]);
+const totalCount = ref(0);
+const thumbnailUrls = ref<Record<string, string>>({});
+const failedThumbnails = ref<Record<string, boolean>>({});
+const displayMode = ref<'shelf' | 'grid'>('shelf');
+/* 搜索分两个值：
+   - searchText 是输入框里的原文，随每次击键更新，只喂给界面；
+   - keyword 是防抖后真正生效、并且会进请求的搜索词。
+   分开是为了「打字时不必等接口，但也不按每个字符发一次请求」。 */
+const searchText = ref('');
+const keyword = ref('');
+const hasSearch = computed(() => keyword.value.length > 0);
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
+let loadedAt = 0;
+let loadedRevision = -1;
+let refreshPromise: Promise<void> | undefined;
+
+const groups = computed<ShelfGroup[]>(() => {
+  return shelves.value.map((shelf) => ({
+    ...shelf,
+    items: items.value.filter((item) => item.shelfId === shelf.id)
+  })).filter((group) => group.items.length);
+});
 
 function query(cursor?: string) {
   const params = ['limit=30'];
-  if (search.value.trim()) params.push(`search=${encodeURIComponent(search.value.trim())}`);
-  if (activeShelf.value) params.push(`shelfId=${encodeURIComponent(activeShelf.value)}`);
+  if (keyword.value) params.push(`search=${encodeURIComponent(keyword.value)}`);
   if (cursor) params.push(`cursor=${encodeURIComponent(cursor)}`);
   return params.join('&');
 }
 
-async function load(force = false) {
-  const cached = readCache<{ items: Collectible[]; shelves: Shelf[] }>('library');
-  if (cached && !force) { items.value = cached.items; shelves.value = cached.shelves; loading.value = false; }
-  try {
-    const [page, nextShelves] = await Promise.all([dataService.collectibles(query()), dataService.shelves()]);
-    items.value = page.items; shelves.value = nextShelves; nextCursor.value = page.nextCursor; loading.value = false;
-    writeCache('library', { items: page.items, shelves: nextShelves });
-  } catch {
-    if (!cached) uni.showToast({ title: '加载失败', icon: 'none' });
-    loading.value = false;
+function assertRenderable(nextItems: CollectibleSummary[], nextShelves: Shelf[]) {
+  const shelfIds = new Set(nextShelves.map((shelf) => shelf.id));
+  for (const item of nextItems) {
+    if (!shelfIds.has(item.shelfId)) throw new Error(`收藏“${item.name}”的展示架不存在`);
   }
 }
 
+function hydrateThumbnails(nextItems: CollectibleSummary[]) {
+  for (const item of nextItems) {
+    void resolveCollectibleThumbnail(item).then((url) => {
+      if (!url || !items.value.some((current) => current.id === item.id && current.updatedAt === item.updatedAt)) return;
+      thumbnailUrls.value[item.id] = url;
+      delete failedThumbnails.value[item.id];
+    }).catch(() => {
+      failedThumbnails.value[item.id] = true;
+    });
+  }
+}
+
+function load(force = false) {
+  if (refreshPromise) return refreshPromise;
+  if (!force && initialized.value && !shouldRefreshCollection(loadedAt, loadedRevision)) return Promise.resolve();
+  const requestRevision = collectionRevision();
+  if (initialized.value) refreshing.value = true;
+  else loading.value = true;
+  loadError.value = '';
+  refreshPromise = (async () => {
+    try {
+      const [page, nextShelves] = await Promise.all([dataService.collectibles(query()), dataService.shelves()]);
+      assertRenderable(page.items, nextShelves);
+      items.value = page.items;
+      shelves.value = nextShelves;
+      nextCursor.value = page.nextCursor;
+      totalCount.value = page.totalCount;
+      initialized.value = true;
+      loadedAt = Date.now();
+      loadedRevision = requestRevision;
+      hydrateThumbnails(page.items);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '全部收藏加载失败';
+      if (initialized.value) uni.showToast({ title: message, icon: 'none' });
+      else loadError.value = message;
+    } finally {
+      loading.value = false;
+      refreshing.value = false;
+    }
+  })().finally(() => { refreshPromise = undefined; });
+  return refreshPromise;
+}
+
 async function loadMore() {
-  if (!nextCursor.value || loadingMore.value) return;
+  if (refreshPromise || !nextCursor.value || loadingMore.value) return;
   loadingMore.value = true;
   try {
     const page = await dataService.collectibles(query(nextCursor.value));
+    assertRenderable(page.items, shelves.value);
     const known = new Set(items.value.map((item) => item.id));
-    items.value = [...items.value, ...page.items.filter((item) => !known.has(item.id))];
+    const added = page.items.filter((item) => !known.has(item.id));
+    items.value = [...items.value, ...added];
     nextCursor.value = page.nextCursor;
-    writeCache('library', { items: items.value, shelves: shelves.value });
-  } catch { uni.showToast({ title: '加载更多失败', icon: 'none' }); }
-  finally { loadingMore.value = false; }
+    totalCount.value = page.totalCount;
+    hydrateThumbnails(added);
+  } catch (error) {
+    uni.showToast({ title: error instanceof Error ? error.message : '加载更多失败', icon: 'none' });
+  } finally {
+    loadingMore.value = false;
+  }
 }
 
-function searchChanged(event: any) {
-  search.value = event.detail.value;
+/* ── 详情卡：轻点某一件收藏，原地弹出（对齐 H5 的 .detail-card）──
+   原先是跳 package-library/pages/detail；改成浮层后，看信息不必离开收藏架。
+   列表接口只给摘要，标签 / 备注 / 大图要补拉一次详情 —— 打开先用摘要把
+   卡片画出来（名字、品牌、日期都在摘要里），详情回来后再补标签与备注，
+   拉失败就静默降级（卡片照常可看可关），不打断浏览。 */
+const detailItem = ref<CollectibleSummary | null>(null);
+const detailData = ref<Collectible | null>(null);
+const detailArtwork = ref('');
+const detailLoading = ref(false);
+/* 详情缓存按「id + updatedAt」存：收藏被改名/换架后 updatedAt 会变，
+   旧缓存自然失效，不会在卡片里显示上一次的内容。 */
+const detailCache = new Map<string, Collectible>();
+/* 连点不同袋子时，先发的详情请求可能后到 —— 用序号丢弃过期的响应。 */
+let detailToken = 0;
+
+/* ── 编辑态：卡片原地从「看」切成「改」（对齐 H5 的 .detail-card.is-editing）──
+   H5 是给卡片挂一个 .is-editing，靠一组规则把图区收小、只读区隐藏、表单展开、
+   按钮从 [编辑][完成] 换成 [取消][保存]；这里用 editing 做同一套切换。
+
+   表单字段按我们真实的数据给，没有照抄 H5 的那五行：
+     · 只读条三格 = 编号 / 收藏日期 / 入库时长。H5 中间那格是「上传地点」，
+       我们库里根本没有这个字段（添加入口也没采集），直接去掉；
+     · 可编辑四行 = 名称 / 品牌·店铺 / 标签 / 备注。H5 的「收藏日期」不进表单 ——
+       更新接口只收 name / notes / tags / shelfId，改不了 addedAt，
+       要放进来得先动 contracts + api，这一版不做。 */
+const editing = ref(false);
+const saving = ref(false);
+const editName = ref('');
+const editShelf = ref('');
+const editTags = ref<string[]>([]);
+const editTagDraft = ref('');
+const editNote = ref('');
+/* 下划线变红用「聚焦类」而不是 :focus —— 小程序端 input / textarea 的 :focus
+   不可靠，H5 那套 .ef-input:focus 直接搬过来多半不生效，改由 focus/blur 切类。 */
+const focusedField = ref('');
+const editNameFocused = ref(false);
+/* 品牌输入框写的名字不在已有展示架里 → 保存时会新建一个（H5 的「＋ 新建品牌」）。
+   我们不用浮层下拉：卡片内容在 scroll-view 里，绝对定位的面板会被裁掉，
+   改成输入框下面一行提示，效果一样且不会被裁。 */
+const editShelfIsNew = computed(() => {
+  const name = editShelf.value.trim();
+  return Boolean(name) && !shelves.value.some((shelf) => shelf.name === name);
+});
+
+const detailNo = computed(() => (detailItem.value ? collectibleNo(detailItem.value) : ''));
+const detailTags = computed(() => detailData.value?.tags ?? []);
+const detailNote = computed(() => detailData.value?.notes?.trim() ?? '');
+const detailFacts = computed(() => {
+  const item = detailItem.value;
+  if (!item) return [];
+  return [
+    { label: '品牌 / 店铺', value: item.shelfName },
+    { label: '收藏日期', value: formattedDate(item.addedAt) },
+    { label: '入库时长', value: daysAgoText(item.addedAt) },
+    { label: '编号', value: detailNo.value }
+  ].filter((row) => row.value);
+});
+
+/* 编号：对齐 H5 的 NO.003。后端没有 no 字段，用「总数 − 倒序下标」倒推
+   （列表按 addedAt desc 返回）。注意两点：删除收藏会让后续编号前移；
+   带搜索词时下标是筛选后的位置，编号会偏大 —— 与首页卡背面同一套口径，
+   等后端补上 no 字段后两处一起改成直读。 */
+function collectibleNo(item: CollectibleSummary) {
+  if (!totalCount.value) return '';
+  const index = items.value.findIndex((current) => current.id === item.id);
+  if (index < 0) return '';
+  return `NO.${String(Math.max(1, totalCount.value - index)).padStart(3, '0')}`;
+}
+
+/* 补拉详情（标签 / 备注 / 大图）。返回 null 表示这次没拿到。
+   打开卡片的「先画后用详情补」和点「编辑」前的「必须拿到才能进表单」都走这里，
+   两处只有「拿不到怎么办」不同，取数逻辑别再写第二遍。 */
+async function loadDetail(item: CollectibleSummary) {
+  const cacheKey = `${item.id}:${item.updatedAt}`;
+  const cached = detailCache.get(cacheKey);
+  if (cached) return cached;
+  const token = ++detailToken;
+  try {
+    const detail = await dataService.collectible(item.id);
+    detailCache.set(cacheKey, detail);
+    /* 序号或目标藏品对不上说明用户已经换了一张（或关了卡片），这份就当没取过 */
+    if (token !== detailToken || detailItem.value?.id !== item.id) return detail;
+    detailData.value = detail;
+    if (detail.displayImageUrl) detailArtwork.value = detail.displayImageUrl;
+    detailLoading.value = false;
+    return detail;
+  } catch {
+    if (token === detailToken) {
+      detailLoading.value = false;
+      uni.showToast({ title: '标签与备注加载失败', icon: 'none' });
+    }
+    return null;
+  }
+}
+
+function open(item: CollectibleSummary) {
+  const cached = detailCache.get(`${item.id}:${item.updatedAt}`);
+  detailItem.value = item;
+  detailData.value = cached ?? null;
+  /* 大图先用列表已下好的缩略图顶着（秒出），详情回来再换 displayImageUrl */
+  detailArtwork.value = thumbnailUrls.value[item.id] ?? '';
+  detailLoading.value = !cached;
+  editing.value = false;
+  /* 底栏与原生导航栏在页面之外，遮罩盖不到，交给 maskPageChrome 一起蒙上 */
+  maskPageChrome(true);
+  if (!cached) void loadDetail(item);
+}
+
+function closeDetail() {
+  detailToken += 1;
+  if (detailItem.value) maskPageChrome(false);
+  detailItem.value = null;
+  detailData.value = null;
+  detailArtwork.value = '';
+  detailLoading.value = false;
+  editing.value = false;
+  saving.value = false;
+  editNameFocused.value = false;
+  focusedField.value = '';
+}
+
+/* ── 进 / 出编辑态 ──
+   表单里要填标签与备注，而列表摘要里没有这两样：详情还没回来就先去取一份，
+   取不到就不进编辑态 —— 否则一保存会把标签和备注一起清空（这是最贵的一种失手）。 */
+async function startEdit() {
+  const item = detailItem.value;
+  if (!item) return;
+  const detail = detailData.value ?? await loadDetail(item);
+  if (!detail) return void uni.showToast({ title: '标签与备注还没读出来，稍后再试', icon: 'none' });
+  if (detailItem.value?.id !== item.id) return;
+  editName.value = detail.name;
+  editShelf.value = detail.shelfName;
+  editTags.value = [...detail.tags];
+  editTagDraft.value = '';
+  editNote.value = detail.notes ?? '';
+  focusedField.value = '';
+  editing.value = true;
+  /* H5 也是「等切换的样式落定再聚焦」（它等 140ms），
+     立刻聚焦会在布局变化中途触发滚动，卡片会先跳一下。 */
+  setTimeout(() => { if (editing.value) editNameFocused.value = true; }, 150);
+}
+
+/* 退出编辑态：不写回任何值，表单内容丢弃（H5 的 exitDetailEdit 同样这么做） */
+function cancelEdit() {
+  commitTags();
+  editTags.value = [];
+  editTagDraft.value = '';
+  editNameFocused.value = false;
+  focusedField.value = '';
+  editing.value = false;
+}
+
+/* 「名称 / 品牌 / 备注」三个输入框共用一个取值写法：
+   vue-tsc 拿的是 HTML <input> 的类型，参数标成 uni 的 { detail: { value } }
+   会被判成「与 Event 无交集」，只能按 Event 收再自己取 detail.value。 */
+function inputValue(event: Event) {
+  return (event as unknown as { detail?: { value?: string } }).detail?.value ?? '';
+}
+
+function onEditNameInput(event: Event) { editName.value = inputValue(event); }
+function onEditShelfInput(event: Event) { editShelf.value = inputValue(event); }
+function onEditNoteInput(event: Event) { editNote.value = inputValue(event); }
+
+/* 标签输入：打字期间**不**按空格切分。
+   小程序的 input 没有 compositionstart / end，中文输入法下「空格」是在选字，
+   边打边切会把「霸王茶姬」断成两个标签（H5 专门写了 composition 守卫处理这件事）。
+   分词改在回车 / 失焦 / 保存这几个时点做 —— 粘贴进来的「茶饮 国风」照样拆成两个。 */
+function onTagInput(event: Event) { editTagDraft.value = inputValue(event); }
+
+function commitTags() {
+  const parts = editTagDraft.value.split(/[\s,，、;；]+/)
+    .map((tag) => tag.trim().slice(0, 12))
+    .filter(Boolean);
+  if (parts.length) {
+    const next = [...editTags.value];
+    for (const tag of parts) if (!next.includes(tag)) next.push(tag);
+    editTags.value = next.slice(0, 30);
+  }
+  editTagDraft.value = '';
+}
+
+function removeTag(tag: string) {
+  editTags.value = editTags.value.filter((current) => current !== tag);
+}
+
+/* 保存成功后把改动铺回三处，不然卡片、列表、展架件数会各说各话。 */
+function applyUpdated(updated: Collectible) {
+  const previous = detailItem.value;
+  if (previous) {
+    /* 旧缓存键跟着 updatedAt 走，改完就失效了，顺手清掉别留在 Map 里 */
+    detailCache.delete(`${previous.id}:${previous.updatedAt}`);
+    detailItem.value = {
+      ...previous,
+      name: updated.name,
+      shelfId: updated.shelfId,
+      shelfName: updated.shelfName,
+      updatedAt: updated.updatedAt
+    };
+    /* 换了展示架就按差值挪件数。这里不用「本地重算」：items 只装了已加载的那几页，
+       重算会把没加载到的收藏漏掉，件数越用越小。 */
+    if (previous.shelfId !== updated.shelfId) {
+      shelves.value = shelves.value.map((shelf) => {
+        if (shelf.id === previous.shelfId) return { ...shelf, itemCount: Math.max(0, shelf.itemCount - 1) };
+        if (shelf.id === updated.shelfId) return { ...shelf, itemCount: shelf.itemCount + 1 };
+        return shelf;
+      });
+    }
+  }
+  detailCache.set(`${updated.id}:${updated.updatedAt}`, updated);
+  detailData.value = updated;
+  /* 列表里的摘要也要跟着改：宫格 / 展架两套视图、还有分组都读它。
+     shelfId 一动，这件收藏在新展示架的分组里就自动出现了（groups 是按 shelfId 现算的）。 */
+  items.value = items.value.map((current) => (current.id === updated.id
+    ? { ...current, name: updated.name, shelfId: updated.shelfId, shelfName: updated.shelfName, updatedAt: updated.updatedAt }
+    : current));
+}
+
+async function saveEdit() {
+  const item = detailItem.value;
+  if (!item || saving.value) return;
+  /* 输入框里可能还留着没敲回车的半截词，保存时一并收走（H5 的 commitTagsFromInput），
+     否则「打了字直接点保存」这个词会静默丢掉 */
+  commitTags();
+  const name = editName.value.trim();
+  if (!name) return void uni.showToast({ title: '请填写收藏名称', icon: 'none' });
+  /* 品牌清空则回落到原展示架：H5 同样这么做，避免误删之后整条收藏挂到空分组下 */
+  const shelfName = editShelf.value.trim() || item.shelfName;
+  const tags = [...editTags.value];
+  const notes = editNote.value.trim();
+  saving.value = true;
+  try {
+    let shelf = shelves.value.find((current) => current.name === shelfName);
+    if (!shelf) {
+      /* 写的是新品牌 → 建一个（后端 Shelf 有 @@unique([userId, name])，所以先按名字找、
+         找不到才建，重复建会直接 500）。主题给默认的 SAGE，颜色可在设置里改。 */
+      shelf = await dataService.createShelf({ name: shelfName, theme: 'SAGE' });
+      shelves.value = [...shelves.value, shelf];
+    }
+    const updated = await dataService.updateCollectible(item.id, { name, notes, tags, shelfId: shelf.id });
+    applyUpdated(updated);
+    editNameFocused.value = false;
+    focusedField.value = '';
+    editing.value = false;
+    /* H5 保存后是「退回详情态」而不是关掉卡片，让用户直接看见改完的结果 */
+    uni.showToast({ title: `“${name}”已更新`, icon: 'none' });
+  } catch (error) {
+    uni.showToast({ title: error instanceof Error ? error.message : '保存失败', icon: 'none' });
+  } finally {
+    saving.value = false;
+  }
+}
+
+/* 遮罩上吞掉 touchmove：页面在浮层后面不再跟着手指滚 */
+function blockScroll() {}
+
+/* 底栏护垫（.tab-shield）的 tap 处理：故意什么都不做 ——
+   它存在的唯一意义就是把「穿透下来的点击」接住，别让它落到收藏卡上。 */
+function swallowTabBarTap() {}
+
+function add() {
+  uni.navigateTo({ url: '/package-editor/pages/add/index' });
+}
+
+function toggleMode() {
+  displayMode.value = displayMode.value === 'shelf' ? 'grid' : 'shelf';
+}
+
+/* 生效搜索词并重取第一页。keyword 没变就直接返回 ——
+   否则输入框「打完最后一个字」和「回车」会各触发一次同样的请求。 */
+function applySearch(value: string) {
+  const next = value.trim();
+  if (next === keyword.value) return;
+  keyword.value = next;
+  void load(true);
+}
+
+/* 事件按原生 Event 收参：vue-tsc 拿的是 HTML <input> 的类型，
+   直接把参数标成 uni 的 { detail: { value } } 会被判成「与 Event 无交集」。
+   运行时（小程序/uni 的 input）detail.value 一定在，取不到就当空串，等价于清空。 */
+function onSearchInput(event: Event) {
+  searchText.value = (event as unknown as { detail?: { value?: string } }).detail?.value ?? '';
   if (searchTimer) clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => void load(true), 350);
+  searchTimer = setTimeout(() => applySearch(searchText.value), 300);
 }
 
-onShow(() => void load());
-onUnload(() => { if (searchTimer) clearTimeout(searchTimer); });
+function clearSearch() {
+  if (searchTimer) clearTimeout(searchTimer);
+  searchText.value = '';
+  applySearch('');
+}
+
+onShow(() => {
+  syncTabBar(1);
+  /* 底栏的蒙层态无条件复位：它由 services/tab-bar.ts 写到「当时的当前页」那份实例上，
+     切页时可能落到别处，本页的底栏就会一直留着蒙层 —— 蒙着的时候底栏不接手势，
+     点它直接穿透到页面上（表现就是「点底栏弹出详情卡」）。回到本页先复位最省事。 */
+  setTabBarMasked(false);
+  if (!initialized.value || shouldRefreshCollection(loadedAt, loadedRevision)) void load();
+});
+/* 页面被切走（跳编辑页、切 tab）时收起浮层，回来不会还压着一层 */
+onHide(() => closeDetail());
 onReachBottom(() => void loadMore());
 onPullDownRefresh(() => void load(true).finally(() => uni.stopPullDownRefresh()));
-function add() { uni.navigateTo({ url: '/package-editor/pages/add/index' }); }
 </script>
 
 <template>
-  <view class="page library-page">
-    <view class="header"><text class="eyebrow">THE FULL ARCHIVE</text><text class="display-title">全部收藏</text><text class="intro">把喜欢的东西，留在看得见的地方。</text></view>
-    <view class="search-box"><text>⌕</text><input :value="search" placeholder="搜索名称或标签" confirm-type="search" @input="searchChanged" /><button v-if="search" @tap="search = ''; load(true)">×</button></view>
-    <scroll-view class="filters" scroll-x :show-scrollbar="false"><view class="filter-row"><button class="filter" :class="{ 'is-active': !activeShelf }" @tap="activeShelf = ''; load(true)">全部</button><button v-for="shelf in shelves" :key="shelf.id" class="filter" :class="{ 'is-active': activeShelf === shelf.id }" @tap="activeShelf = shelf.id; load(true)">{{ shelf.name }}</button></view></scroll-view>
-    <text class="count">已加载 {{ items.length }} 件</text>
-    <view v-if="items.length" class="grid"><CollectibleCard v-for="item in items" :key="item.id" :item="item" /></view>
-    <EmptyState v-else-if="!loading" title="没有找到收藏" description="换一个名称或标签试试，或者添加一件新收藏。" action="添加收藏" @action="add" />
+  <view class="library-page">
+    <!-- 头部：大标题在上、副文案在下，右侧是「宫格 / 展架」切换钮（玻璃托底）。
+         版式对齐 H5 原型的 .bags-header —— 和首页**逐条同尺寸**（标题 69rpx / 副文案 EmDesc /
+         托底 padding 16/22/13rpx + 图标 44rpx + 文字 Footnote 24rpx），改一处要同步首页。
+         ⚠ 这里不做骨架屏（首页也没有）：标题是静态文案，拿白色占位块顶一下的话，
+         从首页切过来会先闪一块白再换成文字（用户 2026-09-24 报过「先白再展示」）。 -->
+    <view v-if="!loadError && (!initialized || items.length || hasSearch)" class="library-header">
+      <view class="library-copy">
+        <text class="library-title">全部收藏</text>
+        <!-- 计数要等接口，首屏先不写「0 件收藏」——那一行的高度由 .library-copy 的
+             min-height 占着，数字回来时下面的搜索框不会往上跳。 -->
+        <text v-if="initialized" class="library-summary">{{ totalCount }} 件收藏 · {{ groups.length }} 个展示架</text>
+      </view>
+      <button class="mode-button" :aria-label="displayMode === 'shelf' ? '切换为宫格展示' : '切换为展架展示'" @tap="toggleMode">
+        <image :src="displayMode === 'shelf' ? '/static/figma/grid.svg' : '/static/figma/shelf.svg'" mode="aspectFit" />
+        <text>{{ displayMode === 'shelf' ? '宫格' : '展架' }}</text>
+      </button>
+    </view>
+
+    <view v-else-if="!loading && !loadError" class="empty-header">
+      <view class="empty-header-main">
+        <text class="empty-header-title">袋袋集</text>
+        <text class="empty-header-subtitle">收集每一个纸袋的故事</text>
+      </view>
+      <view class="empty-header-count">
+        <text class="empty-header-title">0</text>
+        <text class="empty-header-subtitle">最近收藏(件)</text>
+      </view>
+    </view>
+
+    <view v-if="initialized && !loadError" class="search-box">
+      <image class="search-icon" src="/static/figma/search.svg" mode="aspectFit" />
+      <input
+        class="search-input"
+        :value="searchText"
+        type="text"
+        confirm-type="search"
+        placeholder="搜索名称 / 品牌 / 标签"
+        placeholder-class="search-placeholder"
+        @input="onSearchInput"
+        @confirm="applySearch(searchText)"
+      />
+      <text v-if="searchText" class="search-clear" @tap="clearSearch">×</text>
+    </view>
+
+    <view v-if="loading && !initialized" class="shelf-list skeleton-list">
+      <view v-for="index in 2" :key="index" class="skeleton-shelf">
+        <view class="skeleton-text skeleton-text--shelf" />
+        <view class="skeleton-items">
+          <view v-for="item in 4" :key="item" class="skeleton-item" />
+        </view>
+        <view class="skeleton-board" />
+      </view>
+    </view>
+
+    <view v-else-if="loadError" class="load-error">{{ loadError }}</view>
+
+    <!-- 搜索无结果：H5 的「没有结果」水印大字 + 副文案 + 一个回到全部收藏的入口 -->
+    <view v-else-if="!items.length && hasSearch" class="search-empty">
+      <text class="search-empty__mark">没有结果</text>
+      <text class="search-empty__sub">没有匹配「{{ keyword }}」的收藏，换个词试试</text>
+      <text class="search-empty__reset" @tap="clearSearch">清空搜索</text>
+    </view>
+
+    <view v-else-if="!items.length && initialized" class="library-empty">
+      <image class="frame85-background" src="/static/figma/indexBg.svg" mode="scaleToFill" />
+      <image class="empty-illustration" src="/static/figma/empty-bag.png" mode="aspectFit" />
+      <view class="library-empty-copy">
+        <text class="empty-title">暂无纸袋记录</text>
+        <text class="empty-description">每一个纸袋都有故事，期待你的记录</text>
+      </view>
+    </view>
+
+    <view v-else-if="displayMode === 'shelf'" class="shelf-list">
+      <view v-for="group in groups" :key="group.id" class="shelf-group">
+        <view class="shelf-heading">
+          <text class="shelf-name">{{ group.name }}</text>
+          <view class="shelf-hint">
+            <text class="shelf-hint__count">共{{ group.items.length }}件</text>
+            <text class="shelf-hint__arrows">‹ ›</text>
+          </view>
+        </view>
+        <scroll-view class="shelf-scroll" scroll-x :show-scrollbar="false">
+          <view class="shelf-items">
+            <button v-for="item in group.items" :key="item.id" class="shelf-item" @tap="open(item)">
+              <image
+                v-if="thumbnailUrls[item.id] && !failedThumbnails[item.id]"
+                class="shelf-image"
+                :src="thumbnailUrls[item.id]"
+                mode="aspectFit"
+                lazy-load
+                @error="failedThumbnails[item.id] = true"
+              />
+              <view v-else class="shelf-image-placeholder" />
+            </button>
+          </view>
+        </scroll-view>
+        <view class="acrylic-shelf" :class="`acrylic-shelf--${group.theme}`">
+          <view class="shelf-fastener shelf-fastener--left" />
+          <view class="shelf-fastener shelf-fastener--right" />
+        </view>
+      </view>
+    </view>
+
+    <view v-else class="collection-grid">
+      <button v-for="item in items" :key="item.id" class="grid-item" @tap="open(item)">
+        <view class="grid-glow" />
+        <image
+          v-if="thumbnailUrls[item.id] && !failedThumbnails[item.id]"
+          :src="thumbnailUrls[item.id]"
+          mode="aspectFit"
+          lazy-load
+          @error="failedThumbnails[item.id] = true"
+        />
+        <view v-else class="grid-image-placeholder" />
+      </button>
+    </view>
+
     <text v-if="loadingMore" class="page-loading">正在加载更多…</text>
+
+    <!-- 详情浮层：轻点收藏原地弹出（对齐 H5 的 .detail-card）。
+         三层结构照搬 H5：玻璃背景层 / 滚动内容层 / 固定按钮层 —— 按钮独立成层
+         才不会被内容滚走。 -->
+    <view v-if="detailItem" class="detail-layer">
+      <view class="detail-backdrop" @tap="closeDetail" @touchmove.stop.prevent="blockScroll" />
+      <view class="detail-card">
+        <view class="detail-glass">
+          <view class="detail-glow" />
+          <view class="detail-beam-glow" />
+          <view class="detail-beam" />
+        </view>
+
+        <!-- enhanced 必须开：微信的 show-scrollbar 属于「增强特性属性」，
+             只在 enhanced 为 true 时生效 —— 只写 show-scrollbar="false" 时
+             卡片右侧还是会冒出一条竖向滚动条 -->
+        <scroll-view class="detail-scroll" scroll-y enhanced :show-scrollbar="false">
+          <!-- 顶部大图：编辑态收成小预览（H5 编辑态把图区从 168 收到 128，
+               把省下的竖高让给输入框） -->
+          <view class="detail-artwork" :class="{ 'detail-artwork--editing': editing }">
+            <image v-if="detailArtwork" :src="detailArtwork" mode="aspectFit" />
+            <view v-else class="detail-artwork__placeholder" />
+          </view>
+
+          <!-- 只读区（详情态） -->
+          <view v-if="!editing">
+            <text v-if="detailNo" class="detail-eyebrow">{{ detailNo }}</text>
+            <text class="detail-name">{{ detailItem.name }}</text>
+            <text class="detail-brand">{{ detailItem.shelfName }}</text>
+            <view class="detail-divider" />
+            <view class="detail-facts">
+              <view v-for="row in detailFacts" :key="row.label" class="detail-facts__row">
+                <text class="detail-facts__key">{{ row.label }}</text>
+                <text class="detail-facts__value">{{ row.value }}</text>
+              </view>
+            </view>
+            <view v-if="detailTags.length" class="detail-tags">
+              <text v-for="tag in detailTags" :key="tag"># {{ tag }}</text>
+            </view>
+            <text v-if="detailNote" class="detail-note">{{ detailNote }}</text>
+            <text v-if="detailLoading && !detailTags.length && !detailNote" class="detail-loading">正在读取标签与备注…</text>
+          </view>
+
+          <!-- 编辑表单（H5 的 .detail-edit-form）：与只读区互斥，
+               版式走「下划线 · 纸感」—— 撤掉方框和底色，每个字段只留一条底线。 -->
+          <view v-else>
+            <!-- ① 只读条：值在上、名在下，三块两端对齐（首块靠左、末块靠右，
+                 中间那块吃掉剩余空间）。不可编辑的三项一次看完，不跟输入框混在一起。 -->
+            <view class="ef-readout">
+              <view class="ef-readout__cell ef-readout__cell--no">
+                <text class="ef-readout__v">{{ detailNo || '—' }}</text>
+                <text class="ef-readout__k">编号</text>
+              </view>
+              <view class="ef-readout__cell ef-readout__cell--mid">
+                <text class="ef-readout__v">{{ formattedDate(detailItem.addedAt) }}</text>
+                <text class="ef-readout__k">收藏日期</text>
+              </view>
+              <view class="ef-readout__cell ef-readout__cell--last">
+                <text class="ef-readout__v">{{ daysAgoText(detailItem.addedAt) }}</text>
+                <text class="ef-readout__k">入库时长</text>
+              </view>
+            </view>
+
+            <!-- ② 可编辑行：左标签 + 右值，值下面一条底线 -->
+            <view class="ef-row">
+              <text class="ef-key">名称</text>
+              <view class="ef-val">
+                <input
+                  class="ef-input"
+                  :class="{ 'is-focus': focusedField === 'name' }"
+                  :value="editName"
+                  :focus="editNameFocused"
+                  type="text"
+                  maxlength="24"
+                  placeholder="给它起个名字"
+                  placeholder-class="ef-placeholder"
+                  @input="onEditNameInput"
+                  @focus="focusedField = 'name'"
+                  @blur="focusedField = ''"
+                />
+              </view>
+            </view>
+
+            <view class="ef-row">
+              <text class="ef-key">品牌 / 店铺</text>
+              <view class="ef-val">
+                <input
+                  class="ef-input"
+                  :class="{ 'is-focus': focusedField === 'shelf' }"
+                  :value="editShelf"
+                  type="text"
+                  maxlength="20"
+                  placeholder="选一个或直接输入"
+                  placeholder-class="ef-placeholder"
+                  @input="onEditShelfInput"
+                  @focus="focusedField = 'shelf'"
+                  @blur="focusedField = ''"
+                />
+                <!-- H5 这里是候选下拉 + 「＋ 新建品牌」；卡片内容在 scroll-view 里，
+                     绝对定位的面板会被裁掉，改成一行等价提示 -->
+                <text v-if="editShelfIsNew" class="ef-hint">保存时会新建展示架「{{ editShelf.trim() }}」</text>
+              </view>
+            </view>
+
+            <view class="ef-row ef-row--tags">
+              <text class="ef-key">标签</text>
+              <view class="ef-val">
+                <view class="ef-tagbox" :class="{ 'is-focus': focusedField === 'tag' }">
+                  <view v-for="tag in editTags" :key="tag" class="ef-chip">
+                    <text class="ef-chip__name">{{ tag }}</text>
+                    <text class="ef-chip__x" @tap.stop="removeTag(tag)">×</text>
+                  </view>
+                  <input
+                    class="ef-tagbox__input"
+                    :value="editTagDraft"
+                    type="text"
+                    confirm-type="done"
+                    maxlength="24"
+                    placeholder="加标签，空格或回车分隔"
+                    placeholder-class="ef-placeholder"
+                    @input="onTagInput"
+                    @confirm="commitTags"
+                    @focus="focusedField = 'tag'"
+                    @blur="focusedField = ''"
+                  />
+                </view>
+              </view>
+            </view>
+
+            <view class="ef-row ef-row--note">
+              <text class="ef-key">备注</text>
+              <view class="ef-val">
+                <textarea
+                  class="ef-area"
+                  :class="{ 'is-focus': focusedField === 'note' }"
+                  :value="editNote"
+                  maxlength="2000"
+                  :show-confirm-bar="false"
+                  placeholder="留一句话，可留空"
+                  placeholder-class="ef-placeholder"
+                  @input="onEditNoteInput"
+                  @focus="focusedField = 'note'"
+                  @blur="focusedField = ''"
+                />
+              </view>
+            </view>
+          </view>
+        </scroll-view>
+
+        <!-- 底部动作区：不随内容滚动。详情态 [编辑][完成] ↔ 编辑态 [取消][保存]，
+             两枚并排、一主一次（次要的描边、主要的实色）。 -->
+        <view class="detail-actions">
+          <button class="detail-edit" @tap="editing ? cancelEdit() : startEdit()">{{ editing ? '取消' : '编辑' }}</button>
+          <button class="detail-done" @tap="editing ? saveEdit() : closeDetail()">{{ editing ? '保存' : '完成' }}</button>
+        </view>
+      </view>
+    </view>
+
+    <!-- 底栏「护垫」：底栏压着的那一带是框架层，正常情况它自己会吞掉点击，
+         但实测仍会穿透 —— 点底栏会把底下那一排收藏一起点到，把详情卡弹出来
+         （用户 2026-09-24 报过两次）。这里在页面这侧再铺一层透明块把穿透的点击接住：
+         这一带本来就被底栏挡着，不该点得到。高度跟 custom-tab-bar 的 .tab-shell 一致（170rpx），
+         两处要一起改。 -->
+    <view class="tab-shield" @tap.stop="swallowTabBarTap" />
   </view>
 </template>
 
 <style scoped>
-.header { margin: 14rpx 0 48rpx; }.header .display-title { display: block; margin-top: 9rpx; }.intro { display: block; margin-top: 20rpx; color: #777064; font-size: 25rpx; }.search-box { height: 92rpx; display: flex; align-items: center; gap: 16rpx; padding: 0 24rpx; border: 1rpx solid #d2c8bb; border-radius: 24rpx; background: rgba(255,253,248,.8); }.search-box>text { font-size: 36rpx; }.search-box input { flex: 1; font-size: 27rpx; }.search-box button { width: 56rpx; height: 56rpx; margin: 0; padding: 0; border-radius: 50%; background: #e9e2d7; color: #514c45; font-size: 30rpx; }.filters { width: calc(100% + 32rpx); margin: 28rpx 0 25rpx; }.filter-row { display: inline-flex; gap: 14rpx; padding-right: 32rpx; }.filter { margin: 0; padding: 14rpx 24rpx; border: 1rpx solid #cfc5b7; border-radius: 999rpx; background: rgba(255,255,255,.45); color: #716a60; font-size: 23rpx; white-space: nowrap; line-height: 1.2; }.filter.is-active { background: #211f1c; color: white; border-color: #211f1c; }.count { display: block; margin-bottom: 22rpx; color: #80786d; font-size: 22rpx; }.grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 34rpx 20rpx; }.page-loading { display: block; padding: 36rpx 0 12rpx; text-align: center; color: #80786d; font-size: 22rpx; }
+/* ══════════════════════════════════════════════════════════════
+   全部收藏（收藏架）—— 版式与材质整体对齐 H5 原型
+   （袋袋集原型_交付包/袋袋集原型.html，data-screen="library"），
+   不再沿用 figma 稿的那一套。
+
+   换算口径：H5 的手机壳是 width:min(100%,430px) + 9px 边框 + border-box，
+   所以壳内可排版宽度是 412px（不是 430）。小程序是 750rpx，于是
+   1 H5 px = 750 / 412 ≈ 1.820rpx。下面每处 rpx 都由它得来，
+   注释里保留原始 px 值，回 H5 和实测值核对时直接对得上。
+   ══════════════════════════════════════════════════════════════ */
+/* ⚠ 顶部内边距必须是 0：首页 `.home-page` 就是 0，两页头部自己的 padding 又完全一样，
+   留着这 12rpx 会让整块头部（标题 / 副文案 / 右上玻璃钮）比首页整体低 12rpx。
+   2026-09-24 用户拿两页截图对比报的就是它 —— 实测「标题距导航栏标题」比首页多 7px，
+   而标题本身（69rpx）在截图里高 38px，7 / 38 × 69rpx ≈ 12.7rpx，正好落在这条内边距上。 */
+.library-page { position: relative; min-height: 100vh; padding: 0 0 206rpx; overflow: hidden; background-color: #f2f3f7; }
+
+/* ── 头部：H5 .bags-header（padding 10px 20px 16px，垂直居中对齐右侧托底） ── */
+.library-header { display: flex; align-items: center; justify-content: space-between; gap: 16rpx; padding: 18rpx 36rpx 29rpx; }
+/* min-height = 标题(69rpx，行高 1) + 副文案上边距 11rpx + 副文案(28rpx × 1.4)
+   ≈ 119rpx：首屏还没有计数、副文案不渲染时，靠它把这一块的高度撑住，
+   数字回来时下面的搜索框不会跳一下。 */
+.library-copy { display: flex; flex-direction: column; min-height: 120rpx; }
+/* 标题：H5 .bags-title（38px / 900 / 字距 2px / 衬线 / 行高 1）→ 38 × 1.82 = 69rpx。
+   ⚠ 这一档**没有**用微信六档的 Headline(44rpx)：H5 里首页「袋袋集」和这里「全部收藏」
+   共用同一个 .bags-title，两页必须一样大（用户 2026-09-24 专门点过这件事）。
+   要改字号去首页 .bags-title 一起改，别只动这一处。 */
+.library-title { color: #141414; font-family: Iowan Old Style, Baskerville, "Times New Roman", "Songti SC", serif; font-size: 69rpx; font-weight: 900; line-height: 1; letter-spacing: 3.6rpx; }
+/* 副文案：与首页 .bags-tagline 同档（H5 是 12px，按 1.82 折只有 7pt，真机偏糊，
+   两页统一提到 EmDesc 14pt，与标题留 11rpx = H5 的 6px） */
+.library-summary { margin-top: 11rpx; color: #77736d; font-size: var(--wc-font-description); line-height: 1.4; }
+/* 右上切换钮：与首页 .header-settings 完全同尺寸（H5 padding 9px 12px 7px / 圆角 16px /
+   图标 24px = 44rpx / 文字 9px 按注释档提到 Footnote 12pt），只是图标与语义不同 */
+.mode-button { flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; gap: 5rpx; min-width: 0; margin: 0; padding: 16rpx 22rpx 13rpx; border: 2rpx solid rgba(255,255,255,.75); border-radius: 29rpx; background: rgba(255,255,255,.6); box-shadow: 0 11rpx 25rpx rgba(52,66,92,.08), inset 0 2rpx 0 rgba(255,255,255,.8); color: #77736d; font-size: var(--wc-font-footnote); font-weight: 650; line-height: 1.1; }
+.mode-button image { width: 44rpx; height: 44rpx; }
+.mode-button text { letter-spacing: 2rpx; }
+
+/* ── 搜索框：H5 .search-box（高 50px / 外边距 0 18px 13px / 内边距 16px / 圆角 25px） ── */
+.search-box { height: 91rpx; margin: 0 33rpx 24rpx; padding: 0 29rpx; display: flex; align-items: center; gap: 18rpx; border: 2rpx solid rgba(20,20,20,.12); border-radius: 46rpx; background: rgba(255,255,255,.57); }
+.search-icon { flex: 0 0 35rpx; width: 35rpx; height: 35rpx; }
+.search-input { flex: 1; min-width: 0; height: 91rpx; color: #141414; font-size: 24rpx; }
+.search-placeholder { color: #969696; }
+.search-clear { flex: 0 0 auto; padding: 0 6rpx; color: #77736d; font-size: 35rpx; line-height: 1; }
+
+/* ── 分组：H5 .collection-group（组间 30px）与 .collection-group-title（0 22px 12px / 18px 衬线粗标题） ── */
+.shelf-list { margin-top: 0; }
+.shelf-group { position: relative; margin-bottom: 55rpx; }
+.shelf-heading { display: flex; align-items: center; justify-content: space-between; gap: 12rpx; margin: 0 40rpx 22rpx; }
+.shelf-name { color: #141414; font-family: Iowan Old Style, Baskerville, "Times New Roman", "Songti SC", serif; font-size: 33rpx; font-weight: 700; line-height: 1.05; }
+/* 右侧「共 N 件」+ 一对示意可横滑的箭头（H5 .shelf-hint，箭头常态 55% 不透明） */
+.shelf-hint { display: flex; align-items: center; }
+.shelf-hint__count { color: #77736d; font-size: 20rpx; line-height: 1; }
+.shelf-hint__arrows { margin-left: 9rpx; color: #77736d; font-size: 27rpx; line-height: 1; letter-spacing: 2rpx; opacity: .55; }
+
+/* ── 卡片行：H5 .collection-group-scroll（padding 16px 0 8px + gap 10px + 首尾各 22px） ──
+   上下 padding 不是装饰：袋子被 translateY(-10px) 上移后，图片顶会超出容器顶，
+   留出 16px 才不会被 scroll-view 裁掉（H5 原注释里写的也是这件事）。
+   左右 22px 用小程序的 padding 落，因为小程序这套 DOM 没有首尾伪元素。 */
+/* font-size/line-height 归零是干掉 inline-flex 行盒的撑高：不干掉的话行下方会多出
+   约 5px 空白（等于字号的行高余量），展架按「组底 − 14px」定位就会被这段空白顶下去。
+   行里没有任何文字（只有袋图/占位块），归零不影响显示。 */
+.shelf-scroll { position: relative; z-index: 2; width: 100%; font-size: 0; line-height: 0; }
+.shelf-items { display: inline-flex; align-items: flex-end; gap: 18rpx; min-width: 100%; padding: 29rpx 40rpx 15rpx; }
+/* 卡片槽：H5 .collection-group-card = 宽 96px、高 148px（= 袋图高度） */
+.shelf-item { width: 175rpx; height: 269rpx; flex: 0 0 175rpx; margin: 0; padding: 0; display: flex; align-items: flex-end; justify-content: center; background: transparent; overflow: visible; }
+.shelf-item .shelf-image { width: 175rpx; height: 269rpx; transform: translateY(-18rpx); filter: drop-shadow(0 7rpx 18rpx rgba(0,0,0,.18)); }
+/* 占位块必须和袋图共用同一套位移。漏掉它的话，占位块不跟着上移，
+   底边会从板体下沿露出约 6px 白边（用户实测截图里框出来的就是这条）。
+   H5 里袋图和纸袋占位也是同一个 transform，别只写一半。 */
+.shelf-image-placeholder { width: 128rpx; height: 269rpx; border-radius: 24rpx; background: rgba(255,255,255,.62); transform: translateY(-18rpx); }
+
+/* ── 展架板体：H5 .collection-group .acrylic-shelf
+   （左右 14px、底 14px、高 57px、圆角 9px、1px 白描边、顶部一道柔光、中性落影）。
+   H5 已去掉 backdrop-filter —— 板面是均匀磨砂色、不是玻璃，这里跟随。
+   底色取 var(--shelf-fill)，按展示架自身主题给（见下方五个色）。
+   与袋子的关系（H5 实测）：袋底落在板底之上 4px（≈8rpx），板上沿之上露出 95px 袋身。 ── */
+.acrylic-shelf { position: absolute; z-index: 3; left: 25rpx; right: 25rpx; bottom: 25rpx; height: 104rpx; border: 2rpx solid rgba(255,255,255,.40); border-radius: 16rpx; box-shadow: 0 15rpx 29rpx rgba(43,35,29,.13), inset 0 2rpx 0 rgba(255,255,255,.55); background: linear-gradient(180deg, rgba(255,255,255,.16), rgba(255,255,255,0) 55%), var(--shelf-fill, rgba(240,154,42,.72)); }
+/* 两端螺钉：H5 .acrylic-shelf i（12px 车削金属环 + 左上高光 + 沉孔阴影，两端各内缩 11px）。
+   尺寸只有 22rpx，conic 与 linear 的差别肉眼看不出来，用 radial + linear 更稳。 */
+.shelf-fastener { position: absolute; top: 50%; width: 22rpx; height: 22rpx; transform: translateY(-50%); border-radius: 50%; background: radial-gradient(circle at 34% 26%, rgba(255,255,255,.95) 0 12%, rgba(255,255,255,0) 34%), radial-gradient(circle at 50% 50%, rgba(255,255,255,.9) 0 8%, rgba(255,255,255,0) 30%), linear-gradient(150deg, #f2efe9, #b8b1a6 25%, #8d857a 50%, #cfc8bd 75%, #f2efe9 100%); box-shadow: 0 1rpx 3rpx rgba(0,0,0,.40), 0 3rpx 8rpx rgba(0,0,0,.22), inset 0 0 0 1rpx rgba(255,255,255,.60), inset 0 -2rpx 3rpx rgba(0,0,0,.30); }
+.shelf-fastener--left { left: 20rpx; }
+.shelf-fastener--right { right: 20rpx; }
+
+/* 展架配色：直接搬 H5 的五个色值。H5 里是「按行序轮换 + 两个品牌特例」，
+   小程序这边颜色是数据（展示架主题，设置页可改），所以只换色值、不改判定方式，
+   不然用户自己选的颜色会被行序覆盖掉。
+   注：H5 的 ROSE 是瑞幸那种正粉（#fd53c0），比图稿的浅粉重，需要更浅就调这里。 */
+.acrylic-shelf--SAGE { --shelf-fill: rgba(117,168,141,.72); }
+.acrylic-shelf--AMBER { --shelf-fill: rgba(240,154,42,.72); }
+.acrylic-shelf--SKY { --shelf-fill: rgba(34,158,232,.66); }
+.acrylic-shelf--ROSE { --shelf-fill: rgba(253,83,192,.72); }
+.acrylic-shelf--GRAPHITE { --shelf-fill: rgba(88,92,99,.72); }
+
+/* ── 搜索无结果：对齐 H5 .empty-state（padding 58px / 34px 衬线水印大字 16% 不透明 / 12px 副文案 / 胶囊） ── */
+.search-empty { padding: 106rpx 36rpx 55rpx; text-align: center; }
+.search-empty__mark { display: block; color: #141414; font-family: Iowan Old Style, Baskerville, "Times New Roman", "Songti SC", serif; font-size: 62rpx; font-weight: 900; letter-spacing: 3.6rpx; line-height: 1; opacity: .16; }
+.search-empty__sub { display: block; margin-top: 29rpx; color: #77736d; font-size: 22rpx; }
+.search-empty__reset { display: inline-block; margin-top: 33rpx; padding: 11rpx 22rpx; border-radius: 36rpx; background: rgba(20,20,20,.05); color: #77736d; font-size: 20rpx; font-weight: 600; }
+
+/* ── 以下为未随 H5 改动的部分：宫格视图、空数据态、错误态 ── */
+.collection-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 24rpx 8rpx; margin-top: 24rpx; padding: 0 30rpx; }
+.grid-item { position: relative; width: 100%; height: 232rpx; margin: 0; padding: 0; display: flex; align-items: center; justify-content: center; border: 3rpx solid rgba(255,255,255,.95); border-radius: 24rpx; background: linear-gradient(180deg, #ffffff 0%, #f2f4f8 48%, #dfe4ec 100%); color: #7a7c80; font-size: var(--wc-font-group-title); overflow: hidden; }
+.grid-glow { position: absolute; inset: -30%; background: radial-gradient(closest-side, rgba(240,224,117,.28), rgba(240,224,117,0) 72%); transform: rotate(-24deg); pointer-events: none; }
+.grid-item image, .grid-image-placeholder { position: relative; z-index: 1; }
+.grid-item image { width: 116rpx; height: 196rpx; filter: drop-shadow(0 8rpx 8rpx rgba(0,0,0,.25)); }
+.grid-image-placeholder { width: 100rpx; height: 168rpx; border-radius: 20rpx; background: rgba(255,255,255,.62); }
+.empty-header { width: 688rpx; height: 88rpx; margin: 0 30rpx; display: flex; align-items: flex-start; gap: 16rpx; }
+.empty-header-main,.empty-header-count { width: 384rpx; display: flex; flex-direction: column; gap: 12rpx; }
+.empty-header-count { width: 288rpx; align-items: flex-end; text-align: right; }
+.empty-header-title { width: 100%; color: #000; font-size: var(--wc-font-headline); font-weight: 500; line-height: 52rpx; letter-spacing: -.1rpx; }
+.empty-header-subtitle { width: 100%; color: #7a7c80; font-size: var(--wc-font-description); font-weight: 500; line-height: 36rpx; letter-spacing: -.48rpx; white-space: nowrap; }
+.library-empty { position: absolute; left: 50%; top: 144rpx; width: 636rpx; height: 636rpx; transform: translateX(-50%); overflow: hidden; border: 2rpx solid rgba(255,255,255,.9); border-radius: 72rpx; background: transparent; }
+.frame85-background { position: absolute; z-index: 0; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.empty-illustration { position: absolute; z-index: 3; left: 50%; top: 92rpx; width: 334rpx; height: 332rpx; transform: translateX(-50%); }
+.library-empty-copy { position: absolute; z-index: 4; left: 50%; bottom: 90rpx; width: 378rpx; height: 86rpx; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 10rpx; }
+.empty-title { width: 100%; color: #000; font-size: var(--wc-font-em-title); font-weight: 500; line-height: 48rpx; text-align: center; }
+.empty-description { width: 386rpx; color: #7a7c80; font-size: var(--wc-font-description); font-weight: 500; line-height: 36rpx; letter-spacing: -.48rpx; text-align: center; white-space: nowrap; }
+.page-loading { display: block; padding: 30rpx 0; color: #7a7c80; font-size: var(--wc-font-footnote); font-weight: 500; text-align: center; }
+.load-error { margin: 40rpx 30rpx 0; padding: 24rpx; border-radius: 20rpx; background: #fae2de; color: #943d37; font-size: var(--wc-font-description); font-weight: 500; text-align: center; }
+
+/* 骨架屏跟着新几何走，否则加载态和加载完会「跳」一下。
+   高度 = 组标题(24rpx) + 标题下边距(22rpx) + 卡片行(29 + 269 + 15)。 */
+.skeleton-text { width: 230rpx; height: 24rpx; border-radius: 999rpx; background: rgba(255,255,255,.75); }
+.skeleton-list { margin-top: 0; }
+.skeleton-shelf { position: relative; height: 359rpx; margin-bottom: 55rpx; padding: 0 40rpx; }
+.skeleton-text--shelf { width: 180rpx; margin-bottom: 22rpx; }
+.skeleton-items { display: flex; gap: 18rpx; padding-top: 29rpx; }
+.skeleton-item { width: 175rpx; height: 269rpx; border-radius: 24rpx; background: rgba(255,255,255,.62); transform: translateY(-18rpx); }
+.skeleton-board { position: absolute; left: 25rpx; right: 25rpx; bottom: 25rpx; height: 104rpx; border-radius: 16rpx; background: rgba(210,214,220,.72); }
+
+/* ══════════════════════════════════════════════════════════════
+   详情卡（轻点收藏原地弹出）—— 对齐 H5 原型的 .detail-card
+   （居中浮层：白色液态玻璃 + 顶部大图 + 字段表 + 底部两枚按钮）。
+   几何仍按 1 H5 px = 1.82rpx 换算，字号走微信六档。
+
+   H5 的关键尺寸：浮层 348×560、圆角 30px、内边距 22/24/28px、
+   图区 168px（内含 10px 内边距，图限高 148px）、按钮高 48px。
+   小程序这边把「滚动内容」与「按钮区」拆成两块的固定高度：
+     内容 874rpx + 按钮区 145rpx（87 + 上下外边距 22/36）= 卡片 1019rpx，
+   两边都用「卡片高度 − 常量」从 100vh 派生，小屏上等比收缩、不会挤出卡外。
+   ══════════════════════════════════════════════════════════════ */
+/* 浮层根：铺满页面视口。注意它盖不到「页面视口之外」的两块 ——
+   下面的自定义底栏与上面的原生导航栏（`bottom: 0` 只到页面视口底），
+   那两块由 services/overlay.ts 的 maskPageChrome() 一起蒙。 */
+.detail-layer { position: fixed; z-index: 950; top: 0; left: 0; right: 0; bottom: 0; }
+/* 底栏护垫：把「穿透下来的点击」接住（见模板里的注释）。
+   z-index 899 是算好的：高于页面内容（宫格 / 展架板体最高 z-index 3），
+   低于自定义底栏（900，本来是框架层、页面 z-index 压不过它，所以护垫不会挡住底栏自己的点击），
+   也低于详情浮层（950）—— 卡片开着时点这一带要能关卡片，不能被护垫吃掉。 */
+.tab-shield { position: fixed; z-index: 899; left: 0; right: 0; bottom: 0; height: 170rpx; }
+/* 遮罩：对齐 H5 的 .sheet-backdrop —— rgba(17,15,12,.36) + blur(3px)。
+   模糊是用户 2026-09-24 明确要的：不支持 backdrop-filter 的环境会退化成纯压暗，
+   所以底色本身也要够（不要把透明度调低）。
+   底栏与原生导航栏不在这层覆盖范围内（框架层），见 services/overlay.ts。 */
+.detail-backdrop { position: absolute; z-index: 0; top: 0; left: 0; right: 0; bottom: 0; background: rgba(17,15,12,.36); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); animation: detail-fade .3s ease both; }
+/* 浮层本体：定宽定高 + inset 0 + margin auto 居中（H5 也是这么做的，
+   用 left/top + translate 会和 scale 入场动效抢 transform）。 */
+.detail-card { position: absolute; z-index: 1; top: 0; right: 0; bottom: 0; left: 0; width: 633rpx; height: 1019rpx; max-height: calc(100vh - 175rpx); margin: auto; overflow: hidden; border: 2rpx solid rgba(255,255,255,.62); border-radius: 55rpx; background: linear-gradient(160deg, #ffffff 0%, #fafbfd 56%, #f2f4f8 100%); box-shadow: inset 0 2rpx 0 rgba(255,255,255,1), inset 0 -2rpx 0 rgba(255,255,255,.34), inset 0 0 0 2rpx rgba(255,255,255,.9), 0 29rpx 65rpx rgba(52,66,92,.16), 0 5rpx 18rpx rgba(52,66,92,.07), 0 55rpx 145rpx rgba(0,0,0,.26); animation: detail-in .3s cubic-bezier(.2,.78,.22,1) both; }
+@keyframes detail-in { from { opacity: 0; transform: scale(.92); } to { opacity: 1; transform: scale(1); } }
+@keyframes detail-fade { from { opacity: 0; } to { opacity: 1; } }
+
+/* 玻璃背景层：只出材质，不接手势（H5 .detail-glass） */
+.detail-glass { position: absolute; z-index: 1; top: 0; left: 0; right: 0; bottom: 0; overflow: hidden; border-radius: 55rpx; pointer-events: none; }
+/* 左上角冷白高光（H5 .glass-glow：径向高光 + 一道极淡的 128° 斜向反光，
+   白底之上整体压到 .85 才不把白拉浑） */
+.detail-glow { position: absolute; top: 0; left: 0; right: 0; bottom: 0; opacity: .85; background: radial-gradient(120% 78% at 16% -12%, rgba(255,255,255,.95) 0%, rgba(255,255,255,0) 58%), linear-gradient(128deg, rgba(255,255,255,.5) 0%, rgba(255,255,255,0) 34%, rgba(255,255,255,0) 66%, rgba(255,255,255,.34) 100%); }
+/* ── 右上角那束暖光（H5 .light-beam 的主体）──
+   H5 用的是一张「右上角为光源、向左下渐隐」的暖黄 webp，再用 mask
+   （radial 96% 74% at 100% 0%，38% 前不透、74% 全透）把光收在右上角。
+   小程序端 mask 不可靠，这里用一条径向渐变等价近似：范围直接照搬 H5 的
+   「96% 74% at 100% 0%」，色值与衰减曲线按参考图反解 —— 角落处蓝通道比白低 20、
+   红绿低 5（→ rgba(236,236,178,.26)），到半径 58% 归零，中间线性过渡。
+   少了这一层，整张卡就只剩「白 + 冷底」，右上角完全没有温度。 */
+.detail-beam-glow { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: radial-gradient(96% 74% at 100% 0%, rgba(236,236,178,.26) 0%, rgba(236,236,178,.13) 29%, rgba(236,236,178,0) 58%); }
+/* 卡面顶沿那道细亮线（H5 .light-beam::before，位置 top 15px / right 9px） */
+.detail-beam { position: absolute; top: 27rpx; right: 16rpx; left: 34%; height: 3rpx; border-radius: 4rpx; background: linear-gradient(90deg, rgba(255,236,190,0) 0%, rgba(255,246,220,.9) 58%, rgba(255,236,190,0) 100%); opacity: .26; }
+
+/* 滚动内容层：H5 .detail-scroll（padding 22px 24px 28px） */
+.detail-scroll { position: relative; z-index: 3; width: 100%; height: 874rpx; max-height: calc(100vh - 320rpx); box-sizing: border-box; padding: 40rpx 44rpx 51rpx; }
+/* 滚动条兜底：低版本基础库上 enhanced 不生效时，靠 WebKit 的滚动条样式再挡一层
+   （H5 同位置也是 display:none）。滚动条属于 scroll-view 内部滚动容器，
+   自选与后代两种写法都写上，覆盖不同基础库的实现。 */
+.detail-scroll::-webkit-scrollbar, .detail-scroll ::-webkit-scrollbar { width: 0; height: 0; display: none; }
+
+/* 顶部大图：H5 .detail-artwork（高 168px、下方 18px、内边距 10px、圆角 20px）。
+   H5 这里不铺底色 —— 袋子自带透明通道与下落投影，铺底会把它框成一张「图卡」。 */
+.detail-artwork { display: flex; align-items: center; justify-content: center; height: 306rpx; margin: 0 0 33rpx; padding: 18rpx; box-sizing: border-box; overflow: hidden; border-radius: 36rpx; }
+/* 图区内的图给死高：269rpx = H5 的 148px（= 168 − 上下各 10px 内边距）。
+   小程序 image 是替换元素、没有 width:auto 这一说，写死盒尺寸最稳：
+   竖长的袋子在 aspectFit 下由高度定尺寸，横宽的图由宽度定，都不会溢出。 */
+.detail-artwork image { width: 100%; height: 269rpx; filter: drop-shadow(0 7rpx 18rpx rgba(0,0,0,.18)); }
+.detail-artwork__placeholder { width: 234rpx; height: 269rpx; border-radius: 28rpx; background: rgba(20,20,20,.045); }
+
+/* 编号 → 名称 → 品牌（H5 .back-eyebrow / .detail-name / .detail-brand） */
+.detail-eyebrow { display: block; margin-bottom: 7rpx; color: #77736d; font-size: var(--wc-font-footnote); font-weight: 700; line-height: 1.2; letter-spacing: 3rpx; }
+/* 卡片名：H5 是 25px 衬线 600，比首页卡背面的 19px 大一档 —— 落到六档就是 Headline 22pt */
+.detail-name { display: block; color: #1d1a15; font-family: Georgia, "Iowan Old Style", "Songti SC", serif; font-size: var(--wc-font-headline); font-weight: 600; line-height: 1.2; }
+.detail-brand { display: block; margin-top: 11rpx; color: #6f6a62; font-size: var(--wc-font-description); line-height: 1.4; }
+.detail-divider { height: 1rpx; margin: 25rpx 0; background: linear-gradient(90deg, rgba(20,20,20,.12), rgba(20,20,20,.04) 70%, transparent); }
+
+/* 字段表：H5 .detail-card .back-facts（gap 9px，键灰值黑） */
+.detail-facts { display: flex; flex-direction: column; gap: 16rpx; }
+.detail-facts__row { display: flex; align-items: baseline; justify-content: space-between; gap: 18rpx; }
+.detail-facts__key { flex: 0 0 auto; color: #77736d; font-size: var(--wc-font-description); line-height: 1.4; letter-spacing: .6rpx; }
+.detail-facts__value { flex: 0 1 auto; min-width: 0; color: #2b2720; font-size: var(--wc-font-description); font-weight: 600; line-height: 1.4; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* 标签 / 备注：与首页卡背面同结构，但按详情卡的放大值（11px / 12px）走 Footnote 与 EmDesc */
+.detail-tags { display: flex; flex-wrap: wrap; gap: 13rpx; margin-top: 29rpx; }
+.detail-tags text { padding: 11rpx 22rpx; border-radius: 22rpx; background: rgba(20,20,20,.055); color: #5d594f; font-size: var(--wc-font-footnote); line-height: 1.2; }
+.detail-note { display: block; margin-top: 27rpx; padding: 20rpx 24rpx; border-left: 4rpx solid rgba(20,20,20,.14); border-radius: 0 20rpx 20rpx 0; background: rgba(20,20,20,.035); color: #5f5b53; font-size: var(--wc-font-description); line-height: 1.6; white-space: pre-wrap; }
+.detail-loading { display: block; margin-top: 27rpx; color: #77736d; font-size: var(--wc-font-footnote); line-height: 1.4; }
+
+/* 底部动作区（H5 .detail-actions：12px 24px 20px、gap 10px；按钮高 48px、圆角 24px）。
+   编辑是次要按钮（描边、固定 96px 宽），完成是主按钮（实色、占满剩余宽度）。 */
+.detail-actions { position: relative; z-index: 4; display: flex; gap: 18rpx; margin: 22rpx 44rpx 36rpx; }
+.detail-edit, .detail-done { display: flex; align-items: center; justify-content: center; min-height: 87rpx; margin: 0; padding: 0; border-radius: 44rpx; font-size: var(--wc-font-description); font-weight: 700; line-height: 1.2; }
+.detail-edit { flex: 0 0 175rpx; border: 2rpx solid rgba(20,20,20,.12); background: transparent; color: #141414; }
+.detail-done { flex: 1 1 auto; border: 0; background: #141414; color: #ffffff; }
+
+/* ══════════════════════════════════════════════════════════════
+   编辑态：卡片原地从「看」切成「改」（对齐 H5 的 .detail-card.is-editing）
+   · 图区 168px → 128px（233rpx），省下的竖高让给输入框
+   · 只读的文字区隐藏，表单展开（由 editing 切换）
+   · 底部动作区从 [编辑][完成] 切成 [取消][保存]（同一对按钮换文案与动作）
+
+   表单版式是 H5 的「方案③ 下划线 · 纸感」：撤掉所有方框和底色，
+   每个字段只留一条底线，文字直接坐在卡面上。三段：
+     ① .ef-readout 只读条（编号 / 收藏日期 / 入库时长）
+     ② .ef-row     可编辑行（名称 / 品牌 / 标签 / 备注），末行不加横线、改成左侧竖线
+   字号照旧走微信六档，几何依旧 1 H5 px = 1.82rpx。
+   ══════════════════════════════════════════════════════════════ */
+.detail-artwork--editing { height: 233rpx; margin: 0 0 25rpx; }
+.detail-artwork--editing image, .detail-artwork--editing .detail-artwork__placeholder { height: 196rpx; }
+
+/* ── ① 只读条 ──
+   撤掉灰底与描边，只留两条 1px 细竖线分隔；顺序倒成「值在上、名在下」，
+   先读到内容，视觉重心和下方字段对齐。
+   列宽不三等分（H5 实测后改的）：首块固定、中间吃掉剩余、末块固定并靠右，
+   这样三条竖线的间距与内容量成正比，不会出现「小值占大栏」。 */
+.ef-readout { display: flex; align-items: flex-start; margin: 0 0 25rpx; padding: 4rpx 0 0; }
+.ef-readout__cell { min-width: 0; padding: 0 22rpx; border-left: 2rpx solid rgba(20,20,20,.085); }
+.ef-readout__cell--no { flex: 0 0 auto; min-width: 120rpx; padding-left: 0; border-left: 0; }
+.ef-readout__cell--mid { flex: 1 1 auto; min-width: 190rpx; }
+.ef-readout__cell--last { flex: 0 0 auto; min-width: 120rpx; padding-right: 0; display: flex; flex-direction: column; align-items: flex-end; text-align: right; }
+.ef-readout__v { display: block; margin: 0 0 9rpx; color: #3a3630; font-size: var(--wc-font-description); font-weight: 600; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ef-readout__k { display: block; color: #a8a49d; font-size: var(--wc-font-footnote); font-weight: 700; line-height: 1.2; letter-spacing: .8rpx; white-space: nowrap; }
+
+/* ── ② 可编辑行：左标签 + 右值，值下方一条底线 ── */
+.ef-row { display: flex; align-items: flex-end; gap: 22rpx; padding-top: 25rpx; }
+.ef-key { flex: 0 0 135rpx; padding-bottom: 16rpx; color: #77736d; font-size: var(--wc-font-footnote); font-weight: 700; line-height: 1.2; letter-spacing: .8rpx; white-space: nowrap; }
+.ef-val { flex: 1 1 auto; min-width: 0; }
+.ef-input { box-sizing: border-box; display: block; width: 100%; height: 64rpx; padding: 0 0 16rpx; border-bottom: 2rpx solid rgba(20,20,20,.13); color: #141414; font-size: var(--wc-font-description); line-height: 48rpx; transition: border-color .18s ease; }
+/* 聚焦下划线用 H5 的 --focus（品牌红）。⚠ 小程序端 input / textarea 的 :focus
+   不可靠，所以这里是靠 focus/blur 切的 is-focus 类，不是伪类。 */
+.ef-input.is-focus { border-bottom-color: #C50405; }
+/* 品牌写了个库里没有的名字时的提示（H5 那里是个候选浮层 + 「＋ 新建品牌」）。
+   颜色跟 H5 的「＋ 新建」一致（#2A4DA6，用户指定的靛蓝）。 */
+.ef-hint { display: block; margin-top: 8rpx; color: #2A4DA6; font-size: var(--wc-font-footnote); line-height: 1.3; }
+
+/* ── 标签：已选是一排带 × 的胶囊，后面跟输入框（H5 的方案 A） ── */
+.ef-row--tags { align-items: flex-start; }
+.ef-row--tags .ef-key { padding-top: 9rpx; padding-bottom: 0; }
+.ef-tagbox { display: flex; flex-wrap: wrap; align-items: center; gap: 11rpx; padding: 0 0 16rpx; border-bottom: 2rpx solid rgba(20,20,20,.13); transition: border-color .18s ease; }
+.ef-tagbox.is-focus { border-bottom-color: #C50405; }
+.ef-chip { display: flex; align-items: center; gap: 9rpx; padding: 9rpx 16rpx 9rpx 20rpx; border-radius: 20rpx; background: rgba(20,20,20,.07); color: #45413a; font-size: var(--wc-font-footnote); font-weight: 600; line-height: 1.2; white-space: nowrap; }
+/* 胶囊里的 × 是「一块 26rpx 的圆 + 居中白字」，不是字符本身 —— 直接写 × 会大小不一 */
+.ef-chip__x { flex: 0 0 26rpx; width: 26rpx; height: 26rpx; border-radius: 50%; background: rgba(20,20,20,.17); color: #ffffff; font-size: 20rpx; line-height: 26rpx; text-align: center; }
+.ef-tagbox__input { flex: 1 1 120rpx; min-width: 120rpx; height: 52rpx; padding: 0; color: #141414; font-size: var(--wc-font-footnote); line-height: 52rpx; }
+
+/* ── ③ 备注：末行不加横线，改成左侧竖线 + 极浅底 ── */
+.ef-row--note { align-items: flex-start; }
+.ef-row--note .ef-key { padding-top: 11rpx; padding-bottom: 0; }
+.ef-area { box-sizing: border-box; display: block; width: 100%; height: 120rpx; padding: 15rpx 0 15rpx 20rpx; border-left: 4rpx solid rgba(20,20,20,.16); border-radius: 0 16rpx 16rpx 0; background: rgba(20,20,20,.032); color: #141414; font-size: var(--wc-font-footnote); line-height: 1.6; transition: border-color .18s ease; }
+.ef-area.is-focus { border-left-color: #C50405; }
+</style>
+
+<!-- 占位文字的颜色必须走「不带 scoped 的块」：placeholder-class 命中的是原生控件
+     内部渲染出来的占位节点，它身上没有本组件的 data-v 标记，
+     写在 <style scoped> 里的 .ef-placeholder 会带属性选择器，匹配不上。 -->
+<style>
+.ef-placeholder { color: #b3afa8; }
 </style>

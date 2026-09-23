@@ -1,0 +1,1504 @@
+:root {
+  color-scheme: light;
+  /* 页面背景色（用户指定）：#F2F3F7 */
+  --paper: #F2F3F7;
+  --paper-deep: #e6e8ee;
+  --page-bg: #F2F3F7;
+  --ink: #141414;
+  --muted: #77736d;
+  --line: rgba(20, 20, 20, 0.12);
+  --amber: #f09a2a;
+  --blue: #229ee8;
+  --sage: #75a88d;
+  --radius: 30px;
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body { margin: 0; min-height: 100%; background: #e4e6ec; color: var(--ink); }
+
+body {
+  display: grid;
+  place-items: center;
+  min-height: 100dvh;
+  background:
+    radial-gradient(circle at 16% 12%, rgba(255,255,255,.75), transparent 30%),
+    radial-gradient(circle at 84% 82%, rgba(150,158,175,.28), transparent 34%),
+    #e4e6ec;
+}
+
+button, input, select { font: inherit; }
+button { color: inherit; }
+
+.phone-shell {
+  position: relative;
+  width: min(100%, 430px);
+  height: min(920px, 100dvh);
+  overflow: hidden;
+  background: var(--paper);
+}
+
+@media (min-width: 560px) {
+  body { padding: 24px; }
+  .phone-shell {
+    height: min(900px, calc(100dvh - 48px));
+    border: 9px solid #171717;
+    border-radius: 54px;
+    box-shadow: 0 28px 90px rgba(0,0,0,.28), inset 0 0 0 2px #666;
+  }
+}
+
+.status-bar {
+  position: absolute;
+  z-index: 20;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 54px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 27px;
+  font-size: 12px;
+  font-weight: 700;
+  pointer-events: none;
+}
+
+.dynamic-island {
+  position: absolute;
+  left: 50%;
+  top: 10px;
+  width: 102px;
+  height: 30px;
+  transform: translateX(-50%);
+  border-radius: 20px;
+  background: #090909;
+}
+
+.status-icons { font-size: 10px; letter-spacing: 1px; }
+
+.app-scroll {
+  height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+.app-scroll::-webkit-scrollbar, .rack-bags::-webkit-scrollbar, .filter-row::-webkit-scrollbar { display: none; }
+
+/* 底部 152px = 无底板导航 132px（含渐变过渡区）+ 20px 呼吸。
+   下方内容会滑到渐变遮罩底下，所以这里必须留够，否则最后一组卡片会被图标压住。 */
+.screen { display: none; min-height: 100%; padding: 76px 0 152px; }
+.screen--active { display: block; animation: screenIn .35s ease both; }
+@keyframes screenIn { from { opacity: 0; transform: translateY(6px); } }
+
+
+.eyebrow {
+  margin: 0 0 5px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 1.75px;
+}
+
+h1, h2, p { margin-top: 0; }
+h1, h2 { font-family: Iowan Old Style, Baskerville, "Times New Roman", "Songti SC", serif; }
+h1 { margin-bottom: 4px; font-size: 46px; line-height: .96; letter-spacing: -2px; }
+h2 { margin-bottom: 0; font-size: 25px; line-height: 1.05; letter-spacing: -.5px; }
+.subhead, .library-header > p:last-child { margin: 8px 0 0; color: var(--muted); font-size: 12px; }
+
+.round-button, .sheet-close {
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,.5);
+  width: 43px;
+  height: 43px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+.round-button svg { width: 19px; fill: none; stroke: currentColor; stroke-width: 1.6; }
+
+.feature {
+  position: relative;
+  margin: 0 14px 32px;
+  padding: 18px 16px 20px;
+  border: 1px solid rgba(0,0,0,.06);
+  border-radius: 22px;
+  background: linear-gradient(135deg, #e8dbc2, #ccb589);
+  box-shadow: 0 6px 24px rgba(43,35,29,.12);
+  overflow: hidden;
+}
+
+.section-heading { display: flex; align-items: flex-end; justify-content: space-between; padding: 0 22px 14px; }
+.section-heading--feature { position: relative; z-index: 2; padding: 0; align-items: center; }
+/* 右侧动作区：设置齿轮 + 「查看全部」。齿轮从首页头部搬下来，见 index.html 注释。 */
+.section-heading__actions { display: flex; align-items: center; gap: 12px; }
+.icon-action {
+  flex: 0 0 auto; width: 34px; height: 34px; margin-bottom: 2px;
+  border: 1px solid var(--line); border-radius: 50%;
+  background: rgba(255,255,255,.5);
+  display: grid; place-items: center; cursor: pointer;
+  transition: background .18s ease, transform .18s ease;
+}
+.icon-action svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; }
+.icon-action:active { transform: scale(.93); background: rgba(20,20,20,.07); }
+.date-pill { padding: 6px 10px; background: rgba(255,255,255,.65); border-radius: 20px; color: var(--muted); font-size: 10px; letter-spacing: 1px; }
+
+.hero-item { position: relative; width: 100%; height: 340px; padding: 0; border: 0; background: transparent; cursor: pointer; }
+.hero-aura { position: absolute; width: 270px; height: 270px; left: 50%; top: 44%; transform: translate(-50%,-50%); border-radius: 50%; background: radial-gradient(circle, rgba(240,154,42,.2), rgba(240,154,42,0) 68%); }
+.hero-caption { position: absolute; left: 0; right: 0; bottom: 0; display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; align-items: end; text-align: left; }
+.hero-caption span { grid-row: span 2; align-self: end; color: var(--muted); font-size: 10px; letter-spacing: 1.4px; }
+.hero-caption strong { font-family: Iowan Old Style, Baskerville, serif; font-size: 20px; }
+.hero-caption small { color: var(--muted); font-size: 11px; }
+
+
+
+
+
+/* ── BAGS 标题区 ── */
+.bags-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 10px 20px 16px;
+}
+.bags-subtitle {
+  margin: 0 0 2px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1.4px;
+  color: var(--muted);
+}
+.bags-title {
+  margin: 0 0 8px;
+  font-size: 38px;
+  font-weight: 900;
+  letter-spacing: 2px;
+  line-height: 1;
+  font-family: Iowan Old Style, Baskerville, "Times New Roman", "Songti SC", serif;
+  color: var(--ink);
+}
+/* 首页正文文案：替掉原来的三枚统计 chip，单独一行，和标题留 8px 呼吸。
+   窄屏下跟着标题一起降字号（见文末 @media）。 */
+.bags-tagline {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* 右侧「最近收藏 N」胶囊。
+   替代原来的设置圆钮 —— 43px 高，和标题基线齐平，不再是孤零零一个圆点。 */
+.recent-pill {
+  flex: 0 0 auto;
+  height: 43px;
+  padding: 0 15px;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: rgba(255,255,255,.5);
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background .18s ease, transform .18s ease;
+}
+.recent-pill:active { transform: scale(.96); background: rgba(20,20,20,.07); }
+.recent-pill svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; }
+.recent-pill__num { font-weight: 700; color: var(--ink); font-size: 13px; }
+/* 兜底：实测 430px 下标题 + 胶囊共占 362px（可用 390px），不挤。
+   但整个手机壳是流式的，窄到 375px 以下标题会被压，所以标题降一档。 */
+@media (max-width: 380px) {
+  .bags-title { font-size: 34px; letter-spacing: 1.6px; }
+  .recent-pill { padding: 0 12px; gap: 6px; }
+}
+
+
+.paper-bag {
+  --bag-color: #d8aa7c;
+  --bag-text: #23180f;
+  --bag-pattern: linear-gradient(transparent, transparent);
+  position: relative;
+  flex: 0 0 auto;
+  width: 92px;
+  height: 132px;
+  color: var(--bag-text);
+  filter: drop-shadow(0 15px 9px rgba(31,23,16,.18));
+  transition: transform .25s ease;
+}
+.js-item:hover .paper-bag, .js-item:focus-visible .paper-bag { transform: translateY(-4px) rotate(-1deg); }
+.paper-bag::after { content: ""; position: absolute; z-index: 0; inset: 20px 0 0; background: linear-gradient(90deg,rgba(0,0,0,.09),transparent 8%,transparent 91%,rgba(255,255,255,.16)),var(--bag-pattern),var(--bag-color); clip-path: polygon(3% 4%,96% 0,100% 97%,2% 100%); }
+.paper-bag::before { content: ""; position: absolute; z-index: 1; inset: 29px 8px 8px; border: 1px solid color-mix(in srgb, var(--bag-text) 35%, transparent); }
+.bag-handle { position: absolute; z-index: 0; width: 45%; height: 38px; top: 0; left: 27%; border: 4px solid color-mix(in srgb, var(--bag-color) 68%, #15120f); border-bottom: 0; border-radius: 50% 50% 0 0; }
+.bag-copy { position: absolute; z-index: 2; top: 56%; left: 50%; width: 76%; transform: translate(-50%,-50%); font-family: Arial, sans-serif; font-size: 8px; line-height: 1.25; letter-spacing: .8px; text-align: center; }
+.bag-copy b { font-size: 12px; }
+.bag-seal { position: absolute; z-index: 2; bottom: 12px; right: 12px; width: 20px; height: 20px; border: 1px solid currentColor; border-radius: 50%; display: grid; place-items: center; font-size: 7px; }
+
+.paper-bag--hero { position: absolute; left: 50%; top: 47%; width: 165px; height: 235px; transform: translate(-50%,-50%) rotate(-2deg); }
+.hero-item:hover .paper-bag--hero, .hero-item:focus-visible .paper-bag--hero { transform: translate(-50%,calc(-50% - 4px)) rotate(-3deg); }
+.paper-bag--hero .bag-handle { height: 58px; top: 0; border-width: 5px; }
+.paper-bag--hero .bag-copy { font-size: 12px; }
+.paper-bag--hero .bag-copy b { font-size: 20px; }
+.paper-bag--hero .bag-seal { width: 30px; height: 30px; font-size: 9px; }
+
+.bag-vermillion { --bag-color: #a22d2c; --bag-text: #fbe9df; --bag-pattern: linear-gradient(160deg, rgba(255,224,196,.14) 0%, transparent 45%), repeating-linear-gradient(37deg, rgba(255,224,196,.08) 0 1px, transparent 1px 19px), repeating-linear-gradient(-52deg, rgba(255,224,196,.06) 0 1px, transparent 1px 27px), repeating-linear-gradient(84deg, rgba(255,224,196,.05) 0 1px, transparent 1px 33px); }
+.bag-kraft { --bag-color: #bd8958; --bag-text: #2d1c11; --bag-pattern: repeating-linear-gradient(105deg,transparent 0 14px,rgba(255,255,255,.07) 15px 16px); }
+.bag-blue { --bag-color: #1e5c90; --bag-text: #f3ecda; --bag-pattern: repeating-linear-gradient(60deg, rgba(255,255,255,.16) 0 1.4px, transparent 1.4px 13px), repeating-linear-gradient(-60deg, rgba(255,255,255,.1) 0 1.4px, transparent 1.4px 13px); }
+.bag-black { --bag-color: #242323; --bag-text: #f0e8dc; --bag-pattern: linear-gradient(145deg,transparent 0 54%,rgba(255,255,255,.12) 54% 56%,transparent 56%); }
+.bag-green { --bag-color: rgb(69, 137, 81); --bag-text: #f3ecda; --bag-pattern: repeating-radial-gradient(ellipse at 20% 20%,transparent 0 12px,rgba(242,221,150,.19) 13px 15px); }
+.bag-yellow { --bag-color: rgb(241, 113, 139); --bag-text: #252015; --bag-pattern: radial-gradient(circle at 15% 20%, rgba(255,255,255,.28) 0 2px, transparent 2.4px), radial-gradient(circle at 45% 60%, rgba(255,255,255,.22) 0 1.6px, transparent 2px), radial-gradient(circle at 75% 25%, rgba(255,255,255,.24) 0 1.8px, transparent 2.2px), radial-gradient(circle at 30% 85%, rgba(255,255,255,.2) 0 1.6px, transparent 2px), radial-gradient(circle at 85% 70%, rgba(255,255,255,.22) 0 1.8px, transparent 2.2px), radial-gradient(circle at 60% 40%, rgba(255,255,255,.18) 0 1.4px, transparent 1.8px); }
+
+.rack-section { margin-bottom: 34px; }
+.text-action { min-height: 38px; padding: 0; border: 0; background: transparent; font-size: 11px; color: var(--muted); cursor: pointer; }
+.text-action span { color: var(--ink); margin-left: 3px; }
+
+/* 挂袋吧台舞台：底层放置 SVG 绳索，卡片浮在绳索之上 */
+.rack-stage {
+  position: relative;
+  padding: 0 0 8px;
+  overflow: visible;
+}
+.rack-rope-wrap {
+  position: absolute; top: 0; left: 0;
+  z-index: 0; pointer-events: none;
+}
+.rack-rope {
+  position: absolute; top: 8px; left: 0;
+  height: 28px;
+}
+.rack-rope .rope-core {
+  stroke: #8a6a3f; stroke-width: 3; fill: none; stroke-linecap: round;
+  filter: drop-shadow(0 1px 1px rgba(60,40,10,.28));
+}
+.rack-rope .rope-twist {
+  stroke: #dcc79b; stroke-width: 1.7; fill: none; stroke-linecap: round;
+  stroke-dasharray: 1.6 3.2;
+}
+.rack-bags {
+  display: flex;
+  align-items: flex-start;
+  gap: 0;
+  overflow-x: auto;
+  padding: 34px 12px 12px;
+  position: relative;
+  z-index: 1;
+  scrollbar-width: none;
+  touch-action: pan-x;
+}
+.rack-bags::-webkit-scrollbar { display: none; }
+
+.rack-item {
+  flex: 0 0 auto;
+  width: 110px;
+  cursor: pointer;
+  text-align: center;
+  position: relative;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: none; /* 按住卡片时交给拨动手势，避免被容器横向滚动抢走 */
+}
+.rack-item + .rack-item { margin-left: -20px; } /* 卡片错落堆叠，后压前 */
+.rack-hang {
+  position: relative;
+  transform-origin: 50% 0;
+  will-change: transform;
+}
+
+/* 金属孔环夹子：暖铜色垫片外圈 + 冷灰钢色孔环内圈，麻绳从孔洞后方穿过 */
+.rack-clip {
+  position: absolute;
+  top: -22px; left: 50%;
+  transform: translateX(-50%);
+  width: 26px; height: 26px;
+  z-index: 3;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 28%, #f2e2c0 0%, #e5cfa2 55%, #d4ba8a 100%);
+  border: 1px solid rgba(150,115,65,.45);
+  box-shadow: 0 1px 3px rgba(30,22,8,.3), inset 0 1px 0 rgba(255,255,255,.4);
+}
+.rack-clip::before {
+  content: "";
+  position: absolute; top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 28%, #fdfefe 0%, #d7dde3 40%, #aeb7c0 72%, #8e99a3 100%);
+  border: 1px solid rgba(105,115,127,.65);
+  box-shadow: inset 0 1px 1px rgba(255,255,255,.85), 0 1px 2px rgba(40,48,58,.35);
+}
+.rack-clip::after {
+  content: "";
+  position: absolute; top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  width: 3.5px; height: 3.5px;
+  border-radius: 50%;
+  background: #2b3038;
+}
+
+/* 悬挂卡片：细棕描边 + 磨砂玻璃底，透出背景与层叠卡片 */
+.rack-frame {
+  margin-top: var(--dy, 0);
+  border: 1.5px solid #8a6f45;
+  border-radius: 4px;
+  background: rgba(255,255,255,.26);
+  backdrop-filter: blur(7px) saturate(1.15);
+  padding: 5px;
+  box-shadow: 0 3px 10px rgba(60,45,20,.14), inset 0 1px 0 rgba(255,255,255,.4);
+}
+.rack-photo {
+  position: relative;
+  height: 142px;
+  border-radius: 2px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  /* ⚠ 图片默认左对齐：原本是 center，而每只纸袋的图片宽度并不相同
+     （实测 54.1 ~ 55.7px），居中会让「卡框内的左边缘」各自漂移，
+     一排骨牌看过去像没对齐。改成 flex-start 后所有纸袋从同一条
+     左边线起步，与网格视图、分组视图的观感一致。 */
+  justify-content: flex-start;
+  /* 每张卡片按 bag-id 类名读取对应的 --bag-color/--bag-pattern 变量，
+     和展示架里的纸袋配色呼应，不再是统一的空白暖色底。 */
+  background: linear-gradient(180deg, rgba(255,255,255,.12), rgba(0,0,0,.08)), var(--bag-pattern, none), var(--bag-color, #e7ddcf);
+}
+.rack-photo .bag-photo {
+  /* ⚠ 上限从 96% 放开到 100%：留 4% 会在右侧永久空出一条，
+     左对齐后那条空隙会变成"没贴边"的观感，正好抵消这次改动。
+     视觉留白改由 `.rack-frame` 的 5px padding 承担。 */
+  max-width: 100%;
+  max-height: 90%;
+  margin-right: auto; /* 双保险：图片宽于/窄于容器时都靠左 */
+  filter: drop-shadow(0 6px 8px rgba(0,0,0,.28));
+}
+.rack-meta {
+  padding: 7px 3px 0;
+  text-align: left;
+}
+.rack-meta strong {
+  display: block;
+  overflow: hidden;
+  font-family: Georgia, serif;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #4a3a22;
+}
+.rack-meta small {
+  display: block;
+  margin-top: 2px;
+  color: #a09274;
+  font-size: 9px;
+}
+.rack-hint {
+  margin: 8px 20px 0;
+  color: var(--text-secondary, var(--muted));
+  font-size: 10px;
+  text-align: center;
+  opacity: .8;
+}
+
+
+/* ── 底部导航：无底板 ──
+   去掉玻璃底板，只留一层从透明到页面底色的渐变遮罩。
+   渐变不能省：没有它，滚动中的卡片会和图标文字叠在一起看不清。
+   渐变的「不透明区」必须覆盖住整排图标，否则文字会从图标缝隙透出来 ——
+   图标+文字实际占到约 62px 高，所以最后一档从 28% 就开始全不透明。 */
+.bottom-nav {
+  position: absolute;
+  z-index: 30;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 132px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 4px;
+  padding-bottom: max(14px, var(--safe-bottom));
+  background: linear-gradient(180deg,
+    rgba(242,243,247,0) 0%,
+    rgba(242,243,247,.35) 20%,
+    rgba(242,243,247,.92) 32%,
+    var(--paper) 46%,
+    var(--paper) 100%);
+  pointer-events: none;   /* 让左右空白区的滚动手势穿透 */
+}
+.bottom-nav > * { pointer-events: auto; }
+
+.nav-item {
+  position: relative;
+  width: 96px;
+  height: 62px;
+  border: 0;
+  background: transparent;
+  color: #9d9890;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  transition: color .2s ease;
+}
+.nav-item svg { width: 23px; height: 23px; fill: none; stroke: currentColor; stroke-width: 1.8; }
+.nav-item span { font-size: 10px; font-weight: 650; }
+.nav-item.is-active { color: var(--ink); }
+/* 选中标记：图标下方一个小圆点 */
+.nav-item.is-active::after {
+  content: '';
+  position: absolute;
+  bottom: 3px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--ink);
+}
+
+.add-button {
+  flex: 0 0 auto;
+  width: 56px;
+  height: 56px;
+  margin: 0 14px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--ink);
+  color: white;
+  box-shadow: 0 8px 22px rgba(0,0,0,.26);
+  cursor: pointer;
+  transition: transform .18s ease;
+}
+.add-button:active { transform: scale(.93); }
+.add-button span { display: block; margin-top: -3px; font-size: 30px; font-weight: 200; }
+
+/* ── 全部收藏：标题区与首页 .bags-header 同构 ──
+   同一个视觉语言：11px 大写小字 → 38px 加粗衬线标题 → 一排统计 chip，
+   右侧一枚 43px 圆形按钮，整体 flex 两端对齐。 */
+.library-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 20px 16px;
+}
+.library-header__text { min-width: 0; }
+.lib-subtitle {
+  margin: 0 0 2px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1.4px;
+  color: var(--muted);
+}
+/* 覆盖全局 h1 的 46px / -2px，与 .bags-title 完全对齐 */
+.lib-title {
+  margin: 0 0 10px;
+  font-size: 38px;
+  font-weight: 900;
+  letter-spacing: 2px;
+  line-height: 1.1;
+  font-family: Iowan Old Style, Baskerville, "Times New Roman", "Songti SC", serif;
+  color: var(--ink);
+}
+/* 原来标题下有一句 .library-tagline，已按需求删除。
+   留这条注释是提醒：如果以后再加说明文字，标题的 margin-bottom 要从 10px 收回 8px。 */
+.library-stats {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.library-chip { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.library-chip__num { font-weight: 700; color: var(--ink); }
+
+/* 布局切换按钮：沿用 .round-button 外观，补一点按压反馈 */
+.round-button--layout svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.6; }
+.round-button--layout { flex: 0 0 auto; transition: background .18s ease, transform .18s ease; }
+.round-button--layout:active { transform: scale(.93); background: rgba(20,20,20,.08); }
+
+.search-box { height: 50px; margin: 0 18px 13px; padding: 0 16px; display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 25px; background: rgba(255,255,255,.57); }
+.search-box svg { flex: 0 0 19px; width: 19px; fill: none; stroke: currentColor; stroke-width: 1.6; }
+.search-box input { width: 100%; border: 0; outline: 0; background: transparent; font-size: 13px; }
+/* 关掉 type="search" 的原生清除按钮（WebKit 那个蓝色 ×），
+   否则会和右侧自己的 #clearSearch 并存，出现两个叉 */
+.search-box input::-webkit-search-decoration,
+.search-box input::-webkit-search-cancel-button,
+.search-box input::-webkit-search-results-button,
+.search-box input::-webkit-search-results-decoration { -webkit-appearance: none; appearance: none; display: none; }
+.search-box button { border: 0; background: transparent; font-size: 19px; cursor: pointer; }
+.filter-row { display: flex; gap: 8px; overflow-x: auto; padding: 0 18px 5px; }
+.filter-chip { flex: 0 0 auto; height: 35px; padding: 0 14px; border: 1px solid var(--line); border-radius: 18px; background: transparent; color: var(--muted); font-size: 11px; cursor: pointer; }
+.filter-chip.is-active { background: var(--ink); border-color: var(--ink); color: white; }
+.result-count { margin: 13px 21px 11px; color: var(--muted); font-size: 10px; }
+
+/* 全部收藏：按展示架分组，每组一行标题 + 横向滑动列表 */
+.collection-groups { padding-bottom: 8px; }
+.collection-group { margin-bottom: 30px; }
+.collection-group-title { display: flex; justify-content: space-between; align-items: end; padding: 0 22px 12px; }
+.collection-group-title h2 { font-size: 18px; }
+.collection-group-title > span { color: var(--muted); font-size: 10px; }
+.collection-group { position: relative; }
+.collection-group-scroll {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: start;
+  gap: 14px;
+  overflow-x: auto;
+  padding: 6px 22px 8px;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: none;
+}
+.collection-group-scroll::-webkit-scrollbar { display: none; }
+.collection-group-card { flex: 0 0 auto; border: 0; padding: 0; background: transparent; text-align: left; cursor: pointer; scroll-snap-align: start; }
+.collection-group-card .bag-photo { height: 148px; width: auto; max-width: 100%; object-fit: contain; filter: drop-shadow(0 6px 8px rgba(0,0,0,.22)); }
+.collection-group-card .paper-bag { transform: scale(.9); transform-origin: bottom; }
+.collection-group .acrylic-shelf { position: absolute; z-index: 2; left: 14px; right: 14px; bottom: 14px; height: 57px; border: 1px solid rgba(255,255,255,.48); border-radius: 9px; box-shadow: 0 11px 18px rgba(43,35,29,.12), inset 0 1px rgba(255,255,255,.65); backdrop-filter: blur(4px); pointer-events: none; }
+.collection-group .acrylic-shelf i { position: absolute; top: 50%; width: 9px; height: 9px; transform: translateY(-50%); border-radius: 50%; background: radial-gradient(circle at 32% 28%, #fff, #a59e94 45%, #555); box-shadow: 0 1px 3px rgba(0,0,0,.35); }
+.collection-group .acrylic-shelf i:first-child { left: 13px; }
+.collection-group .acrylic-shelf i:last-child { right: 13px; }
+.collection-group:nth-of-type(3n+1) .acrylic-shelf { background: rgba(240,154,42,.68); }
+.collection-group:nth-of-type(3n+2) .acrylic-shelf { background: rgba(34,158,232,.61); }
+.collection-group:nth-of-type(3n) .acrylic-shelf { background: rgba(117,168,141,.68); }
+.collection-group[data-shelf="瑞幸咖啡"] .acrylic-shelf { background: rgba(253,83,192,.68); }
+.collection-group[data-shelf="Peet's Coffee"] .acrylic-shelf { background: rgba(163,118,85,.68); }
+
+/* ── 网格视图：纯图片 · 双指缩放 + 横向拖动 ──
+   卡片尺寸只有两个锚点，中间连续插值：
+     大档 82×116（纸袋高 98）  ←→  小档 41×58（纸袋高 46）
+   注意 98→46 不是 0.5 倍（是 0.4694），所以 art 必须独立插值，
+   不能由 card-w 乘系数推出来。pad 反过来由 card-h − art 导出，
+   这样不变式「2·pad + art ≡ card-h」在任何缩放级别都成立，
+   .grid-card 的 place-items:center 一行都不用改。
+
+   ⚠ 坑：calc() 里不能拿「无单位数」去减「长度」——
+     calc((82 - 82px) / 41) 是非法表达式，整条变量会失效、
+     height 静默退化成内容高度。所以这里用 @property 声明一个
+     纯数字变量 --grid-w-num 作真源，再由它派生一切。 */
+@property --grid-w-num {
+  syntax: '<number>';
+  inherits: true;
+  initial-value: 82;
+}
+@property --grid-ratio {
+  syntax: '<number>';
+  inherits: true;
+  initial-value: 0;
+}
+
+.library-body {
+  /* 唯一真源：卡片宽度（数字形式）。JS 只改这一个。 */
+  --grid-w-num: 82;
+  /* 缩放进度 t：0 = 82px 大档，1 = 41px 小档 */
+  --grid-ratio: calc((82 - var(--grid-w-num)) / 41);
+  /* 116 − 58t、98 − 52t，都是「长度 − 长度 × 数字」 */
+  --grid-card-h: calc(116px - 58px * var(--grid-ratio));
+  --grid-art:    calc(98px  - 52px * var(--grid-ratio));
+  --grid-pad:    calc((var(--grid-card-h) - var(--grid-art)) / 2);
+  /* 以下都是干净的 2×，用 calc 派生即可。
+     ⚠ 必须乘 1px 把它变成长度：calc(82 * 0.17) 得到的是「无单位数」，
+       而 gap / border-radius / padding 都不接受无单位数，
+       会静默退化成 normal / 0（页面看起来"没报错但全塌了"）。 */
+  --grid-radius: calc(var(--grid-w-num) * 0.17073 * 1px);   /* ÷ 5.8571（82 ÷ 14） */
+  --grid-gap:    calc(var(--grid-w-num) * 0.10976 * 1px);   /* ÷ 9.1111（82 ÷ 9）  */
+  --grid-padx:   calc(var(--grid-w-num) * 0.14634 * 1px);   /* ÷ 6.8333（82 ÷ 12） */
+}
+
+/* 横向滚动容器。
+   ⚠ 坑：这里必须是 pan-x pan-y（等价 auto），不能写 pan-y。
+     touch-action: pan-y 的语义是「我只接受纵向平移」，于是浏览器把横向
+     touch 拖动整个禁掉，overflow-x:auto 形同虚设 —— 实测 scrollLeft 恒为 0，
+     而且把容器克隆、卸掉全部 JS 监听后依然是 0，说明跟手势代码无关。
+     双指捏合不会因此变成页面缩放：JS 在第二根手指落下时把容器切成
+     .is-pinching（touch-action: none），并在非 passive 的 pointermove 里
+     preventDefault()。 */
+.grid-window {
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  touch-action: pan-x pan-y;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+.grid-window::-webkit-scrollbar { display: none; }
+.grid-window.is-pinching { touch-action: none; }
+
+/* 内容宽度跟随卡片，不用撑满容器，否则卡片会被拉伸 */
+.grid-stage {
+  width: max-content;
+  padding: 0 var(--grid-padx);
+}
+
+.collection-grid {
+  display: grid;
+  /* 列数由 JS 写进 --grid-cols；比「一屏放得下」的列数多 1，
+     保证任何缩放级别下都溢出，横向滚动不会因为内容塞得下而失效。 */
+  grid-template-columns: repeat(var(--grid-cols, 5), calc(var(--grid-w-num) * 1px));
+  gap: var(--grid-gap);
+}
+
+.grid-card {
+  min-width: 0;
+  width: calc(var(--grid-w-num) * 1px);
+  height: var(--grid-card-h);
+  padding: 0;
+  border: 0;
+  border-radius: var(--grid-radius);
+  background: #fff;
+  display: grid;
+  place-items: center;
+  justify-self: center;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(31,23,16,.06);
+  /* 不加 transition：CSS 自定义属性默认不可插值，变量变化是瞬时的，
+     而 transform 过渡会平滑，两段运动会不同步、看起来像撕裂。
+     也正因如此 :active 的 scale(.94) 已删除 —— 41 × .94 = 38.5，会跌破 41px 下限。 */
+}
+
+/* 袋子容器：高度钉死 --grid-art，宽度交给内容撑开。
+   图片一律 max-height:var(--grid-art) + width:auto，所以是等比缩放而非拉伸。 */
+.grid-art {
+  height: var(--grid-art);
+  width: auto;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  background: none;
+}
+.grid-art > img,
+.grid-art > .paper-bag,
+.grid-art > .uploaded-object {
+  max-height: var(--grid-art);
+  max-width: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+}
+/* CSS 纸袋固有 92×132，高 98 恰好就是它自己的 0.742 倍，不需要再 transform */
+.grid-art .paper-bag { transform: none; }
+.grid-art .paper-bag,
+.grid-art .bag-photo { filter: drop-shadow(0 5px 5px rgba(20,20,20,.16)); }
+
+.uploaded-object { max-width: 90%; max-height: 90%; object-fit: contain; filter: drop-shadow(0 14px 10px rgba(20,20,20,.18)); }
+
+/* 卡片不再展示文案。DOM 里仍然保留 strong/small（详情弹窗与无障碍还要读），
+   只是视觉上藏掉，避免改渲染函数带来的连带风险。 */
+.grid-card strong,
+.grid-card small { display: none; }
+
+/* 渲染量封顶时的提示（小档位列数翻倍，收藏量极大时防止 DOM 膨胀） */
+.grid-overflow-note { margin: 10px 0 0; padding: 0 var(--grid-padx, 12px); color: var(--muted); font-size: 11px; text-align: center; }
+
+/* ── 视图切换 ──
+   分组视图（.collection-group）与网格视图（.collection-grid）用的是**不同的 DOM**，
+   由 renderLibrary() 按 libraryView 产出，所以这里不需要靠 data-view 去覆盖布局。
+   data-view 只留给需要跨视图生效的微调。 */
+.library-body.is-switching { animation: viewSwap .26s ease both; }
+@keyframes viewSwap { from { opacity: 0; transform: translateY(5px); } }
+
+/* 分组视图：最后一个展示架不再留底部间距，避免和底部导航挤在一起 */
+.collection-group--last { margin-bottom: 4px; }
+/* .grid-card strong / small 的旧规则已删除（网格卡片不再展示文案，见上方 562 行区块） */
+
+.empty-state { padding: 65px 20px; color: var(--muted); text-align: center; }
+.empty-state div { font-size: 48px; }
+.empty-state h2 { margin: 12px 0 8px; color: var(--ink); }
+.empty-state p { font-size: 12px; }
+
+.sheet-backdrop { position: fixed; z-index: 90; inset: 0; background: rgba(17,15,12,.36); backdrop-filter: blur(3px); }
+.bottom-sheet { position: fixed; z-index: 100; left: 50%; bottom: 0; width: min(430px,100%); max-height: min(810px, calc(100dvh - 30px)); overflow-y: auto; padding: 28px 22px max(24px,var(--safe-bottom)); transform: translate(-50%,105%); border-radius: 32px 32px 0 0; background: #f7f3ed; box-shadow: 0 -20px 70px rgba(0,0,0,.24); transition: transform .38s cubic-bezier(.2,.75,.22,1); }
+.bottom-sheet.is-open { transform: translate(-50%,0); }
+.sheet-handle { position: absolute; top: 10px; left: 50%; width: 38px; height: 4px; transform: translateX(-50%); border-radius: 2px; background: #c4beb4; }
+.sheet-close { position: absolute; right: 18px; top: 22px; width: 38px; height: 38px; font-size: 24px; }
+.detail-artwork { height: 290px; margin: 16px 0 25px; display: grid; place-items: center; border-radius: 25px; background: linear-gradient(145deg,#e3dbcf,#fbf8f3); }
+.detail-artwork .paper-bag { transform: scale(1.48); }
+.add-sheet h2, .settings-sheet h2 { margin: 5px 50px 7px 0; font-size: 31px; }
+.detail-meta, .detail-note { color: var(--muted); font-size: 12px; line-height: 1.65; }
+.tag-list { display: flex; flex-wrap: wrap; gap: 7px; margin: 15px 0; }
+.tag-list span { padding: 6px 10px; border-radius: 15px; background: var(--paper-deep); font-size: 10px; }
+.detail-note { min-height: 38px; margin-bottom: 22px; }
+
+/* ══════════════════════════════════════════════════════════════
+   详情：居中弹出卡片
+   复刻首页卡片背面的液态玻璃（.flip-card 的配方），整体放大到 348×560。
+   三层结构：玻璃背景(1) / 滚动内容(3) / 固定按钮(4~5)
+   ══════════════════════════════════════════════════════════════ */
+:root {
+  --detail-open-dur: .30s;
+  --detail-curve: cubic-bezier(.2,.78,.22,1);
+  --detail-radius: 30px;
+}
+
+.detail-card {
+  position: fixed;
+  z-index: 100;
+  /* ⚠ 居中必须用 inset:0 + margin:auto + 固定尺寸。
+     不能写 left:50% + translate(-50%,-50%)：那会占用 transform，
+     和下面的 scale() 入场动效互相覆盖。
+     也不能用 display:grid + place-items:center：内容超出 height 时
+     会从上下两端同时裁剪，顶部内容永远滚不到。 */
+  inset: 0;
+  margin: auto;
+  width: min(348px, calc(100vw - 36px));
+  height: min(560px, calc(100dvh - 96px));
+  display: flex;
+  flex-direction: column;
+  /* 让 light-beam 的斜光与圆角一起被裁掉 */
+  overflow: hidden;
+  border-radius: var(--detail-radius);
+  /* 玻璃配方与 .flip-card 逐值一致 */
+  background: rgba(255, 255, 255, .154);
+  backdrop-filter: blur(22px) saturate(180%);
+  -webkit-backdrop-filter: blur(22px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, .62);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, .9) inset,
+    0 -1px 0 rgba(255, 255, 255, .28) inset,
+    0 16px 36px rgba(52, 66, 92, .16),
+    0 3px 10px rgba(52, 66, 92, .07),
+    /* 比首页卡片多加一层落地投影：浮层要"离页面更远" */
+    0 30px 80px rgba(0, 0, 0, .26);
+  opacity: 0;
+  visibility: hidden;
+  transform: scale(.92);
+  /* 关闭时 visibility 延后到淡出播完，否则会瞬间消失 */
+  transition:
+    opacity var(--detail-open-dur) var(--detail-curve),
+    transform var(--detail-open-dur) var(--detail-curve),
+    visibility 0s linear var(--detail-open-dur);
+}
+.detail-card.is-open {
+  opacity: 1;
+  visibility: visible;
+  transform: scale(1);
+  transition:
+    opacity var(--detail-open-dur) var(--detail-curve),
+    transform var(--detail-open-dur) var(--detail-curve),
+    visibility 0s;
+}
+
+/* 玻璃背景层：只负责高光与光束，不参与滚动 */
+.detail-glass { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+/* ⚠ 可读性底色：首页卡片背面浮在干净的页面背景上，.154 的透明度够用；
+   详情卡是浮在「一屏彩色纸袋」之上的，纯 .154 会让正文直接和背景打架。
+   这里再叠一层偏暖的白色薄纱把对比度拉回来，同时保留玻璃的通透感。
+   只在浮层用，不回声污染首页卡片。 */
+.detail-glass::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: var(--detail-radius);
+  /* 上半透一点（让顶部大图区透出背景更有层次），下半更实（正文都在下半） */
+  background: linear-gradient(180deg, rgba(247, 243, 237, .30) 0%, rgba(247, 243, 237, .62) 42%, rgba(247, 243, 237, .78) 100%);
+}
+.detail-glass .glass-glow,
+.detail-glass .light-beam { border-radius: var(--detail-radius); }
+.detail-glass .light-beam { border-radius: 0 var(--detail-radius) 0 0; }
+/* 卡片比首页大，卡沿反光的位置同步下移一点 */
+.detail-glass .light-beam::before { top: 15px; right: 9px; }
+
+/* 滚动内容层 */
+.detail-scroll {
+  position: relative;
+  z-index: 3;
+  flex: 1 1 auto;
+  /* ⚠ 必须：flex 子项默认 min-height:auto，不加就永远是内容高度，
+     overflow-y 形同虚设（经典的静默失效） */
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 22px 24px 28px;
+  -webkit-overflow-scrolling: touch;
+  /* ⚠ 底部渐隐遮罩：滚动条是隐藏的，内容又必然溢出
+     （实测内容 597px / 视口 478px），不加遮罩时最后一行标签会被
+     视口硬切一半，看起来像渲染坏了。渐隐让"还有内容"这件事被读出来。
+     只在未滚到底时生效，避免滚到底后底部还糊一层。 */
+  mask-image: linear-gradient(180deg, #000 0, #000 calc(100% - 30px), transparent 100%);
+  -webkit-mask-image: linear-gradient(180deg, #000 0, #000 calc(100% - 30px), transparent 100%);
+}
+/* 滚到底时撤掉渐隐（否则最底部那行永远糊着） */
+.detail-scroll.is-at-end {
+  mask-image: linear-gradient(180deg, #000 0, #000 calc(100% - 14px), transparent 100%);
+  -webkit-mask-image: linear-gradient(180deg, #000 0, #000 calc(100% - 14px), transparent 100%);
+}
+.detail-scroll::-webkit-scrollbar { display: none; }
+
+.detail-back {
+  position: absolute;
+  z-index: 5;
+  top: 16px;
+  right: 16px;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, .42);
+  color: #4a453d;
+  font-size: 21px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+/* 顶部大图：比半窗时代的 290 收窄，给下方信息腾高度 */
+.detail-artwork {
+  /* 图区高度：用变量让给图片的可用高度可推导 */
+  /* ⚠ 186 是从旧半窗继承来的数值，直接搬进 560 高的详情卡就偏大了：
+     图区 + 下边距 = 204px，占掉滚动视口(478)的 42%，导致标签行被切在
+     视口外。实测 168 是「标签完整进入首屏」的最小改动（溢出 119→101），
+     仍然是一眼可见的顶部大图。 */
+  --art-h: 168px;
+  --art-pad: 10px;
+  height: var(--art-h);
+  margin: 0 0 18px;
+  display: grid;
+  place-items: center;
+  /* ⚠ 两层保险：
+     · overflow: hidden 兜底裁掉任何越界
+     · 图片用绝对 px 限高（见下），不用 max-height:100%
+     半窗时代只约束了 .paper-bag，真图 <img> 从来没被限高过，
+     这是遗留漏洞 —— 图片会撑破容器直接盖住下面的文字。 */
+  overflow: hidden;
+  padding: var(--art-pad);
+  border-radius: 20px;
+  /* 半透明底：玻璃上再铺一层实色会显得脏 */
+  background: linear-gradient(145deg, rgba(227, 219, 207, .72), rgba(251, 248, 243, .6));
+}
+/* ⚠ 关键：用 calc() 算绝对高度，不要写 max-height: 100%。
+   在 grid 里 100% 是相对「网格区域」解析的，而网格区域又会被这个
+   超高子项撑大 —— 循环依赖下浏览器回退成原始尺寸（实测 254×460
+   塞进 186px 的盒子，溢出 284px）。改成可推导的 px 就没有这个问题。 */
+.detail-artwork .bag-photo {
+  max-height: calc(var(--art-h) - var(--art-pad) * 2);
+  max-width: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  filter: drop-shadow(0 6px 10px rgba(20, 20, 20, .18));
+}
+.detail-artwork .paper-bag { transform: scale(1.30); }
+
+.detail-name {
+  margin: 0;
+  font-family: Georgia, "Iowan Old Style", "Songti SC", serif;
+  font-size: 25px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: #1d1a15;
+}
+.detail-brand { margin: 6px 0 0; color: #6f6a62; font-size: 13px; }
+
+/* ── 复用背面的结构类，只放大字号与间距 ──
+   ⚠ 每条都必须带 .detail-card 前缀：写成裸 .back-facts__row 会把
+      首页卡片背面一起放大（回归测试 E9 就是挡这个）。 */
+.detail-card .back-eyebrow { font-size: 10.5px; letter-spacing: 1.8px; }
+.detail-card .back-divider { margin: 14px 0; }
+.detail-card .back-facts { gap: 9px; }
+.detail-card .back-facts__row dt { font-size: 11.5px; }
+.detail-card .back-facts__row dd { font-size: 12.5px; }
+.detail-card .back-tags { gap: 7px; margin-top: 16px; }
+.detail-card .back-tags span { padding: 6px 12px; border-radius: 12px; font-size: 11px; }
+.detail-card .back-note {
+  margin: 15px 0 0;
+  padding: 11px 13px;
+  border-left-width: 2px;
+  border-radius: 0 11px 11px 0;
+  font-size: 12px;
+}
+
+/* 固定「完成」按钮：不随内容滚动 */
+.detail-done {
+  position: relative;
+  z-index: 4;
+  flex: 0 0 auto;
+  min-height: 48px;
+  margin: 12px 24px 20px;
+  border: 0;
+  border-radius: 24px;
+  background: var(--ink);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.primary-button, .secondary-button { width: 100%; min-height: 50px; border-radius: 25px; border: 0; font-weight: 700; cursor: pointer; }
+.primary-button { background: var(--ink); color: white; }
+.primary-button:disabled { opacity: .28; cursor: default; }
+.secondary-button { border: 1px solid var(--line); background: transparent; color: var(--ink); }
+.step-kicker { margin-bottom: 18px; color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: 1.5px; }
+.add-step > p { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.upload-zone { position: relative; min-height: 350px; margin: 22px 0 16px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; overflow: hidden; border: 1px dashed #aaa197; border-radius: 25px; background: #eee8df; cursor: pointer; }
+.upload-zone input { position: absolute; opacity: 0; pointer-events: none; }
+.upload-zone .upload-plus { width: 49px; height: 49px; display: grid; place-items: center; border-radius: 50%; background: var(--ink); color: white; font-size: 28px; font-weight: 200; }
+.upload-zone strong { font-family: Iowan Old Style, Baskerville, serif; }
+.upload-zone small { color: var(--muted); font-size: 10px; }
+.upload-zone img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; padding: 16px; background: #e9e3db; }
+.mini-preview { width: 112px; height: 130px; margin: 17px auto; display: grid; place-items: center; border-radius: 15px; background: #ebe4db; overflow: hidden; }
+.mini-preview img { width: 100%; height: 100%; padding: 8px; object-fit: contain; }
+.field-label { display: block; margin: 14px 0; color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .5px; }
+.field-label input, .field-label select { width: 100%; height: 49px; margin-top: 7px; padding: 0 14px; border: 1px solid var(--line); border-radius: 14px; outline: 0; background: rgba(255,255,255,.62); color: var(--ink); font-size: 13px; }
+.form-actions { display: grid; grid-template-columns: .65fr 1.35fr; gap: 9px; margin-top: 20px; }
+
+.settings-card { display: flex; justify-content: space-between; align-items: center; margin: 10px 0; padding: 17px; border-radius: 16px; background: rgba(255,255,255,.55); font-size: 12px; }
+.settings-card strong { font-size: 11px; }
+.settings-card .muted { color: var(--muted); }
+.settings-card--action { align-items: center; }
+
+/* iOS 标准滑动开关：51x31 胶囊轨道 + 27px 圆形滑块，滑块用 transform 平移，
+   开启时轨道变绿并轻微放大，松手瞬间有一点回弹，贴近系统开关的手感。 */
+.ios-switch {
+  position: relative;
+  flex: 0 0 auto;
+  width: 51px;
+  height: 31px;
+  padding: 2px;
+  border: none;
+  border-radius: 999px;
+  background: #e5e5ea;
+  cursor: pointer;
+  transition: background .25s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.ios-switch[aria-checked="true"] {
+  background: #34c759;
+}
+.ios-switch__knob {
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 27px; height: 27px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 3px 8px rgba(0,0,0,.18), 0 1px 1px rgba(0,0,0,.12);
+  transition: transform .25s cubic-bezier(.34,1.56,.64,1);
+}
+.ios-switch[aria-checked="true"] .ios-switch__knob {
+  transform: translateX(20px);
+}
+.ios-switch:active .ios-switch__knob {
+  width: 30px; /* 按下时滑块轻微拉长，模拟系统开关按压反馈 */
+}
+.ios-switch[aria-checked="true"]:active .ios-switch__knob {
+  transform: translateX(17px);
+}
+.settings-hint { margin-top: -4px; }
+.privacy-note { margin: 19px 4px 25px; color: var(--muted); font-size: 11px; line-height: 1.6; }
+
+.toast { position: fixed; z-index: 120; left: 50%; bottom: 103px; padding: 11px 18px; opacity: 0; transform: translate(-50%,16px); border-radius: 24px; background: var(--ink); color: white; font-size: 11px; pointer-events: none; transition: .28s ease; }
+.toast.is-showing { opacity: 1; transform: translate(-50%,0); }
+
+:focus-visible { outline: 2px solid #167fc0; outline-offset: 3px; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; } }
+
+@media (max-height: 760px) {
+    .feature { margin-bottom: 24px; }
+  .hero-item { height: 278px; }
+  .paper-bag--hero { width: 140px; height: 202px; top: 46%; }
+  .hero-caption { bottom: 0; }
+}
+
+/* 真实袋子图片 */
+.bag-photo {
+  max-width: 85%;
+  max-height: 85%;
+  object-fit: contain;
+  filter: drop-shadow(0 10px 14px rgba(0,0,0,.28));
+}
+/* .grid-art .bag-photo 的旧尺寸规则已删除 —— 网格视图里
+   图片统一由上方 .grid-art > img 的 max-height:98 控制，这里再写会打架。 */
+
+/* ═══════════════════════════════════════════════════════════
+   增量②：挂袋一排铺满不溢出
+   原稿卡片固定 110px、重叠 20px，6 张要求 560px 宽，超出手机壳
+   会把最后一张裁掉（也导致绳索右侧多了 130px 空绳）。
+   渲染时按容器实测宽度算出缩放比，用这两个变量把卡片宽度与
+   重叠量一并收窄，孔环仍由脚本按绳索真实坐标对齐，故不受影响。
+   ═══════════════════════════════════════════════════════════ */
+.rack-item { width: var(--rack-card-w, 110px); }
+.rack-item + .rack-item { margin-left: calc(-1 * var(--rack-overlap, 20px)); }
+.rack-bags { overflow-x: visible; } /* 已铺满，不再需要横向滚动，也避免裁掉阴影 */
+
+/* 卡片高度随宽度等比收窄，保持纸袋比例不变形 */
+.rack-photo { height: calc(var(--rack-card-w, 110px) * 1.29); }
+.rack-meta strong { font-size: calc(var(--rack-card-w, 110px) * 0.118); }
+.rack-meta small { font-size: calc(var(--rack-card-w, 110px) * 0.082); }
+.rack-meta { padding-top: calc(var(--rack-card-w, 110px) * 0.064); }
+.rack-clip { width: calc(var(--rack-card-w, 110px) * 0.236); height: calc(var(--rack-card-w, 110px) * 0.236); }
+.rack-frame { padding: calc(var(--rack-card-w, 110px) * 0.045); }
+
+/* 挂袋卡片选中态：与上方主卡位呼应 */
+.rack-item { transition: transform .28s cubic-bezier(.2, .8, .25, 1); }
+.rack-item.is-active { transform: translateY(-4px); }
+.rack-item.is-active .rack-frame {
+  border-color: #c8891f;
+  box-shadow: 0 6px 16px rgba(160, 110, 20, .26), inset 0 1px 0 rgba(255, 255, 255, .5);
+}
+.rack-item.is-active .rack-meta strong { color: #8a5a10; }
+.rack-item.is-active .rack-clip { box-shadow: 0 0 0 3px rgba(240, 154, 42, .3), 0 1px 3px rgba(30, 22, 8, .3); }
+
+/* 空状态：最近 15 天没有新收藏 */
+.rack-empty {
+  padding: 26px 22px 8px;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: center;
+}
+.stage-count { margin: -6px 22px 12px; color: var(--muted); font-size: 10px; }
+/* 点首页右上角「最近收藏 N」滚过来时，这一行闪一下，告诉用户落点在哪 */
+.stage-count.is-flash { animation: countFlash 1.2s ease; }
+@keyframes countFlash {
+  0%   { color: var(--ink); letter-spacing: 1.8px; }
+  60%  { color: var(--ink); letter-spacing: 1px; }
+  100% { color: var(--muted); letter-spacing: 0; }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   增量④：主展位 = 白色液态玻璃卡片 + 3D 翻面
+   参考原型图：
+     · 卡面纯白、几乎无边框，靠极淡阴影浮起（液态玻璃质感）
+     · 正面只放袋子，下方一条轻点提示
+     · 右上角一束暖色斜光，像展柜射灯打下来
+     · 轻点卡片整体绕 Y 轴翻面，背面展示详细信息
+   ═══════════════════════════════════════════════════════════ */
+.stage-section {
+  margin: 0 18px 26px;
+  /* 让子元素的 3D 变换不被父层压平 */
+  perspective: 1400px;
+}
+
+.flip-card {
+  position: relative;
+  /* 固定卡片尺寸 308×348（设计指定）。
+     注意不能写 width:100%，否则会被 .stage-section 的左右外边距拉宽。 */
+  width: 308px;
+  height: 348px;
+  margin: 0 auto;
+  border-radius: 26px;
+  transform-style: preserve-3d;
+  transition: transform .78s cubic-bezier(.2, .78, .22, 1);
+  /* 玻璃的底色放在这里（而不是各个 .flip-face 上）：
+     只有卡片本身是一层"玻璃"，才能透过它看到后面的页面背景，
+     backdrop-filter 也才有可模糊的内容。
+     代价：backdrop-filter 会压平 3D 上下文。所以翻面不再依赖
+     backface-visibility，改为正面加 .is-flipped 时直接淡出、
+     并延后到旋转过半再隐藏（见下方 .front 的规则）。
+     透明度：在白底 .22 的基础上再降 30% → .22 × 0.7 = .154 */
+  background: rgba(255, 255, 255, .154);
+  backdrop-filter: blur(22px) saturate(180%);
+  -webkit-backdrop-filter: blur(22px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, .62);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, .9) inset,
+    0 -1px 0 rgba(255, 255, 255, .28) inset,
+    0 16px 36px rgba(52, 66, 92, .16),
+    0 3px 10px rgba(52, 66, 92, .07);
+}
+/* 翻面：绕 Y 轴。
+   用 -180deg 而不是 +180deg —— 负角度是顺时针（从上方看），
+   与"把卡片向右翻过去"的直觉一致；翻回来时回到 0 即为逆时针。
+   正反两态只在这两个值之间切换，不会累积成 -360。 */
+.flip-card.is-flipped { transform: rotateY(-180deg); }
+
+.flip-card__hit {
+  position: absolute;
+  z-index: 6;
+  inset: 0;
+  /* 翻到背面时这个遮罩要沉到内容下面，否则会挡住背面文字与按钮 */
+  transition: z-index 0s .4s;
+  border: 0;
+  padding: 0;
+  border-radius: 26px;
+  background: transparent;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.flip-card__hit:focus-visible { outline: 2px solid var(--ink); outline-offset: -4px; }
+
+/* 两个面共用一层。
+   因为父层有 backdrop-filter（压平 3D），backface-visibility 不再生效，
+   所以两个面各自固定预旋转，用透明度做前后切换。
+
+   ⚠️ 关键：可见的那一面，净角度必须 ≈ 0°(mod 360°)。
+      · 正面可见：父级 0° + 正面 0° = 0°               → 正常
+      · 背面可见：父级 -180° + 背面 -180° = -360° ≡ 0° → 正常
+   所以背面的预旋转必须固定为 -180°、与父级同号，不能跟着父级动。
+
+   ⚠️ 淡入延时不能太小：必须等父级转过 90°（卡片最窄）之后再让目标面出现，
+   否则会在卡片还很宽时露出镜像内容。实测安全下限约 110ms
+   （当前曲线下 90° 出现在 94~100ms）。低于 60ms 会露出可读的镜像背面。
+   详见 /tmp/verify/limit.js。 */
+.flip-face {
+  position: absolute;
+  inset: 0;
+  border-radius: 26px;
+  /* 玻璃已被父层承担，这一层保持完全透明，不再铺任何底色 */
+  background: transparent;
+}
+/* 正面：不额外旋转（跟随父级） */
+.flip-face--front {
+  transform: rotateY(0deg);
+  opacity: 1;
+}
+/* 背面：固定 -180°，与父级的 -180° 同号抵消成 -360°（= 正向） */
+.flip-face--back {
+  transform: rotateY(-180deg);
+  opacity: 0;
+}
+/* 翻到背面：正面立刻淡出（避免镜像正面压住背面），背面紧随其后淡入 */
+.flip-card.is-flipped .flip-face--front {
+  opacity: 0;
+  transition: opacity .06s linear 0s;
+}
+.flip-card.is-flipped .flip-face--back {
+  opacity: 1;
+  transition: opacity .1s linear .11s;
+}
+/* 翻回正面：背面立刻淡出（否则会被转身成镜像文字），正面紧随其后淡入 */
+.flip-card:not(.is-flipped) .flip-face--front {
+  opacity: 1;
+  transition: opacity .1s linear .11s;
+}
+.flip-card:not(.is-flipped) .flip-face--back {
+  opacity: 0;
+  transition: opacity .06s linear 0s;
+}
+/* 光效层自己带圆角，替代父层的 overflow 裁剪 */
+.glass-glow, .light-beam { border-radius: 26px; }
+.light-beam { border-radius: 0 26px 0 0; }
+
+/* ── 液态玻璃的光泽 ──
+   左上角一层冷白高光 + 一道极淡的斜向反光，模拟玻璃表面 */
+.glass-glow {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background:
+    radial-gradient(120% 78% at 16% -12%, rgba(255, 255, 255, .95) 0%, rgba(255, 255, 255, 0) 58%),
+    linear-gradient(128deg, rgba(255, 255, 255, .5) 0%, rgba(255, 255, 255, 0) 34%, rgba(255, 255, 255, 0) 66%, rgba(255, 255, 255, .34) 100%);
+}
+
+/* ── 右上角斜射的一束光（展柜射灯）──
+   用设计给的位图素材，不再用 CSS 渐变拼。
+   素材本身已是「右上角为光源、向左下渐隐到全透明」的 RGBA 图，
+   所以只要贴到卡片右上角、等比铺满，就是展柜打下来的一束光。
+   位图比渐变的好处：光晕的衰减曲线、色温过渡都是设计调好的，
+   不用再靠 blur + blend-mode 去猜，边缘也更干净。 */
+.light-beam {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  right: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  /* 光源来自右上角，用 cover 铺满整张卡，右上的高光不会被裁掉 */
+  background-image: url("images/light-beam.png");
+  background-repeat: no-repeat;
+  background-position: top right;
+  background-size: cover;
+  /* 遮罩收得比之前紧：光只留在右上角那一块，
+     否则素材本身的暖黄会顺着右边一路铺到卡底，整张卡发浑、发脏。
+     用两个渐变的交集：横向向右收、纵向向下收，形成"斜射下来的一束"。 */
+  -webkit-mask-image:
+    radial-gradient(96% 74% at 100% 0%, #000 0%, rgba(0, 0, 0, .78) 38%, transparent 74%);
+  mask-image:
+    radial-gradient(96% 74% at 100% 0%, #000 0%, rgba(0, 0, 0, .78) 38%, transparent 74%);
+  opacity: .9;
+  /* 圆角跟随卡片右上角 */
+  border-radius: 0 26px 0 0;
+}
+/* 卡面顶部边缘的一道细亮线：射灯打在玻璃上沿的反光 */
+.light-beam::before {
+  content: "";
+  position: absolute;
+  top: 12px;
+  right: 6px;
+  left: 34%;
+  height: 1.5px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, rgba(255, 236, 190, 0) 0%, rgba(255, 246, 220, .9) 58%, rgba(255, 236, 190, 0) 100%);
+}
+/* 背面：信息为主，光压到很淡，只留一点右上角的温度，
+   否则暖黄会盖在读字的地方、拉低对比度 */
+.light-beam--back { opacity: .34; }
+
+/* 正面布局：袋子居中，提示语贴底 */
+/* 正面：袋子 248px + 下方文字信息（品牌 / 名字 · 日期）+ 最底一行轻点提示。
+   高度不受卡片变宽影响：348 = 18(上留白) + 248(袋子) + 8 + 40(两行文字)
+   + 4 + 12(提示) + 18(下留白)。宽度 308 只影响左右留白与文字可用宽度。 */
+.flip-face--front {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 18px 20px 18px;
+  gap: 0;
+}
+.flip-face__art {
+  position: relative;
+  z-index: 3;
+  flex: 0 0 auto;
+  height: 248px;      /* 设计指定的袋子高度，等比缩放 */
+  width: 100%;
+  display: grid;
+  place-items: center;
+}
+.flip-face__art .bag-photo {
+  /* 高度锁 248px，宽度 auto —— 浏览器按素材原始纵横比等比缩放，
+     所以每只袋子都保持自己的真实比例，不会被拉扁或压高。
+     注意必须显式清掉通用规则里的 max-height:85%：它会把图片
+     压到 248×0.85=210.8px，看起来"没生效"。 */
+  display: block;
+  width: auto;
+  height: 248px;
+  max-height: none;
+  max-width: 100%;
+  object-fit: contain;
+  filter: drop-shadow(0 12px 12px rgba(60, 48, 34, .2));
+}
+/* CSS 手绘纸袋兜底：定尺寸而非 scale，避免溢出被裁 */
+.flip-face__art .paper-bag {
+  transform: none;
+  width: 118px;
+  height: 168px;
+  filter: drop-shadow(0 14px 12px rgba(60, 48, 34, .22));
+}
+
+/* ── 正面的文字信息（袋子下方）──
+   两行：品牌名做主标题（大、黑），下面一行「袋子名字 · 收藏日期」。
+   参考原型图：品牌是视觉主角；名字与日期用灰色小字并列，中间一个圆点分隔。 */
+.front-caption {
+  position: relative;
+  z-index: 3;
+  flex: 0 0 auto;
+  width: 100%;
+  margin-top: 8px;
+  text-align: center;
+}
+.front-caption__brand {
+  margin: 0;
+  font-family: Georgia, "Iowan Old Style", "Songti SC", serif;
+  font-size: 21px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: .1px;
+  color: #1a1815;
+  /* 品牌名过长时限一行省略，避免把卡片顶变形 */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.front-caption__sub {
+  margin: 5px 0 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  color: #8d877c;
+  font-size: 10.5px;
+  letter-spacing: .2px;
+  white-space: nowrap;
+}
+.front-caption__sub > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.front-caption__sub > span:first-child { flex: 0 1 auto; }
+.front-caption__sub > span:last-child { flex: 0 0 auto; }
+/* 两段之间的分隔圆点 */
+.front-caption__dot {
+  flex: 0 0 auto;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: .55;
+}
+
+/* 右上角品牌徽标（正面） */
+.brand-badge {
+  position: absolute;
+  z-index: 4;
+  top: 12px;
+  right: 12px;
+  padding: 4px 10px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, .58);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, .9) inset, 0 3px 10px rgba(40, 34, 24, .09);
+  color: #96703a;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: .5px;
+}
+
+/* 轻点提示：贴卡片底部通栏居中。
+   原来放左上角会和袋子提手撞在一起 —— 袋子高 248，
+   上留白很窄，提手正好穿过左上角那一带；
+   放文字信息下方又离得太近会被读成第三行，所以拉开到卡底。 */
+.flip-hint {
+  position: absolute;
+  z-index: 4;
+  bottom: 6px;
+  left: 0;
+  right: 0;
+  margin: 0;
+  text-align: center;
+  color: #c0bab1;
+  font-size: 8.5px;
+  letter-spacing: .3px;
+  pointer-events: none;
+}
+
+/* ── 背面：详细信息 ── */
+.back-inner {
+  position: relative;
+  z-index: 3;
+  height: 100%;
+  /* 卡片只有 308×348，背面固定 5 行字段 + 标签 + 备注 + 按钮，
+     已按实测收紧到这个高度内（溢出 0），所以直接 overflow: hidden ——
+     不是"藏起滚动条"，而是根本不会产生滚动，卡内永远不出现滚动条。
+     字段行高与这里的内边距是绑定的：若以后再加字段，需同步减间距。 */
+  padding: 16px 18px 14px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.back-eyebrow {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 1.6px;
+}
+.back-name {
+  margin: 0;
+  font-family: Georgia, "Iowan Old Style", "Songti SC", serif;
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: #1d1a15;
+}
+.back-brand {
+  margin: 5px 0 0;
+  color: #6f6a62;
+  font-size: 11px;
+}
+.back-divider {
+  height: 1px;
+  margin: 11px 0;
+  background: linear-gradient(90deg, rgba(20, 20, 20, .12), rgba(20, 20, 20, .04) 70%, transparent);
+}
+/* 键值对：左键右值，比一行行散文更好扫 */
+.back-facts {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.back-facts__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.back-facts__row dt {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 9.5px;
+  letter-spacing: .3px;
+}
+.back-facts__row dd {
+  margin: 0;
+  min-width: 0;
+  color: #2b2720;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.back-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 12px;
+}
+.back-tags span {
+  padding: 4px 9px;
+  border-radius: 10px;
+  background: rgba(20, 20, 20, .055);
+  color: #5d594f;
+  font-size: 9.5px;
+}
+.back-open {
+  /* 贴住上方内容：间距只由 .back-note + .back-open 的 margin 控制。
+     原来还带 padding: 10px 0 0，和 margin 叠加成 20px 视觉空隙，
+     看起来"按钮离上面很远"，所以把这段内边距去掉。 */
+  margin-top: 10px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+  /* 要高于 .flip-card__hit(6)，否则点击会被"整卡翻转"的遮罩吃掉 */
+  position: relative;
+  z-index: 8;
+}
+.back-note + .back-open { margin-top: 10px; }
+/* 背面备注：一段引用式的小字，和其他字段拉开层次 */
+.back-note {
+  margin: 11px 0 0;
+  padding: 8px 10px;
+  border-left: 2px solid rgba(20, 20, 20, .14);
+  border-radius: 0 9px 9px 0;
+  background: rgba(20, 20, 20, .035);
+  color: #5f5b53;
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+/* 背面左上角的"翻回去"按钮（在点击遮罩之上） */
+.flip-back {
+  position: absolute;
+  /* 必须高于 .flip-card__hit(6)，否则"翻回正面"按钮点不到 */
+  z-index: 8;
+  top: 12px;
+  right: 12px;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(20, 20, 20, .055);
+  color: #6d675e;
+  font-size: 15px;
+  cursor: pointer;
+}
+.flip-back span { display: block; margin-top: -2px; }
+
+/* 空状态：卡片收成一个安静的占位 */
+.flip-card.is-empty .flip-face__art .bag-photo,
+.flip-card.is-empty .flip-face__art .paper-bag { display: none; }
+.flip-card.is-empty .back-name { color: #8d8880; font-size: 21px; }
+.flip-card.is-empty .brand-badge { display: none; }
+/* 空状态不允许翻面 */
+.flip-card.is-empty .flip-card__hit { cursor: default; }
+
+/* 背面时遮罩保持可点：整块卡片都能翻回正面。
+   它的层级要高于背面内容，但低于"翻回正面"按钮 ——
+   按钮的 z-index 7 / 查看大图靠自身层级与事件处理放行。 */
+.flip-card.is-flipped .flip-card__hit { z-index: 6; cursor: pointer; }
+/* 前后切换靠 opacity（父层 backdrop-filter 压平了 3D），
+   但背面仍要在上，避免和正面的残余像素争层级 */
+.flip-face--back { z-index: 2; }
+.flip-face--front { z-index: 1; }

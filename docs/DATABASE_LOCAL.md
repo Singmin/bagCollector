@@ -11,7 +11,7 @@
 
 测试脚本不得连接开发库。生产部署继续使用 `infra/docker-compose.yml`，不能复用本地固定密码。
 
-本地开发默认使用 `STORAGE_DRIVER=local`，图片写入仓库忽略目录 `data/local-storage`，不需要腾讯云密钥。生产环境被强制要求使用 `STORAGE_DRIVER=cos`。
+本地 API 开发可以使用 `STORAGE_DRIVER=local`，图片写入仓库忽略目录 `data/local-storage`，不需要腾讯云密钥。但 **Worker 强制要求 `STORAGE_DRIVER=cos` 且 COS 凭据必填**：抠图走腾讯云数据万象，万象只能读取 COS 上的对象，所以 `STORAGE_DRIVER=local` 时 `pnpm dev:worker` 会在配置校验处被拦下。生产环境同样强制使用 `STORAGE_DRIVER=cos`。
 
 ## 启动与验证
 
@@ -20,8 +20,6 @@ pnpm infra:local:up
 pnpm db:local:deploy
 pnpm db:test:deploy
 pnpm test:integration:local
-pnpm dev:rembg
-pnpm warmup:rembg
 pnpm dev:api
 pnpm dev:worker
 pnpm build:miniapp:local
@@ -36,7 +34,7 @@ Docker Desktop 退出后容器会停止；再次执行 `pnpm infra:local:up` 即
 pnpm test:image-flow:local -- /absolute/path/to/image.png
 ```
 
-本地模式会完成上传、标准化、裁剪、BiRefNet 抠图、展示图和缩略图处理。`STORAGE_DRIVER=local` 只决定文件存储位置，不再改变抠图行为；`MATTING_DRIVER=rembg` 才表示使用真实自托管抠图。`passthrough` 只允许开发或测试使用，并会进入可恢复的失败状态，不能冒充成功抠图。
+本地模式会完成上传、标准化、裁剪、万象抠图、展示图和缩略图处理，前提是 Worker 配置为 `STORAGE_DRIVER=cos` 并填好 COS 凭据。抠图失败会直接进入终止失败状态，不会退回任何本机推理。
 
 ## 数据模型约束
 
@@ -58,4 +56,4 @@ pnpm test:image-flow:local -- /absolute/path/to/image.png
 - 删除尚未完成的上传预留时，存储计数保持不变。
 - 展示架和收藏品基础创建流程。
 
-本地集成测试还覆盖真实 multipart 图片上传和派生资产并发幂等计费。COS STS 与腾讯云侧对象存储仍需要腾讯云测试配置后单独验收；抠图模型本身由本机 rembg 链路验收。
+本地集成测试还覆盖真实 multipart 图片上传和派生资产并发幂等计费。COS STS、万象抠图与腾讯云侧对象存储都需要腾讯云测试配置后单独验收；该脚本只启动 API 并显式使用 `STORAGE_DRIVER=local`，不经过 Worker 的抠图链路。

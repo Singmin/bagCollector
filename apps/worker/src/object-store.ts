@@ -25,6 +25,37 @@ export function getObject(key: string): Promise<Buffer> {
   });
 }
 
+export interface SignedObjectUrlOptions {
+  /** 需要签进 URL 的查询参数，例如数据万象的 `ci-process`。 */
+  query?: Record<string, string>;
+  /** 签名有效期（秒）。 */
+  expiresSeconds?: number;
+}
+
+/**
+ * 生成带签名的 COS 对象 GET URL。
+ *
+ * 数据万象的「下载时处理」就是靠这个 URL 触发的：把 `ci-process=AIPicMatting`（接口名由
+ * `CI_MATTING_PROCESS` 决定）一起签进签名，
+ * 万象就会在返回响应体时执行抠图。桶可以保持私有，不需要开放读权限。
+ *
+ * 仅 COS 存储驱动可用：本地磁盘存储没有可签名的对象地址，调用会直接抛错。
+ */
+export function getSignedObjectUrl(key: string, options: SignedObjectUrlOptions = {}): string {
+  if (config.STORAGE_DRIVER !== 'cos') {
+    throw new Error('签名 URL 仅支持 COS 存储驱动：数据万象无法读取本地磁盘上的图片');
+  }
+  return client.getObjectUrl({
+    Bucket: config.COS_BUCKET,
+    Region: config.COS_REGION,
+    Key: key,
+    Method: 'GET',
+    Sign: true,
+    Expires: options.expiresSeconds ?? 600,
+    Query: options.query
+  });
+}
+
 export function putObject(key: string, body: Buffer, contentType: string) {
   if (config.STORAGE_DRIVER === 'local') {
     const path = localPath(key);

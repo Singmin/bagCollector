@@ -1,7 +1,52 @@
-.tab-shell { position: fixed; z-index: 900; left: 0; right: 0; bottom: 0; padding: 0 28rpx calc(env(safe-area-inset-bottom) + 20rpx); pointer-events: none; }
-.tab-bar { height: 112rpx; display: grid; grid-template-columns: 1fr 116rpx 1fr; align-items: center; border: 1rpx solid rgba(45,39,30,.14); border-radius: 42rpx; background: rgba(255,253,248,.94); box-shadow: 0 18rpx 60rpx rgba(44,35,24,.17); backdrop-filter: blur(24px); pointer-events: auto; }
-.tab-item { min-width: 0; margin: 0; padding: 14rpx 8rpx; display: flex; flex-direction: column; gap: 2rpx; align-items: center; background: transparent; color: #8a8277; font-size: 19rpx; line-height: 1.2; }
-.tab-item.is-active { color: #211f1c; font-weight: 700; }
-.tab-icon { font-size: 36rpx; line-height: 1; }
-.add-slot { position: relative; height: 112rpx; }
-.add-button { position: absolute; z-index: 2; left: 50%; top: -38rpx; width: 104rpx; height: 104rpx; margin: 0; padding: 0; transform: translateX(-50%); display: grid; place-items: center; border: 9rpx solid #f2eee6; border-radius: 50%; background: #211f1c; color: white; box-shadow: 0 13rpx 30rpx rgba(31,27,22,.25); font: 300 58rpx/1 -apple-system, sans-serif; }
+/* ⚠ pointer-events: auto —— 整条底栏都要吞掉点击，不能留 pointer-events: none。
+   原来壳是 none、只留 .tab-bar 接手势，但 .tab-bar 的 height:100% 只是壳的**内容高度**，
+   底部的安全区（home indicator 那条 ≈34pt）不在它范围内，而 tab 文字正好压在这条边界上：
+   点得稍低一点就落进这条没人接管的缝里，直接穿透到底下的收藏卡上 ——
+   表现就是「点『全部收藏』反而把详情卡点出来了」（用户 2026-09-24 实测）。
+   蒙层态反过来（见下方 .is-masked）：整条都要让手势穿到页面遮罩上，点底栏也能关卡片。
+   ⚠ 但**光有 CSS 不够**：加完这条之后用户仍然复现了同样的穿透，所以又补了两处 ——
+   ① 壳上的 `catchtap="swallow"`（空方法，`index.wxml` / `index.js`，有 handler 才吃得住点击）；
+   ② 页面侧的 `.tab-shield` 护垫（`pages/library/index.vue`）。
+   三处缺一不可，别再只改这一处。 */
+.tab-shell { position: fixed; z-index: 900; left: 0; right: 0; bottom: 0; height: 170rpx; box-sizing: border-box; padding-bottom: env(safe-area-inset-bottom); background: #f2f3f7; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif; pointer-events: auto; }
+.tab-bar { position: relative; width: 750rpx; height: 100%; margin: 0 auto; background: #f2f3f7; pointer-events: auto; }
+/* top + bottom 拉满：内容仍靠 flex-start 贴在顶部（视觉不变），但整列都变成可点区域。
+   ⚠ top/bottom 是按**最近的定位祖先** `.tab-bar` 解出来的，`.tab-bar` 只是壳的内容高度
+   （170rpx 减去安全区的 padding），所以安全区那一带其实**不在** .tab-item 里 ——
+   真正兜住安全区的是壳自己的 pointer-events: auto 与壳上的 catchtap（见下面那条注释）。
+   写这条时别以为「绝对定位会连 padding box 一起算」，实测不会。 */
+.tab-item { position: absolute; top: 12rpx; bottom: 0; width: 60rpx; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8rpx; align-items: center; background: transparent; color: #9d9890; font-size: 24rpx; font-weight: 500; line-height: 28rpx; }
+.tab-item:first-child { left: 104rpx; width: 56rpx; }
+.tab-item:last-child { left: 550rpx; width: 96rpx; }
+.tab-item text { white-space: nowrap; }
+/* 选中态跟 H5：墨黑（H5 .nav-item.is-active { color: var(--ink) }，图标与文字同一个 currentColor），
+   未选中也是 H5 的暖灰 #9d9890（原来是自定义的冷灰 #7A7C80 / 品牌红 #C50405）。 */
+.tab-item.is-active { color: #141414; }
+.tab-icon { width: 56rpx; height: 56rpx; }
+
+/* ── 顶边渐隐：内容卷到底栏上方时柔和地淡入底色，而不是被切一条硬边 ──
+   渐变条压在底栏上沿之外（top: -48rpx ≈ 26px），不占内容区、也不接手势。
+   蒙层开启时（详情卡）换成遮罩同色 —— 否则浮层下面会露一条亮边（见下方 .is-masked）。 */
+.tab-shell::before { content: ""; position: absolute; left: 0; right: 0; top: -48rpx; height: 48rpx; background: linear-gradient(180deg, rgba(242,243,247,0) 0%, #f2f3f7 100%); pointer-events: none; }
+
+/* ── 页面级浮层打开时的蒙层（.is-masked，由 services/overlay.ts 推过来）──
+   自定义底栏由框架渲染、层在页面内容之上，页面里的遮罩盖不到它，
+   所以底栏要自己蒙：① 内容跟着页面一起「虚掉」；② 压一层与页面遮罩同色的
+   rgba(17,15,12,.36)；③ 关掉点击，否则浮层开着还能切 tab。
+   ⚠ 模糊不能加在整条 .tab-bar 上：给整条 bar 加 filter: blur() 会让它连自己的浅色底
+   一起向外溢出约 3px 的亮晕，而调光层只盖壳内 —— 壳外那圈没被压暗的亮晕
+   就是底栏上沿那条「边框」（用户截图指出来的）。*/
+/* ⚠ 添加键的模糊量要小得多：它是一整块实心黑圆 + 一根**只有 2px 宽**的白 ＋，
+   3px 模糊（和图标文字同档）会把 ＋ 抹掉、只剩一坨黑糊（用户实测反馈「这什么鬼」）。
+   1.5px 下 ＋ 的对比度还剩约八成，肉眼是「柔了一层但还认得出」——要再糊就会开始消失。 */
+.tab-shell.is-masked .tab-item { filter: blur(3px); }
+.tab-shell.is-masked .add-icon { filter: blur(1.5px); }
+.tab-shell.is-masked,
+.tab-shell.is-masked .tab-bar,
+.tab-shell.is-masked .tab-item,
+.tab-shell.is-masked .add-button { pointer-events: none; }
+.tab-shell.is-masked::before { background: linear-gradient(180deg, rgba(161,160,162,0) 0%, #a1a0a2 100%); }
+.tab-shell.is-masked::after { content: ""; position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(17,15,12,.36); }
+.add-slot { position: absolute; left: 316rpx; top: 0; width: 100rpx; height: 100rpx; }
+.add-button { width: 100rpx; height: 100rpx; margin: 0; padding: 0; display: flex; align-items: center; justify-content: center; background: transparent; }
+.add-icon { width: 100rpx; height: 100rpx; }

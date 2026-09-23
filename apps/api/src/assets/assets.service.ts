@@ -30,4 +30,8 @@ export class AssetsService {
     );
     return Object.fromEntries(entries) as Partial<Record<AssetKind, string>>;
   }
+
+  signedUrlForObjectKey(objectKey: string) {
+    return this.cos.signedUrl(objectKey);
+  }
 }

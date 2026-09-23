@@ -4,46 +4,76 @@ import { onLoad, onUnload } from '@dcloudio/uni-app';
 import type { Collectible } from '../../../types';
 import { dataService } from '../../../services/data';
 
-const id = ref(''); const stage = ref('normalize'); const item = ref<Collectible | null>(null);
-const elapsed = ref(0); const retrying = ref(false);
+const id = ref(''); const stage = ref<'normalize' | 'matting' | ''>(''); const item = ref<Collectible | null>(null);
+const elapsed = ref(0); const failureMessage = ref(''); const deleting = ref(false);
 let timer: ReturnType<typeof setTimeout> | undefined;
+let startingMatting = false;
+let startedAt = 0;
+
+// 轮询间隔决定用户看到状态变化的滞后，1 秒兼顾响应速度和服务端压力。
+const POLL_INTERVAL_MS = 1_000;
+// 刚提交完裁剪，任务马上就会动，这里不用等满一个轮询周期。
+const POST_CROP_DELAY_MS = 600;
 
 async function poll() {
   try {
-    item.value = await dataService.collectible(id.value); elapsed.value += 2;
-    if (item.value.processingStatus === 'AWAITING_CROP') return void uni.redirectTo({ url: `/package-editor/pages/crop/index?id=${item.value.id}` });
+    item.value = await dataService.collectible(id.value);
+    // 用真实时间戳计算等待时长：轮询本身有耗时，按次数累加会低估实际等待。
+    elapsed.value = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+    if (item.value.processingStatus === 'AWAITING_CROP') {
+      if (startingMatting) return;
+      startingMatting = true;
+      stage.value = 'matting';
+      try {
+        await dataService.crop(item.value.id, { x: 0, y: 0, width: 1, height: 1, rotation: 0 });
+        timer = setTimeout(() => void poll(), POST_CROP_DELAY_MS);
+      } catch (error) {
+        failureMessage.value = error instanceof Error ? error.message : '自动抠图启动失败';
+      }
+      return;
+    }
     if (item.value.processingStatus === 'READY') return void uni.redirectTo({ url: `/package-editor/pages/metadata/index?id=${item.value.id}` });
-    if (item.value.processingStatus === 'FAILED') return;
-    timer = setTimeout(() => void poll(), 2000);
-  } catch { timer = setTimeout(() => void poll(), 3000); }
+    if (item.value.processingStatus === 'FAILED') {
+      failureMessage.value = item.value.processingError || '服务未返回图片处理失败原因';
+      return;
+    }
+    timer = setTimeout(() => void poll(), POLL_INTERVAL_MS);
+  } catch (error) {
+    failureMessage.value = error instanceof Error ? error.message : '图片处理状态查询失败';
+  }
 }
 
-async function retry() {
-  retrying.value = true;
-  try { await dataService.retry(id.value); item.value = null; elapsed.value = 0; void poll(); }
-  catch (error) { uni.showToast({ title: error instanceof Error ? error.message : '重试失败', icon: 'none' }); }
-  finally { retrying.value = false; }
+async function deleteAndExit() {
+  if (deleting.value) return;
+  deleting.value = true;
+  try {
+    await dataService.removeCollectible(id.value);
+    uni.reLaunch({ url: '/pages/showcase/index' });
+  } catch (error) {
+    uni.showToast({ title: error instanceof Error ? error.message : '删除失败', icon: 'none' });
+    deleting.value = false;
+  }
 }
-async function keepCrop() {
-  try { await dataService.keepCrop(id.value); uni.redirectTo({ url: `/package-editor/pages/metadata/index?id=${id.value}` }); }
-  catch (error) { uni.showToast({ title: error instanceof Error ? error.message : '暂时无法保留裁剪图', icon: 'none' }); }
-}
-async function replace() {
-  try { await dataService.removeCollectible(id.value); uni.redirectTo({ url: '/package-editor/pages/add/index' }); }
-  catch (error) { uni.showToast({ title: error instanceof Error ? error.message : '暂时无法更换图片', icon: 'none' }); }
-}
-onLoad((query) => { id.value = String(query?.id || ''); stage.value = String(query?.stage || 'normalize'); void poll(); });
+onLoad((query) => {
+  if (typeof query?.id !== 'string' || (query.stage !== 'normalize' && query.stage !== 'matting')) {
+    failureMessage.value = '图片处理页面参数无效';
+    return;
+  }
+  id.value = query.id;
+  stage.value = query.stage;
+  startedAt = Date.now();
+  void poll();
+});
 onUnload(() => { if (timer) clearTimeout(timer); });
 </script>
 
 <template>
   <view class="page processing-page"><view class="processing-card card">
-    <view v-if="item?.processingStatus !== 'FAILED'" class="spinner"><view /><view /><view /></view><view v-else class="failed-mark">!</view>
-    <text class="eyebrow">NEW OBJECT · 3 / 4</text><text class="title">{{ item?.processingStatus === 'FAILED' ? '图片处理遇到问题' : stage === 'normalize' ? '正在准备高清工作图' : '正在分离收藏主体' }}</text>
-    <text class="description">{{ item?.processingStatus === 'FAILED' ? item.processingError || '可以重试，或先保留裁剪后的图片。' : '可以暂时把手机放在一边，处理时间会根据图片复杂度变化。' }}</text>
-    <text v-if="item?.processingStatus !== 'FAILED'" class="elapsed">已等待 {{ elapsed }} 秒</text>
-    <view v-else-if="stage === 'normalize'" class="actions"><button class="primary-button" @tap="replace">重新选择图片</button></view>
-    <view v-else class="actions"><button class="primary-button" :disabled="retrying" @tap="retry">{{ retrying ? '正在重试…' : '重试自动抠图' }}</button><button class="secondary-button" @tap="keepCrop">保留裁剪图</button></view>
+    <view v-if="!failureMessage" class="spinner"><view /><view /><view /></view><view v-else class="failed-mark">!</view>
+    <text class="eyebrow">AUTO CUTOUT</text><text class="title">{{ failureMessage ? '图片处理失败' : stage === 'normalize' ? '正在准备照片' : '正在自动抠图' }}</text>
+    <text class="description">{{ failureMessage || '抠图结束后，将自动进入信息与分类填写。' }}</text>
+    <text v-if="!failureMessage" class="elapsed">已等待 {{ elapsed }} 秒</text>
+    <view v-else class="actions"><button class="primary-button" :disabled="deleting || !id" @tap="deleteAndExit">{{ deleting ? '正在删除…' : '删除这次记录并退出' }}</button></view>
   </view></view>
 </template>
 

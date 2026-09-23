@@ -4,7 +4,6 @@ import { describe, expect, it } from 'vitest';
 import { createBackgroundRemover, type FetchLike, type MattingOptions } from '../src/matting.js';
 
 const baseOptions: MattingOptions = {
-  driver: 'rembg',
   url: 'http://127.0.0.1:7000/',
   model: 'birefnet-general-lite',
   timeoutMs: 1_000,
@@ -129,10 +128,5 @@ describe('rembg background remover', () => {
     const input = await jpeg();
     await Promise.all([remove(input), remove(input), remove(input)]);
     expect(peak).toBe(1);
-  });
-
-  it('never treats passthrough as successful matting', async () => {
-    const remove = createBackgroundRemover({ ...baseOptions, driver: 'passthrough' });
-    await expect(remove(await jpeg())).rejects.toThrow('自动抠图未启用');
   });
 });

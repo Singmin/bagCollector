@@ -1,0 +1,28 @@
+{
+  "version": "2.0",
+  "statement": [
+    {
+      "effect": "allow",
+      "action": [
+        "cos:GetObject",
+        "cos:PutObject",
+        "cos:PostObject",
+        "cos:HeadObject",
+        "cos:DeleteObject"
+      ],
+      "resource": [
+        "qcs::cos:ap-guangzhou:uid/1313112155:bagcollect-1313112155/*"
+      ]
+    },
+    {
+      "effect": "allow",
+      "action": [
+        "ci:CreateGoodsMattingJob",
+        "ci:CreateS3AIPicMattingJob"
+      ],
+      "resource": [
+        "qcs::ci:ap-guangzhou:uid/1313112155:bucket/bagcollect-1313112155/*"
+      ]
+    }
+  ]
+}

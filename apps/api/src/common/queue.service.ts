@@ -10,10 +10,11 @@ export class QueueService implements OnModuleDestroy {
   readonly images = new Queue(IMAGE_QUEUE, { connection: this.connection });
 
   async add(name: ImageJobName, data: object, jobId?: string) {
+    const isCleanup = name === 'cleanup';
     return this.images.add(name, data, {
       ...(jobId ? { jobId } : {}),
-      attempts: 3,
-      backoff: { type: 'exponential', delay: 2_000 },
+      attempts: isCleanup ? 3 : 1,
+      ...(isCleanup ? { backoff: { type: 'exponential' as const, delay: 2_000 } } : {}),
       removeOnComplete: 500,
       removeOnFail: 1_000
     });

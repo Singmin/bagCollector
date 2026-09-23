@@ -96,9 +96,8 @@ model Shelf {
   id           String        @id @default(cuid())
   userId       String
   name         String
-  theme        ShelfTheme    @default(SAGE)
+  theme        ShelfTheme
   sortOrder    Float         @default(0)
-  isSystem     Boolean       @default(false)
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
   user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -113,7 +112,7 @@ model Collectible {
   id                String           @id @default(cuid())
   userId            String
   shelfId           String
-  name              String           @default("未命名收藏")
+  name              String
   notes             String           @default("")
   shelfOrder        Float            @default(0)
   processingStatus  ProcessingStatus @default(UPLOADING)

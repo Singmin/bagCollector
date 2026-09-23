@@ -1,7 +1,11 @@
 import { runtimeConfig } from '../config';
-import type { Collectible } from '../types';
+import type { Collectible, CollectibleSummary } from '../types';
 
 const downloaded = new Map<string, Promise<string>>();
+const thumbnails = new Map<string, Promise<string>>();
+const thumbnailQueue: Array<() => void> = [];
+const MAX_THUMBNAIL_DOWNLOADS = 4;
+let activeThumbnailDownloads = 0;
 
 function needsDownload(url?: string) {
   return Boolean(url && runtimeConfig.apiBaseUrl.startsWith('http://') && url.startsWith('http://'));
@@ -25,6 +29,42 @@ function localFile(url?: string) {
     });
     pending.catch(() => downloaded.delete(url));
     downloaded.set(url, pending);
+  }
+  return pending;
+}
+
+function runNextThumbnail() {
+  while (activeThumbnailDownloads < MAX_THUMBNAIL_DOWNLOADS && thumbnailQueue.length) {
+    const next = thumbnailQueue.shift();
+    next?.();
+  }
+}
+
+function queuedLocalFile(url: string) {
+  return new Promise<string>((resolve, reject) => {
+    thumbnailQueue.push(() => {
+      activeThumbnailDownloads += 1;
+      localFile(url).then((value) => {
+        if (value) resolve(value);
+        else reject(new Error('缩略图地址为空'));
+      }, reject).finally(() => {
+        activeThumbnailDownloads -= 1;
+        runNextThumbnail();
+      });
+    });
+    runNextThumbnail();
+  });
+}
+
+export function resolveCollectibleThumbnail(item: CollectibleSummary): Promise<string | undefined> {
+  if (!item.thumbnailUrl) return Promise.resolve(undefined);
+  if (!needsDownload(item.thumbnailUrl)) return Promise.resolve(item.thumbnailUrl);
+  const key = `${item.id}:${item.updatedAt}`;
+  let pending = thumbnails.get(key);
+  if (!pending) {
+    pending = queuedLocalFile(item.thumbnailUrl);
+    pending.catch(() => thumbnails.delete(key));
+    thumbnails.set(key, pending);
   }
   return pending;
 }

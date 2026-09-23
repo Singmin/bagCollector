@@ -7,12 +7,20 @@ afterEach(() => {
   vi.resetModules();
 });
 
+const cosEnv = {
+  STORAGE_DRIVER: 'cos',
+  COS_SECRET_ID: 'secret-id',
+  COS_SECRET_KEY: 'secret-key',
+  COS_BUCKET: 'bagcollect-1250000000',
+  COS_REGION: 'ap-guangzhou'
+};
+
 async function loadConfig(overrides: Record<string, string | undefined>) {
   process.env = {
     ...originalEnv,
     DATABASE_URL: 'postgresql://test:test@127.0.0.1:5432/test',
     REDIS_URL: 'redis://127.0.0.1:6379',
-    STORAGE_DRIVER: 'local',
+    ...cosEnv,
     ...overrides
   };
   vi.resetModules();
@@ -20,26 +28,26 @@ async function loadConfig(overrides: Record<string, string | undefined>) {
 }
 
 describe('worker configuration', () => {
-  it('requires a rembg URL when rembg is selected', async () => {
-    await expect(loadConfig({ MATTING_DRIVER: 'rembg', REMBG_URL: '' })).rejects.toThrow(
-      'REMBG_URL is required for rembg matting'
+  it('selects 数据万象通用抠图 by default', async () => {
+    const { config } = await loadConfig({});
+    expect(config.CI_MATTING_PROCESS).toBe('AIPicMatting');
+    expect(config.CI_MATTING_SIZE_MODE).toBe('rescale');
+    expect(config.CI_MATTING_MAX_CONCURRENCY).toBe(4);
+  });
+
+  it('rejects the local storage driver because 万象 cannot read local files', async () => {
+    await expect(loadConfig({ STORAGE_DRIVER: 'local' })).rejects.toThrow('要求 STORAGE_DRIVER=cos');
+  });
+
+  it('rejects 数据万象抠图 without COS credentials', async () => {
+    await expect(loadConfig({ COS_SECRET_ID: '', COS_SECRET_KEY: '', COS_BUCKET: '' })).rejects.toThrow(
+      '数据万象抠图需要 COS_SECRET_ID'
     );
   });
 
-  it('rejects passthrough matting in production', async () => {
-    await expect(
-      loadConfig({ NODE_ENV: 'production', MATTING_DRIVER: 'passthrough', REMBG_URL: '' })
-    ).rejects.toThrow('MATTING_DRIVER cannot be passthrough in production');
-  });
-
-  it('loads the pinned local rembg settings', async () => {
-    const { config } = await loadConfig({
-      MATTING_DRIVER: 'rembg',
-      REMBG_URL: 'http://127.0.0.1:7000',
-      REMBG_MODEL: 'birefnet-general-lite'
-    });
-    expect(config.REMBG_MODEL).toBe('birefnet-general-lite');
-    expect(config.REMBG_MAX_CONCURRENCY).toBe(1);
-    expect(config.REMBG_MAX_RESPONSE_BYTES).toBe(83_886_080);
+  it('accepts the 商品抠图 interface as an alternative to 通用抠图', async () => {
+    const { config } = await loadConfig({ CI_MATTING_PROCESS: 'GoodsMatting', CI_MATTING_SIZE_MODE: 'strict' });
+    expect(config.CI_MATTING_PROCESS).toBe('GoodsMatting');
+    expect(config.CI_MATTING_SIZE_MODE).toBe('strict');
   });
 });

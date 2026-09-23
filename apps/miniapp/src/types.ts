@@ -12,30 +12,33 @@ export interface Shelf {
   id: string;
   name: string;
   theme: ShelfTheme;
-  isSystem: boolean;
   sortOrder: number;
   itemCount: number;
 }
 
-export interface Collectible {
+export interface CollectibleSummary {
   id: string;
   name: string;
-  notes: string;
-  tags: string[];
   shelfId: string;
-  shelfName?: string;
+  shelfName: string;
   processingStatus: ProcessingStatus;
-  processingError?: string;
   thumbnailUrl?: string;
-  displayImageUrl?: string;
-  standardImageUrl?: string;
   addedAt: string;
   updatedAt: string;
 }
 
+export interface Collectible extends CollectibleSummary {
+  notes: string;
+  tags: string[];
+  processingError?: string;
+  displayImageUrl?: string;
+  standardImageUrl?: string;
+}
+
 export interface CollectiblePage {
-  items: Collectible[];
+  items: CollectibleSummary[];
   nextCursor: string | null;
+  totalCount: number;
 }
 
 export interface UploadPolicy {

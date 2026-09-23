@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { UserStatus } from '@prisma/client';
+import { ProcessingStatus, UserStatus } from '@prisma/client';
 import type { AuthTokens } from '@bagcollect/contracts';
 import { ApiError } from '../common/api-error.js';
 import { hashToken, randomToken } from '../common/crypto.js';
@@ -80,10 +80,7 @@ export class AuthService {
           unionid: wechat.unionid,
           storageQuotaBytes: BigInt(config.MAX_STORAGE_BYTES),
           collectibleQuota: config.MAX_COLLECTIBLES_PER_USER,
-          dailyMattingQuota: config.MAX_DAILY_MATTING,
-          shelves: {
-            create: { name: '未分类', theme: 'SAGE', isSystem: true, sortOrder: 0 }
-          }
+          dailyMattingQuota: config.MAX_DAILY_MATTING
         }
       });
     });
@@ -144,7 +141,14 @@ export class AuthService {
   async account(userId: string) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      include: { _count: { select: { collectibles: true, shelves: true } } }
+      include: {
+        _count: {
+          select: {
+            collectibles: { where: { processingStatus: ProcessingStatus.READY } },
+            shelves: true
+          }
+        }
+      }
     });
     if (!user) throw new ApiError('NOT_FOUND', '用户不存在', HttpStatus.NOT_FOUND);
     return {

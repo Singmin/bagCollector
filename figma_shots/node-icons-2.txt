@@ -1,0 +1,20 @@
+===== node 15:21005 : Frame 55
+FRAME "Frame 55" id=15:21005 54x54 @(3971,1231) fill:SOLID#ffffff r:100 strokes:SOLID
+  FRAME "Frame" id=15:21006 28x28 @(3984,1244) fill:SOLID#ffffff
+    VECTOR "Vector" id=15:21007 17.5x23.3 @(3989.3,1246.3) fill:SOLID#000000 strokes:SOLID
+    BOOLEAN_OPERATION "Subtract" id=15:21008 19.5x25.3 @(3988,1245) fill:SOLID#c50405
+      BOOLEAN_OPERATION "Subtract" id=15:21009 19.5x25.3 @(3988,1245) fill:SOLID#333333
+      VECTOR "Vector" id=15:21012 0x2.3 @(3998,1260.3) strokes:SOLID
+    VECTOR "Vector" id=15:21013 0x2.3 @(3998,1260.3) strokes:SOLID
+    VECTOR "Vector" id=15:21014 4.7x10.5 @(3989.3,1246.3) strokes:SOLID
+    VECTOR "Vector" id=15:21015 4.7x10.5 @(4002.1,1246.3) strokes:SOLID
+===== node 15:21019 : Frame 46
+FRAME "Frame 46" id=15:21019 54x54 @(4199,1231) fill:SOLID#ffffff r:100 strokes:SOLID
+  FRAME "Frame" id=15:21020 28x28 @(4212,1244) fill:SOLID#ffffff
+    VECTOR "Vector" id=15:21021 22.2x18.7 @(4214.9,1248.7) strokes:SOLID
+    VECTOR "Vector" id=15:21022 1.8x1.8 @(4219.6,1252.8) strokes:SOLID
+    VECTOR "Vector" id=15:21023 22.2x11.1 @(4214.9,1256.3) strokes:SOLID
+===== node 15:21016 : Frame 53
+FRAME "Frame 53" id=15:21016 78x78 @(4073,1219) fill:SOLID#ffffff
+  ELLIPSE "Ellipse 8" id=15:21017 78x78 @(4073,1219) fill:SOLID#c50405@0.029999999329447746 strokes:SOLID
+  ELLIPSE "Ellipse 9" id=15:21018 68x68 @(4078,1224) fill:SOLID#c50405

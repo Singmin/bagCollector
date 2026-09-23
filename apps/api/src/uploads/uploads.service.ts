@@ -56,7 +56,7 @@ export class UploadsService {
             version: '2.0',
             statement: [
               {
-                action: ['name/cos:PutObject'],
+                action: ['name/cos:PutObject', 'name/cos:PostObject'],
                 effect: 'allow',
                 principal: { qcs: ['*'] },
                 resource: [this.resourceFor(key)]
@@ -162,6 +162,10 @@ export class UploadsService {
         expiration: new Date(temporary.expiredTime * 1000).toISOString(),
         conditions: [
           { bucket: config.COS_BUCKET },
+          { 'q-sign-algorithm': 'sha1' },
+          { 'q-ak': temporary.credentials.tmpSecretId },
+          { 'q-sign-time': keyTime },
+          { 'x-cos-security-token': temporary.credentials.sessionToken },
           ['eq', '$key', key],
           ['content-length-range', 1, input.size],
           ['starts-with', '$Content-Type', 'image/']
@@ -169,7 +173,7 @@ export class UploadsService {
       })
     ).toString('base64');
     const signKey = createHmac('sha1', temporary.credentials.tmpSecretKey).update(keyTime).digest('hex');
-    const stringToSign = createHash('sha1').update(policy).digest('hex');
+    const stringToSign = createHash('sha1').update(Buffer.from(policy, 'base64')).digest('hex');
     const signature = createHmac('sha1', signKey).update(stringToSign).digest('hex');
 
     return {
@@ -183,6 +187,7 @@ export class UploadsService {
         'Content-Type': input.contentType,
         'q-sign-algorithm': 'sha1',
         'q-ak': temporary.credentials.tmpSecretId,
+        'q-sign-time': keyTime,
         'q-key-time': keyTime,
         'q-signature': signature,
         policy,

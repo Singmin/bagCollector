@@ -51,16 +51,6 @@ export class CollectiblesController {
     return this.collectibles.crop(user.userId, id, parseBody(cropSchema, body));
   }
 
-  @Post(':id/retry')
-  retry(@CurrentUser() user: AuthUser, @Param('id') id: string) {
-    return this.collectibles.retry(user.userId, id);
-  }
-
-  @Post(':id/keep-crop')
-  keepCrop(@CurrentUser() user: AuthUser, @Param('id') id: string) {
-    return this.collectibles.keepCrop(user.userId, id);
-  }
-
   @Delete(':id')
   remove(@CurrentUser() user: AuthUser, @Param('id') id: string) {
     return this.collectibles.remove(user.userId, id);

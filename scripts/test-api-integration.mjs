@@ -63,7 +63,10 @@ try {
     method: 'POST', body: JSON.stringify({ code: `integration-a-${suffix}` })
   });
   const shelves = await request('/shelves', { headers: bearer(userA.accessToken) });
-  if (shelves.length !== 1 || !shelves[0].isSystem) throw new Error('First login did not create the system shelf');
+  if (shelves.length !== 0) throw new Error('First login unexpectedly created a shelf');
+  await request('/collectibles', {
+    method: 'POST', headers: bearer(userA.accessToken), body: JSON.stringify({})
+  }, 400);
 
   const shelf = await request('/shelves', {
     method: 'POST', headers: bearer(userA.accessToken), body: JSON.stringify({ name: '集成测试架', theme: 'SKY' })
@@ -76,19 +79,24 @@ try {
     method: 'POST', body: JSON.stringify({ code: `integration-b-${suffix}` })
   });
   const userBShelves = await request('/shelves', { headers: bearer(userB.accessToken) });
+  if (userBShelves.length !== 0) throw new Error('Second user unexpectedly received a shelf');
+  const userBShelf = await request('/shelves', {
+    method: 'POST', headers: bearer(userB.accessToken), body: JSON.stringify({ name: '用户 B 展示架', theme: 'ROSE' })
+  }, 201);
   await request(`/collectibles/${collectible.id}`, { headers: bearer(userB.accessToken) }, 404);
   const userBItems = await request('/collectibles', { headers: bearer(userB.accessToken) });
   if (userBItems.items.length !== 0) throw new Error('User isolation failed');
+  if (userBItems.totalCount !== 0) throw new Error('Empty collectible total is incorrect');
   await request('/collectibles', {
     method: 'POST',
     headers: bearer(userA.accessToken),
-    body: JSON.stringify({ name: '跨用户展示架', shelfId: userBShelves[0].id })
+    body: JSON.stringify({ name: '跨用户展示架', shelfId: userBShelf.id })
   }, 404);
 
   const userBCollectible = await request('/collectibles', {
     method: 'POST',
     headers: bearer(userB.accessToken),
-    body: JSON.stringify({ name: '标签隔离测试', shelfId: userBShelves[0].id })
+    body: JSON.stringify({ name: '标签隔离测试', shelfId: userBShelf.id })
   }, 201);
   await request(`/collectibles/${collectible.id}`, {
     method: 'PATCH', headers: bearer(userA.accessToken), body: JSON.stringify({ tags: ['Travel'] })
@@ -106,15 +114,16 @@ try {
   let crossTenantConstraintHeld = false;
   try {
     await prisma.collectible.create({
-      data: { userId: shelfARecord.userId, shelfId: userBShelves[0].id, name: '数据库跨租户测试' }
+      data: { userId: shelfARecord.userId, shelfId: userBShelf.id, name: '数据库跨租户测试' }
     });
   } catch (error) {
     crossTenantConstraintHeld = error?.code === 'P2003';
   }
+  await request(`/shelves/${shelf.id}`, { method: 'DELETE', headers: bearer(userA.accessToken) }, 409);
   if (!crossTenantConstraintHeld) throw new Error('Database did not reject a cross-user shelf relation');
 
   const reserved = await request('/collectibles', {
-    method: 'POST', headers: bearer(userA.accessToken), body: JSON.stringify({ name: '预留上传删除测试' })
+    method: 'POST', headers: bearer(userA.accessToken), body: JSON.stringify({ name: '预留上传删除测试', shelfId: shelf.id })
   }, 201);
   await prisma.imageAsset.create({
     data: {
@@ -136,7 +145,7 @@ try {
   }
 
   const localUploadCollectible = await request('/collectibles', {
-    method: 'POST', headers: bearer(userA.accessToken), body: JSON.stringify({ name: '本地上传测试' })
+    method: 'POST', headers: bearer(userA.accessToken), body: JSON.stringify({ name: '本地上传测试', shelfId: shelf.id })
   }, 201);
   const localPolicy = await request('/uploads/policy', {
     method: 'POST',
@@ -169,7 +178,7 @@ try {
   });
 
   const concurrent = await request('/collectibles', {
-    method: 'POST', headers: bearer(userA.accessToken), body: JSON.stringify({ name: '并发完成测试' })
+    method: 'POST', headers: bearer(userA.accessToken), body: JSON.stringify({ name: '并发完成测试', shelfId: shelf.id })
   }, 201);
   const concurrentAsset = await prisma.imageAsset.create({
     data: {
@@ -210,7 +219,7 @@ try {
   await request(`/collectibles/${concurrent.id}`, { method: 'DELETE', headers: bearer(userA.accessToken) });
 
   const derived = await request('/collectibles', {
-    method: 'POST', headers: bearer(userA.accessToken), body: JSON.stringify({ name: '派生图片幂等测试' })
+    method: 'POST', headers: bearer(userA.accessToken), body: JSON.stringify({ name: '派生图片幂等测试', shelfId: shelf.id })
   }, 201);
   const derivedKey = `integration/${derived.id}/display.png`;
   const derivedInput = {
@@ -238,33 +247,21 @@ try {
   }
   await request(`/collectibles/${derived.id}`, { method: 'DELETE', headers: bearer(userA.accessToken) });
 
-  const keepCrop = await request('/collectibles', {
-    method: 'POST', headers: bearer(userA.accessToken), body: JSON.stringify({ name: '保留裁剪图测试' })
+  const failedCollectible = await request('/collectibles', {
+    method: 'POST', headers: bearer(userA.accessToken), body: JSON.stringify({ name: '失败任务测试', shelfId: shelf.id })
   }, 201);
-  await upsertAssetRecord(prisma, {
-    userId: shelfARecord.userId,
-    collectibleId: keepCrop.id,
-    kind: AssetKind.DISPLAY,
-    key: `integration/${keepCrop.id}/display.png`,
-    contentType: 'image/png',
-    byteSize: 80,
-    width: 10,
-    height: 10,
-    version: 1
-  });
   await prisma.collectible.update({
-    where: { id: keepCrop.id },
-    data: { processingStatus: 'FAILED', processingError: 'rembg unavailable' }
+    where: { id: failedCollectible.id },
+    data: { processingStatus: 'FAILED', processingError: '万象抠图请求失败（403）' }
   });
-  const kept = await request(`/collectibles/${keepCrop.id}/keep-crop`, {
-    method: 'POST', headers: bearer(userA.accessToken)
-  }, 201);
-  if (kept.processingStatus !== 'READY' || !kept.displayImageUrl) {
-    throw new Error('Keeping the cropped fallback did not produce a usable collectible');
-  }
-  await request(`/collectibles/${keepCrop.id}`, { method: 'DELETE', headers: bearer(userA.accessToken) });
+  await request(`/collectibles/${failedCollectible.id}/keep-crop`, { method: 'POST', headers: bearer(userA.accessToken) }, 404);
+  await request(`/collectibles/${failedCollectible.id}/retry`, { method: 'POST', headers: bearer(userA.accessToken) }, 404);
+  const visibleItems = await request('/collectibles', { headers: bearer(userA.accessToken) });
+  if (visibleItems.items.some((item) => item.id === failedCollectible.id)) throw new Error('Failed collectible leaked into the ready list');
+  if (visibleItems.totalCount !== visibleItems.items.length) throw new Error('Ready collectible total is incorrect');
+  await request(`/collectibles/${failedCollectible.id}`, { method: 'DELETE', headers: bearer(userA.accessToken) });
 
-  const userBRecord = await prisma.shelf.findUniqueOrThrow({ where: { id: userBShelves[0].id } });
+  const userBRecord = await prisma.shelf.findUniqueOrThrow({ where: { id: userBShelf.id } });
   await request('/account', { method: 'DELETE', headers: bearer(userB.accessToken) });
   if (await prisma.user.findUnique({ where: { id: userBRecord.userId } })) {
     throw new Error('Account deletion did not cascade through tenant-owned records');
@@ -283,7 +280,7 @@ try {
     method: 'POST', body: JSON.stringify({ refreshToken: rotated.refreshToken })
   }, 401);
   console.log(
-    'API integration: auth, tenant constraints, scoped tags, idempotent accounting, cropped fallback, and account cascade passed'
+    'API integration: explicit creation, tenant constraints, scoped tags, idempotent accounting, terminal failures, and account cascade passed'
   );
 } finally {
   server.kill('SIGTERM');

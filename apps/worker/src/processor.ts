@@ -3,8 +3,8 @@ import sharp from 'sharp';
 import { upsertAssetRecord } from './asset-record.js';
 import { config } from './config.js';
 import { computeCropRect } from './geometry.js';
-import { createBackgroundRemover } from './matting.js';
-import { deleteObjects, getObject, putObject } from './object-store.js';
+import { createTencentCiBackgroundRemover } from './matting-tencent-ci.js';
+import { deleteObjects, getObject, getSignedObjectUrl, putObject } from './object-store.js';
 
 export interface ProcessingJobData {
   processingJobId: string;
@@ -14,15 +14,21 @@ export interface ProcessingJobData {
 }
 
 const prisma = new PrismaClient();
-const removeBackground = createBackgroundRemover({
-  driver: config.MATTING_DRIVER,
-  url: config.REMBG_URL,
-  model: config.REMBG_MODEL,
-  timeoutMs: config.REMBG_TIMEOUT_MS,
-  maxResponseBytes: config.REMBG_MAX_RESPONSE_BYTES,
-  maxImagePixels: config.MAX_IMAGE_PIXELS,
-  maxConcurrency: config.REMBG_MAX_CONCURRENCY
-});
+
+// 抠图实现只在模块加载时构建一次：并发限流器必须跨任务共享，不能每次调用都重建。
+const removeBackground = createTencentCiBackgroundRemover(
+  {
+    process: config.CI_MATTING_PROCESS,
+    timeoutMs: config.CI_MATTING_TIMEOUT_MS,
+    maxResponseBytes: config.CI_MATTING_MAX_RESPONSE_BYTES,
+    maxImagePixels: config.MAX_IMAGE_PIXELS,
+    maxConcurrency: config.CI_MATTING_MAX_CONCURRENCY,
+    sizeMode: config.CI_MATTING_SIZE_MODE,
+    retry: config.CI_MATTING_RETRY
+  },
+  (objectKey, query) =>
+    getSignedObjectUrl(objectKey, { query, expiresSeconds: config.CI_MATTING_SIGN_EXPIRES_SECONDS })
+);
 
 async function setRunning(jobId: string) {
   await prisma.processingJob.update({
@@ -64,37 +70,39 @@ async function upsertAsset(input: {
 }
 
 async function writeRenditions(data: ProcessingJobData, source: Buffer, baseKey: string) {
-  const display = await sharp(source, { limitInputPixels: config.MAX_IMAGE_PIXELS })
-    .resize({ width: 2048, height: 2048, fit: 'inside', withoutEnlargement: true })
-    .png({ compressionLevel: 9 })
-    .toBuffer();
-  const displayMeta = await sharp(display).metadata();
-  if (!displayMeta.width || !displayMeta.height) throw new Error('无法读取展示图尺寸');
-  await upsertAsset({
-    ...data,
-    kind: AssetKind.DISPLAY,
-    key: `${baseKey}/display/v${data.version}.png`,
-    contentType: 'image/png',
-    body: display,
-    width: displayMeta.width,
-    height: displayMeta.height
-  });
-
-  const thumbnail = await sharp(source, { limitInputPixels: config.MAX_IMAGE_PIXELS })
-    .resize({ width: 512, height: 512, fit: 'inside', withoutEnlargement: true })
-    .webp({ quality: 82, alphaQuality: 90 })
-    .toBuffer();
-  const thumbnailMeta = await sharp(thumbnail).metadata();
-  if (!thumbnailMeta.width || !thumbnailMeta.height) throw new Error('无法读取缩略图尺寸');
-  await upsertAsset({
-    ...data,
-    kind: AssetKind.THUMBNAIL,
-    key: `${baseKey}/thumbnail/v${data.version}.webp`,
-    contentType: 'image/webp',
-    body: thumbnail,
-    width: thumbnailMeta.width,
-    height: thumbnailMeta.height
-  });
+  // 展示图与缩略图互不依赖，并行编码，避免白白多等一轮 CPU。
+  const [display, thumbnail] = await Promise.all([
+    sharp(source, { limitInputPixels: config.MAX_IMAGE_PIXELS })
+      .resize({ width: 2048, height: 2048, fit: 'inside', withoutEnlargement: true })
+      .png({ compressionLevel: 6 })
+      .toBuffer({ resolveWithObject: true }),
+    sharp(source, { limitInputPixels: config.MAX_IMAGE_PIXELS })
+      .resize({ width: 512, height: 512, fit: 'inside', withoutEnlargement: true })
+      .webp({ quality: 82, alphaQuality: 90 })
+      .toBuffer({ resolveWithObject: true })
+  ]);
+  if (!display.info.width || !display.info.height) throw new Error('无法读取展示图尺寸');
+  if (!thumbnail.info.width || !thumbnail.info.height) throw new Error('无法读取缩略图尺寸');
+  await Promise.all([
+    upsertAsset({
+      ...data,
+      kind: AssetKind.DISPLAY,
+      key: `${baseKey}/display/v${data.version}.png`,
+      contentType: 'image/png',
+      body: display.data,
+      width: display.info.width,
+      height: display.info.height
+    }),
+    upsertAsset({
+      ...data,
+      kind: AssetKind.THUMBNAIL,
+      key: `${baseKey}/thumbnail/v${data.version}.webp`,
+      contentType: 'image/webp',
+      body: thumbnail.data,
+      width: thumbnail.info.width,
+      height: thumbnail.info.height
+    })
+  ]);
 }
 
 async function standardJpeg(source: Buffer) {
@@ -105,11 +113,11 @@ async function standardJpeg(source: Buffer) {
     withoutEnlargement: true
   });
   for (const quality of [90, 84, 78, 72]) {
-    const body = await base.clone().jpeg({ quality, mozjpeg: true }).toBuffer();
-    if (body.length <= 10_000_000 || quality === 72) {
-      const metadata = await sharp(body).metadata();
-      if (!metadata.width || !metadata.height) throw new Error('无法读取标准图尺寸');
-      return { body, width: metadata.width, height: metadata.height };
+    // resolveWithObject 直接带回输出尺寸，省掉一次完整 JPEG 解码。
+    const { data, info } = await base.clone().jpeg({ quality, mozjpeg: true }).toBuffer({ resolveWithObject: true });
+    if (!info.width || !info.height) throw new Error('无法读取标准图尺寸');
+    if (data.length <= 10_000_000 || quality === 72) {
+      return { body: data, width: info.width, height: info.height };
     }
   }
   throw new Error('图片标准化失败');
@@ -144,6 +152,25 @@ export async function normalizeImage(data: ProcessingJobData) {
   await setSucceeded(data.processingJobId);
 }
 
+/**
+ * 用腾讯云数据万象「下载时处理」产出与裁剪图严格对位的透明 PNG。
+ *
+ * 裁剪图必须先落到 COS，万象才读得到它；万象按原图分辨率抠图，没有模型输入边长限制，
+ * 因此这里不需要降采样送推理再回放大掩码。
+ */
+async function produceCutout(input: {
+  croppedKey: string;
+  croppedAsset: Promise<void>;
+  rect: { width: number; height: number };
+}) {
+  await input.croppedAsset;
+  return removeBackground({
+    objectKey: input.croppedKey,
+    width: input.rect.width,
+    height: input.rect.height
+  });
+}
+
 export async function matImage(data: ProcessingJobData) {
   await setRunning(data.processingJobId);
   const [collectible, standard] = await Promise.all([
@@ -163,12 +190,13 @@ export async function matImage(data: ProcessingJobData) {
     collectible.cropX === null ||
     collectible.cropY === null ||
     collectible.cropWidth === null ||
-    collectible.cropHeight === null
+    collectible.cropHeight === null ||
+    collectible.cropRotation === null
   ) {
     throw new Error('缺少裁剪参数');
   }
   const source = await getObject(standard.objectKey);
-  const rotated = sharp(source, { limitInputPixels: config.MAX_IMAGE_PIXELS }).rotate(collectible.cropRotation ?? 0);
+  const rotated = sharp(source, { limitInputPixels: config.MAX_IMAGE_PIXELS }).rotate(collectible.cropRotation);
   const metadata = await rotated.metadata();
   if (!metadata.width || !metadata.height) throw new Error('无法读取裁剪图尺寸');
   const rect = computeCropRect(metadata.width, metadata.height, {
@@ -179,7 +207,10 @@ export async function matImage(data: ProcessingJobData) {
   });
   const cropped = await rotated.extract(rect).jpeg({ quality: 90, mozjpeg: true }).toBuffer();
   const croppedKey = `users/${data.userId}/collectibles/${data.collectibleId}/cropped/v${data.version}.jpg`;
-  await upsertAsset({
+  const baseKey = `users/${data.userId}/collectibles/${data.collectibleId}`;
+  // 裁剪图必须先写入存储并在 COS 上可见，万象才读得到它。
+  // 这里立刻挂一个空 catch，否则失败时会触发未处理拒绝，真正的错误在下面 await 时抛出。
+  const croppedAsset = upsertAsset({
     ...data,
     kind: AssetKind.CROPPED,
     key: croppedKey,
@@ -188,27 +219,23 @@ export async function matImage(data: ProcessingJobData) {
     width: rect.width,
     height: rect.height
   });
+  croppedAsset.catch(() => undefined);
 
-  const baseKey = `users/${data.userId}/collectibles/${data.collectibleId}`;
-  let cutout: Buffer;
-  try {
-    cutout = await removeBackground(cropped);
-  } catch (error) {
-    await writeRenditions(data, cropped, baseKey);
-    throw error;
-  }
-  const cutoutMeta = await sharp(cutout, { limitInputPixels: config.MAX_IMAGE_PIXELS }).metadata();
-  if (!cutoutMeta.width || !cutoutMeta.height) throw new Error('抠图结果无效');
-  await upsertAsset({
-    ...data,
-    kind: AssetKind.CUTOUT,
-    key: `${baseKey}/cutout/v${data.version}.png`,
-    contentType: 'image/png',
-    body: cutout,
-    width: cutoutMeta.width,
-    height: cutoutMeta.height
-  });
-  await writeRenditions(data, cutout, baseKey);
+  const cutout = await produceCutout({ croppedKey, croppedAsset, rect });
+
+  // 抠图结果尺寸已由万象实现按裁剪图尺寸校验过，无需再解码确认。
+  await Promise.all([
+    upsertAsset({
+      ...data,
+      kind: AssetKind.CUTOUT,
+      key: `${baseKey}/cutout/v${data.version}.png`,
+      contentType: 'image/png',
+      body: cutout,
+      width: rect.width,
+      height: rect.height
+    }),
+    writeRenditions(data, cutout, baseKey)
+  ]);
 
   await prisma.collectible.update({
     where: { id: data.collectibleId },
@@ -217,15 +244,8 @@ export async function matImage(data: ProcessingJobData) {
   await setSucceeded(data.processingJobId);
 }
 
-export async function failProcessing(data: ProcessingJobData, error: unknown, isFinalAttempt: boolean) {
+export async function failProcessing(data: ProcessingJobData, error: unknown) {
   const message = error instanceof Error ? error.message.slice(0, 500) : '图片处理失败';
-  if (!isFinalAttempt) {
-    await prisma.processingJob.update({
-      where: { id: data.processingJobId },
-      data: { status: JobStatus.QUEUED, errorMessage: message, finishedAt: null }
-    });
-    return;
-  }
   await prisma.$transaction([
     prisma.processingJob.update({
       where: { id: data.processingJobId },

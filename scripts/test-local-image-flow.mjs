@@ -5,7 +5,7 @@ import sharp from 'sharp';
 
 const origin = process.env.API_URL || 'http://127.0.0.1:3001/api';
 const suppliedPath = process.argv.slice(2).find((argument) => argument !== '--');
-const fallbackPng = await sharp({
+const generatedPng = await sharp({
   create: { width: 512, height: 512, channels: 3, background: { r: 245, g: 245, b: 240 } }
 })
   .composite([
@@ -15,12 +15,13 @@ const fallbackPng = await sharp({
   ])
   .png()
   .toBuffer();
-const body = suppliedPath ? await readFile(suppliedPath) : fallbackPng;
+const body = suppliedPath ? await readFile(suppliedPath) : generatedPng;
 const fileName = suppliedPath ? basename(suppliedPath) : 'local-flow.png';
 const contentType = ({
   '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp',
   '.heic': 'image/heic', '.heif': 'image/heif'
-})[extname(fileName).toLowerCase()] || 'image/jpeg';
+})[extname(fileName).toLowerCase()];
+if (!contentType) throw new Error(`Unsupported image extension: ${extname(fileName)}`);
 
 let accessToken = '';
 let collectibleId = '';
@@ -56,8 +57,11 @@ try {
     method: 'POST', body: JSON.stringify({ code: `local-image-${Date.now()}` })
   });
   accessToken = tokens.accessToken;
+  const shelf = await request('/shelves', {
+    method: 'POST', body: JSON.stringify({ name: '本地图片链路', theme: 'SAGE' })
+  });
   const collectible = await request('/collectibles', {
-    method: 'POST', body: JSON.stringify({ name: '本地图片链路验证' })
+    method: 'POST', body: JSON.stringify({ name: '本地图片链路验证', shelfId: shelf.id })
   });
   collectibleId = collectible.id;
   const policy = await request('/uploads/policy', {

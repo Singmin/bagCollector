@@ -19,9 +19,7 @@ const worker = new Worker(
       else if (job.name === 'matting') await matImage(data);
       else throw new Error(`Unknown image job: ${job.name}`);
     } catch (error) {
-      const configuredAttempts = job.opts.attempts ?? 1;
-      const isFinalAttempt = job.attemptsMade + 1 >= configuredAttempts;
-      await failProcessing(data, error, isFinalAttempt);
+      await failProcessing(data, error);
       throw error;
     }
   },

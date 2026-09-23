@@ -12,20 +12,16 @@ cd "$DEPLOY_DIR"
 previous_api=$(docker inspect --format '{{.Config.Image}}' "$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps -q api)" 2>/dev/null || true)
 previous_worker=$(docker inspect --format '{{.Config.Image}}' "$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps -q worker)" 2>/dev/null || true)
 previous_admin=$(docker inspect --format '{{.Config.Image}}' "$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps -q admin)" 2>/dev/null || true)
-previous_rembg=$(docker inspect --format '{{.Config.Image}}' "$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps -q rembg)" 2>/dev/null || true)
 
+# 抠图走腾讯云数据万象，部署里没有推理服务容器，因此回滚只需恢复三个应用镜像。
+# 历史上存在过的 rembg 容器由下面的 --remove-orphans 清理。详见 docs/TENCENT_CI_MATTING.md。
 rollback() {
   exit_code=$?
   trap - EXIT
   if [ "$exit_code" -ne 0 ] && [ -n "$previous_api" ] && [ -n "$previous_worker" ] && [ -n "$previous_admin" ]; then
     echo "Deployment failed; restoring previous application images. Database migrations are forward-only."
-    if [ -n "$previous_rembg" ]; then
-      API_IMAGE="$previous_api" WORKER_IMAGE="$previous_worker" ADMIN_IMAGE="$previous_admin" REMBG_IMAGE="$previous_rembg" \
-        docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --remove-orphans rembg api worker admin || true
-    else
-      API_IMAGE="$previous_api" WORKER_IMAGE="$previous_worker" ADMIN_IMAGE="$previous_admin" \
-        docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --remove-orphans api worker admin || true
-    fi
+    API_IMAGE="$previous_api" WORKER_IMAGE="$previous_worker" ADMIN_IMAGE="$previous_admin" \
+      docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --remove-orphans api worker admin || true
   fi
   exit "$exit_code"
 }
@@ -38,7 +34,7 @@ fi
 
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" pull
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up --no-deps migrate
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --remove-orphans rembg api worker admin
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --remove-orphans api worker admin
 
 attempt=0
 until curl -fsS http://127.0.0.1:${API_HOST_PORT:-3001}/api/health/ready >/dev/null; do

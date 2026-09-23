@@ -5,6 +5,7 @@ import { dataService } from '../../../services/data';
 
 type Rotation = 0 | 90 | 180 | 270;
 const id = ref(''); const loading = ref(true); const zoomValue = ref(1); const rotation = ref<Rotation>(0); const submitting = ref(false);
+const loadError = ref('');
 const instance = getCurrentInstance();
 const state = reactive({
   canvas: null as any, context: null as any, image: null as any,
@@ -42,14 +43,14 @@ async function prepare() {
     await nextTick();
     const query = uni.createSelectorQuery().in(instance?.proxy as any);
     query.select('#cropCanvas').fields({ node: true, size: true }, (field: any) => {
-      if (!field?.node) return void uni.showToast({ title: '画布初始化失败', icon: 'none' });
+      if (!field?.node) return void (loadError.value = '画布初始化失败');
       const dpr = uni.getSystemInfoSync().pixelRatio; const canvas = field.node;
       canvas.width = field.width * dpr; canvas.height = field.height * dpr;
       const context = canvas.getContext('2d'); context.scale(dpr, dpr); const image = canvas.createImage();
       image.onload = () => { Object.assign(state, { canvas, context, image, canvasWidth: field.width, canvasHeight: field.height, imageWidth: image.width, imageHeight: image.height, offsetX: 0, offsetY: 0 }); loading.value = false; draw(); };
-      image.onerror = () => uni.showToast({ title: '图片加载失败', icon: 'none' }); image.src = item.standardImageUrl;
+      image.onerror = () => { loadError.value = '标准图加载失败'; }; image.src = item.standardImageUrl;
     }).exec();
-  } catch (error) { uni.showModal({ title: '无法裁剪', content: error instanceof Error ? error.message : '图片加载失败', showCancel: false }); }
+  } catch (error) { loadError.value = error instanceof Error ? error.message : '图片加载失败'; }
 }
 
 function touchStart(event: any) { const touch = event.touches?.[0]; if (touch) { state.lastX = touch.clientX; state.lastY = touch.clientY; } }
@@ -65,17 +66,23 @@ async function submit() {
     uni.redirectTo({ url: `/package-editor/pages/processing/index?id=${id.value}&jobId=${result.jobId}&stage=matting` });
   } catch (error) { uni.showToast({ title: error instanceof Error ? error.message : '提交失败', icon: 'none' }); submitting.value = false; }
 }
-onLoad((query) => { id.value = String(query?.id || ''); }); onReady(() => void prepare());
+onLoad((query) => {
+  if (typeof query?.id !== 'string') {
+    loadError.value = '裁剪页面参数无效';
+    return;
+  }
+  id.value = query.id;
+}); onReady(() => { if (id.value) void prepare(); });
 </script>
 
 <template>
   <view class="crop-page"><view class="crop-header"><text class="eyebrow">NEW OBJECT · 2 / 4</text><text class="title">裁剪与旋转</text><text>拖动图片调整位置，用滑杆缩放。</text></view>
-    <view class="canvas-shell"><canvas id="cropCanvas" canvas-id="cropCanvas" type="2d" class="crop-canvas" disable-scroll @touchstart.stop.prevent="touchStart" @touchmove.stop.prevent="touchMove" /></view>
+    <view v-if="loadError" class="load-error">{{ loadError }}</view><view v-else class="canvas-shell"><canvas id="cropCanvas" canvas-id="cropCanvas" type="2d" class="crop-canvas" disable-scroll @touchstart.stop.prevent="touchStart" @touchmove.stop.prevent="touchMove" /></view>
     <view class="controls"><button class="rotate" @tap="rotate">↻ 旋转 90°</button><view class="zoom"><text>缩放</text><slider min="1" max="3" step="0.01" :value="zoomValue" active-color="#211f1c" :block-size="20" @changing="zoom" @change="zoom" /></view></view>
-    <button class="primary-button" :disabled="loading || submitting" @tap="submit">{{ submitting ? '正在提交…' : '开始自动抠图' }}</button>
+    <button class="primary-button" :disabled="loading || submitting || !!loadError" @tap="submit">{{ submitting ? '正在提交…' : '开始自动抠图' }}</button>
   </view>
 </template>
 
 <style scoped>
-.crop-page { min-height: 100vh; padding: calc(env(safe-area-inset-top) + 24rpx) 28rpx calc(env(safe-area-inset-bottom) + 30rpx); background: #191715; color: #fffdf8; }.crop-header { margin-bottom: 24rpx; }.crop-header .eyebrow { color: #a9a197; }.title { display: block; margin: 8rpx 0 10rpx; font-family: Georgia,"Songti SC",serif; font-size: 46rpx; }.crop-header>text:last-child { color: #b9b1a7; font-size: 23rpx; }.canvas-shell { height: 920rpx; border-radius: 26rpx; background: #0e0d0c; overflow: hidden; }.crop-canvas { width: 100%; height: 100%; }.controls { display: grid; grid-template-columns: 210rpx 1fr; gap: 22rpx; align-items: center; margin: 25rpx 0; }.rotate { height: 70rpx; margin: 0; padding: 0 14rpx; border: 1rpx solid #5a544d; border-radius: 999rpx; background: #292622; color: #fff; font-size: 23rpx; }.zoom { display: grid; grid-template-columns: 62rpx 1fr; align-items: center; color: #c7bfb5; font-size: 22rpx; }.zoom slider { margin: 0; }.primary-button { background: #fffdf8; color: #211f1c; }
+.crop-page { min-height: 100vh; padding: 24rpx 28rpx calc(env(safe-area-inset-bottom) + 30rpx); background: #191715; color: #fffdf8; }.crop-header { margin-bottom: 24rpx; }.crop-header .eyebrow { color: #a9a197; }.title { display: block; margin: 8rpx 0 10rpx; font-family: Georgia,"Songti SC",serif; font-size: 46rpx; }.crop-header>text:last-child { color: #b9b1a7; font-size: 23rpx; }.load-error { min-height: 920rpx; padding: 40rpx 28rpx; border-radius: 26rpx; background: #3c201e; color: #ffb7b0; font-size: 25rpx; }.canvas-shell { height: 920rpx; border-radius: 26rpx; background: #0e0d0c; overflow: hidden; }.crop-canvas { width: 100%; height: 100%; }.controls { display: grid; grid-template-columns: 210rpx 1fr; gap: 22rpx; align-items: center; margin: 25rpx 0; }.rotate { height: 70rpx; margin: 0; padding: 0 14rpx; border: 1rpx solid #5a544d; border-radius: 999rpx; background: #292622; color: #fff; font-size: 23rpx; }.zoom { display: grid; grid-template-columns: 62rpx 1fr; align-items: center; color: #c7bfb5; font-size: 22rpx; }.zoom slider { margin: 0; }.primary-button { background: #fffdf8; color: #211f1c; }
 </style>

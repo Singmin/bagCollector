@@ -11,7 +11,7 @@ BagCollect 是一个私人视觉陈列柜。当前发布方向是基于 **uni-ap
 - `packages/contracts`：共享 Schema、DTO 与错误码。
 - `infra`：Docker Compose、Nginx 和自动部署脚本。
 
-完整的本次修改说明见 [uni-app 重构与交付说明](docs/UNIAPP_REFACTOR_SUMMARY.md)，环境变量、腾讯云、微信后台和 CI/CD 配置见 [uni-app 微信小程序运行与发布](docs/WECHAT_NATIVE.md)。自托管 rembg/BiRefNet 的实现与验收边界见 [开源抠图实施方案](docs/OPEN_SOURCE_MATTING.md)。
+完整的本次修改说明见 [uni-app 重构与交付说明](docs/UNIAPP_REFACTOR_SUMMARY.md)，环境变量、腾讯云、微信后台和 CI/CD 配置见 [uni-app 微信小程序运行与发布](docs/WECHAT_NATIVE.md)。抠图方案以 [腾讯云数据万象抠图实施方案](docs/TENCENT_CI_MATTING.md) 为准，主链路只有万象一条抠图路径。COS 桶名、地域与 CAM 密钥的获取步骤见 [腾讯云凭据获取教程](docs/TENCENT_CLOUD_SETUP.md)。自托管 rembg/BiRefNet 的代码保留未删除，但不在主链路上，其历史决策与性能实测见 [开源抠图实施方案](docs/OPEN_SOURCE_MATTING.md)。
 
 ## 本地验证
 
@@ -30,7 +30,15 @@ pnpm build
 
 本地基础设施与生产 Compose 分离：开发 PostgreSQL/Redis 使用 `5432/6379` 并持久化，测试 PostgreSQL/Redis 使用 `5433/6380` 和临时文件系统，避免测试重置误伤开发数据。详细边界见 [本地数据库与测试环境](docs/DATABASE_LOCAL.md)。
 
-本地联调另开三个终端运行 `pnpm dev:rembg`、`pnpm dev:api`、`pnpm dev:worker`。rembg 首次运行会通过 `uv` 准备 Python 3.12、固定版 rembg 和 BiRefNet 模型；服务就绪后可执行 `pnpm warmup:rembg`。再运行 `pnpm build:miniapp:local`，用微信开发者工具导入 `apps/miniapp/dist/build/mp-weixin`。本地默认把图片存入 `data/local-storage`，不要求腾讯云密钥；生产构建仍通过 `VITE_API_BASE_URL` 注入 API HTTPS 地址并使用私有 COS。
+本地联调另开两个终端运行 `pnpm dev:api`、`pnpm dev:worker`。再运行 `pnpm build:miniapp:local`，用微信开发者工具导入 `apps/miniapp/dist/build/mp-weixin`。生产构建通过 `VITE_API_BASE_URL` 注入 API HTTPS 地址并使用私有 COS。
+
+抠图走腾讯云数据万象「通用抠图 AIPicMatting」（0.02 元/次），万象读不到本地磁盘文件，因此本地联调必须使用 `STORAGE_DRIVER=cos` 加真实 COS 桶与密钥。没有腾讯云凭据时图片处理链路在本地跑不通，且没有替代路径 —— `pnpm dev:worker` 会在配置校验处被拦下。详见 [腾讯云数据万象抠图实施方案](docs/TENCENT_CI_MATTING.md)。
+
+切换或验收万象抠图时，用真实样本核对画布尺寸与透明区域：
+
+```bash
+pnpm ci:verify-matting -- /absolute/path/a.jpg /absolute/path/b.jpg
+```
 
 可用指定图片跑完整本地上传与处理链路：
 
