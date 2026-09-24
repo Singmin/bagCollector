@@ -1,0 +1,19 @@
+# 行尾符策略。
+#
+# 背景：本仓库部署到 Linux 服务器，而开发机是 Windows（core.autocrlf=true）。
+# 工作区的 shell 脚本会被检出成 CRLF，而 CRLF 的脚本在 Linux 上执行会报
+#   infra/deploy.sh: line 12: set: -: invalid option
+# —— 这个错误信息完全指不到真正的原因（行尾符），排查成本很高。
+# 这个坑真实发生过：本地 scp 上去的 deploy.sh 是 CRLF，服务器上直接跑不起来。
+# 详见 docs/DEPLOY_BAOTA.md 第 9 节。
+#
+# 这里只约束「会在 Linux 上被解释执行」的文件。Swift / TS / JSON / Markdown
+# 保留平台默认行为，避免影响 Xcode 与本地工具链。
+
+/.gitattributes text eol=lf
+*.sh    text eol=lf
+*.mjs   text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.conf  text eol=lf
+.env*   text eol=lf

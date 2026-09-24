@@ -1,25 +1,38 @@
 name: Build and deploy
 
+# main 分支每次合并：先跑完整验证（复用 ci.yml），再构建镜像推 GHCR，最后 SSH 部署。
+# 手动触发（workflow_dispatch）走同一条链路，只是不需要新的 commit。
 on:
   push:
     branches: [main]
   workflow_dispatch:
+
+# 部署必须串行：两个部署同时在服务器上跑 migrate + 切容器会互相踩。
+# 刻意不设 cancel-in-progress —— 中途掐掉部署会留下「镜像已切一半」的状态。
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
 
 permissions:
   contents: read
   packages: write
 
 jobs:
+  # 复用 ci.yml，保证「部署的一定是通过了 lint / typecheck / 单测 / 迁移 / 构建的那份代码」。
+  verify:
+    uses: ./.github/workflows/ci.yml
+
   prepare:
     runs-on: ubuntu-latest
     outputs:
       registry: ${{ steps.registry.outputs.value }}
     steps:
       - id: registry
+        # GHCR 要求全部小写，GitHub 用户名可能有大写，这里统一转小写。
         run: echo "value=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
 
   images:
-    needs: prepare
+    needs: [verify, prepare]
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -51,14 +64,36 @@ jobs:
     environment: production
     steps:
       - uses: actions/checkout@v4
+
+      - name: Log in to GHCR on the server
+        # GHCR 的 package 默认是私有的，服务器不登录就 pull 会 403。
+        # 两种做法都支持：
+        #   1) 配了 GHCR_USER / GHCR_TOKEN → 每次部署自动登录（推荐，换 token 无需上服务器）；
+        #   2) 没配 → 沿用服务器上 `docker login ghcr.io` 留下的持久凭据。
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          command_timeout: 3m
+          script: |
+            set -eu
+            if [ -n "${{ secrets.GHCR_TOKEN }}" ]; then
+              echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u "${{ secrets.GHCR_USER }}" --password-stdin
+            else
+              echo "未配置 GHCR_TOKEN，沿用服务器上已保存的 docker 凭据"
+            fi
+
       - name: Copy deployment definition
+        # 只同步部署定义，不动服务器上的 .env.deploy 与备份目录。
         uses: appleboy/scp-action@v1.0.0
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
-          source: "infra/docker-compose.yml,infra/deploy.sh"
+          source: "infra/docker-compose.yml,infra/deploy.sh,infra/.env.deploy.example"
           target: ${{ secrets.DEPLOY_PATH }}
+
       - name: Deploy fixed image SHA
         uses: appleboy/ssh-action@v1.2.0
         with:
@@ -69,7 +104,9 @@ jobs:
           script: |
             set -eu
             cd "${{ secrets.DEPLOY_PATH }}"
+            # 用 commit SHA 而不是 latest：回滚和排障时能确切知道服务器上跑的是哪次提交。
             export API_IMAGE="${{ needs.prepare.outputs.registry }}/bagcollect-api:${{ github.sha }}"
             export WORKER_IMAGE="${{ needs.prepare.outputs.registry }}/bagcollect-worker:${{ github.sha }}"
             export ADMIN_IMAGE="${{ needs.prepare.outputs.registry }}/bagcollect-admin:${{ github.sha }}"
             sh infra/deploy.sh
+            echo "本次部署的镜像版本（commit）：${{ github.sha }}"

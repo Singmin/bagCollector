@@ -8,6 +8,7 @@
   },
   "scripts": {
     "build": "pnpm --filter @bagcollect/contracts build && pnpm --filter @bagcollect/api build && pnpm --filter @bagcollect/worker build && pnpm --filter @bagcollect/admin build && pnpm --filter @bagcollect/miniapp build:mp-weixin",
+    "build:server": "pnpm --filter @bagcollect/contracts build && pnpm --filter @bagcollect/api build && pnpm --filter @bagcollect/worker build && pnpm --filter @bagcollect/admin build",
     "check:miniapp": "node scripts/check-miniapp.mjs",
     "dev:api": "pnpm --filter @bagcollect/api dev",
     "dev:worker": "pnpm --filter @bagcollect/worker dev",

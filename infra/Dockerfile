@@ -15,7 +15,10 @@ FROM deps AS build
 COPY tsconfig.base.json eslint.config.mjs vitest.config.ts ./
 COPY packages ./packages
 COPY apps ./apps
-RUN pnpm db:generate && pnpm build
+# 只构建服务端产物。根 `build` 脚本还会构建小程序，但服务器镜像里用不到它，
+# 每个矩阵 target 都白跑一遍、还要求 VITE_API_BASE_URL —— 那是 upload-miniapp
+# 工作流（miniapp-uploader target）自己负责的事。
+RUN pnpm db:generate && pnpm build:server
 
 FROM base AS api
 ENV NODE_ENV=production

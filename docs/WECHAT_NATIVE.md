@@ -65,9 +65,12 @@ ADMIN_USERNAME=admin ADMIN_PASSWORD='使用强密码' pnpm db:seed
 
 ## 5. GitHub Actions Secrets
 
+完整步骤（宝塔 + Docker 部署）见 [部署到宝塔服务器](DEPLOY_BAOTA.md)。
+
 生产环境 `production`：
 
 - `DEPLOY_HOST`、`DEPLOY_USER`、`DEPLOY_SSH_KEY`、`DEPLOY_PATH`。
+- `GHCR_USER`、`GHCR_TOKEN`（可选但推荐）：GHCR 的 package 默认私有，服务器不登录就拉不到镜像。不配则沿用服务器上手工 `docker login ghcr.io` 留下的持久凭据。
 
 小程序开发版环境 `miniapp-development`：
 
@@ -76,7 +79,7 @@ ADMIN_USERNAME=admin ADMIN_PASSWORD='使用强密码' pnpm db:seed
 - `WECHAT_PRIVATE_KEY_PATH`：服务器上上传私钥的绝对路径。
 - GitHub Environment Variable `MINIAPP_API_BASE_URL`：小程序访问的 HTTPS API 地址，包含 `/api`。
 
-PR 与 main 推送运行类型检查、Lint、单测、数据库迁移、应用构建和三个 Docker target（api、worker、admin）构建。main 合并后镜像使用 commit SHA 推送 GHCR，部署脚本先备份 PostgreSQL、执行 migration、切换应用容器并检查 ready；失败时恢复上一组应用镜像。抠图改走万象后不再构建或启动 rembg，旧容器由 `--remove-orphans` 清理。migration 必须保持向前兼容，因为镜像回滚不会反向修改数据库。
+PR 跑 `ci.yml`（类型检查、Lint、单测、数据库迁移、应用构建和三个 Docker target）。main 推送跑 `deploy.yml`，它先用 `workflow_call` 复用同一个 `ci.yml`，通过之后才构建镜像 —— **部署的一定是通过验证的那份代码**。镜像用 commit SHA 打标签推 GHCR（便于回滚和排障），随后 SSH 到服务器执行 `infra/deploy.sh`：备份 PostgreSQL → 拉镜像 → 启动 postgres/redis 并等健康 → 执行 migration → 切换 api/worker/admin → 等 API 健康检查，任一步失败则恢复上一组应用镜像。部署带 `concurrency` 串行锁，两个部署不会同时在服务器上执行迁移。抠图改走万象后不再构建或启动 rembg，旧容器由 `--remove-orphans` 清理。migration 必须保持向前兼容，因为镜像回滚不会反向修改数据库。
 
 小程序通过 `Upload mini program development version` 手动工作流上传开发版本。审核与正式发布仍在微信后台人工确认。
 

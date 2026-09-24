@@ -1,12 +1,38 @@
+# BagCollect 生产编排（宝塔服务器）
+#
+# 运行方式：由 infra/deploy.sh 驱动，不要手敲 `docker compose up`，
+# 否则会跳过备份、迁移顺序与健康检查。
+#
+# 拓扑：PostgreSQL 与 Redis 都作为容器跑在同一台服务器上，由 compose 统一下发。
+# 用宝塔面板的 Docker 管理器可以看到并操作这些容器（同一个 docker daemon），
+# 但请以 compose 文件为准做变更，不要手改容器 —— 下次部署会被覆盖。
+# 数据库容器不暴露到公网，只有下面的 POSTGRES_HOST_PORT / REDIS_HOST_PORT
+# 映射到 127.0.0.1，仅供宿主机上的宝塔面板或数据库客户端连接。
+#
+# 变量来源：infra/.env.deploy（由 deploy.sh 通过 --env-file 指定）。
+
+# 日志轮转。宝塔服务器上最常见的事故就是容器日志把 /var/lib/docker 撑满，
+# 进而整个 docker daemon 挂掉。默认 json-file 是无限增长的，必须显式限制。
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   postgres:
     image: postgres:17-alpine
     restart: unless-stopped
+    logging: *default-logging
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-bagcollect}
       POSTGRES_USER: ${POSTGRES_USER:-bagcollect}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
       TZ: Asia/Shanghai
+    # 密码会原样拼进 DATABASE_URL，因此 POSTGRES_PASSWORD 必须是 URL-safe 的
+    # （只用字母数字）。详见 infra/.env.deploy.example。
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -18,7 +44,11 @@ services:
   redis:
     image: redis:7.4-alpine
     restart: unless-stopped
+    logging: *default-logging
+    # noeviction：BullMQ 的任务队列数据不能被 LRU 逐出，否则会静默丢任务。
     command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    ports:
+      - "127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"
     volumes:
       - redis-data:/data
     healthcheck:
@@ -27,8 +57,11 @@ services:
       timeout: 3s
       retries: 20
 
+  # 一次性数据库迁移。restart: "no" 是刻意的 —— 迁移失败必须让部署停下来，
+  # 而不是反复重试。deploy.sh 会先确保 postgres 健康再单独跑它。
   migrate:
     image: ${API_IMAGE:?set API_IMAGE}
+    logging: *default-logging
     command: ["pnpm", "db:deploy"]
     env_file: ${BAGCOLLECT_RUNTIME_ENV_FILE:-.env.deploy}
     environment:
@@ -41,15 +74,18 @@ services:
   api:
     image: ${API_IMAGE:?set API_IMAGE}
     restart: unless-stopped
+    logging: *default-logging
     env_file: ${BAGCOLLECT_RUNTIME_ENV_FILE:-.env.deploy}
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-bagcollect}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bagcollect}
       REDIS_URL: redis://redis:6379
       NODE_ENV: production
       STORAGE_DRIVER: cos
+      TZ: Asia/Shanghai
     ports:
       - "127.0.0.1:${API_HOST_PORT:-3001}:3001"
     depends_on:
+      # 迁移没成功就不要起 API，否则会拿旧 schema 提供服务。
       migrate:
         condition: service_completed_successfully
       redis:
@@ -59,16 +95,21 @@ services:
       interval: 15s
       timeout: 5s
       retries: 10
+      # 冷启动要加载 Prisma client 并连库，前几次探测必然失败，给足缓冲。
+      start_period: 40s
 
   worker:
     image: ${WORKER_IMAGE:?set WORKER_IMAGE}
     restart: unless-stopped
+    logging: *default-logging
     env_file: ${BAGCOLLECT_RUNTIME_ENV_FILE:-.env.deploy}
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-bagcollect}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bagcollect}
       REDIS_URL: redis://redis:6379
       NODE_ENV: production
+      # 万象只能读 COS 上的对象，本地磁盘文件它拿不到，所以 worker 强制 cos。
       STORAGE_DRIVER: cos
+      TZ: Asia/Shanghai
       # 抠图走腾讯云数据万象「通用抠图 AIPicMatting」，详见 docs/TENCENT_CI_MATTING.md。
       # 万象是按次计费的云端接口，不是本机进程，因此 worker 不需要依赖任何推理服务。
       CI_MATTING_PROCESS: ${CI_MATTING_PROCESS:-AIPicMatting}
@@ -90,6 +131,7 @@ services:
   # rembg:
   #   image: ${REMBG_IMAGE:?set REMBG_IMAGE}
   #   restart: unless-stopped
+  #   logging: *default-logging
   #   environment:
   #     REMBG_HOME: /models
   #     # --threads 的服务端并发上限（不是推理线程数）。保持 1。
@@ -109,6 +151,7 @@ services:
   admin:
     image: ${ADMIN_IMAGE:?set ADMIN_IMAGE}
     restart: unless-stopped
+    logging: *default-logging
     ports:
       - "127.0.0.1:${ADMIN_HOST_PORT:-8081}:80"
 

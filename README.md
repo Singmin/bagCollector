@@ -48,6 +48,14 @@ pnpm test:image-flow:local -- /absolute/path/to/image.png
 
 该检查只有在展示图包含真实透明像素且保留可见主体时才会通过。
 
+## 部署
+
+生产环境跑在宝塔面板（aaPanel）服务器上，PostgreSQL、Redis、API、Worker 与运营后台都由 `infra/docker-compose.yml` 统一下发成 Docker 容器，全部只绑 `127.0.0.1`，公网流量经宝塔 Nginx 反代进入。CI/CD 由 GitHub Actions 驱动：往 `main` 推 commit 会自动验证、构建镜像推 GHCR 并部署，失败时回滚到上一组应用镜像。
+
+完整的服务器准备、环境变量、镜像仓库授权、域名与 HTTPS、微信合法域名配置和排错表见 [部署到宝塔服务器](docs/DEPLOY_BAOTA.md)。
+
+小程序不走服务器部署，它由 `Upload mini program development version` 手动工作流上传到微信平台，见 [uni-app 微信小程序运行与发布](docs/WECHAT_NATIVE.md)。
+
 ## 原有 iOS 工程
 
 ### 运行要求

@@ -1,9 +1,10 @@
 name: CI
 
+# PR 上直接触发；main 分支由 deploy.yml 通过 workflow_call 复用同一个 job，
+# 避免「CI 通过」与「部署」并发跑、部署跑在没验过的代码上。
 on:
   pull_request:
-  push:
-    branches: [main]
+  workflow_call:
 
 permissions:
   contents: read
