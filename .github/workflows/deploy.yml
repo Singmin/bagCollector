@@ -102,7 +102,11 @@ jobs:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
-          command_timeout: 20m
+          # 首次部署时冷拉一个 106MB 的层要 ~45 分钟（大陆→GHCR 实测 35KB/s），
+          # 20m 的超时会在拉取中途把 SSH 会话掐断 —— 部署脚本因 stdout 管道断裂
+          # 死在收尾回显那一步，GitHub 显示红叉但服务器上处于半完成状态。
+          # 60m 覆盖最坏的冷拉取；平时层有缓存，整步只要 1~2 分钟。
+          command_timeout: 60m
           script: |
             set -eu
             cd "${{ secrets.DEPLOY_PATH }}"
@@ -110,5 +114,23 @@ jobs:
             # WORKER_IMAGE 已取消 —— worker 容器用同一个 bagcollect-api 镜像 + 别的 command。
             export API_IMAGE="${{ needs.prepare.outputs.registry }}/bagcollect-api:${{ github.sha }}"
             export ADMIN_IMAGE="${{ needs.prepare.outputs.registry }}/bagcollect-admin:${{ github.sha }}"
-            sh infra/deploy.sh
+
+            # 关键：让部署脚本脱离 SSH 会话运行。直接跑的话，脚本的一切输出都写进
+            # SSH 管道 —— 会话一旦断掉（超时/网络抖动），下一次 stdout 写入就会收到
+            # SIGPIPE 被杀，部署停在半路。重定向到文件之后，即使本步骤超时变红，
+            # 服务器上的部署也会继续跑完；日志留在 /tmp/bagcollect-deploy.log 可查。
+            LOG=/tmp/bagcollect-deploy.log
+            rm -f "$LOG"
+            nohup sh infra/deploy.sh </dev/null >"$LOG" 2>&1 &
+
+            # 轮询等它结束（160 次 × 20s ≈ 53 分钟，在 command_timeout 之内）。
+            # pgrep 模式必须锚定行首：本脚本自身的命令行里也含这个字符串。
+            for i in $(seq 1 160); do
+              pgrep -f "^sh infra/deploy.sh" >/dev/null 2>&1 || break
+              sleep 20
+            done
+
+            tail -n 40 "$LOG"
+            # 脚本成功结束时固定打印「部署完成」；没等到 = 失败，set -e 让本步骤变红。
+            grep -q "部署完成" "$LOG"
             echo "本次部署的镜像版本（commit）：${{ github.sha }}"
