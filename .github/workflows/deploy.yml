@@ -85,11 +85,15 @@ jobs:
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           TARGET_DIR: ${{ secrets.DEPLOY_PATH }}/incoming/${{ github.run_id }}-${{ github.run_attempt }}
         run: |
-          SSH_OPTS="-i ~/.ssh/deploy_key -o ConnectTimeout=20 -o BatchMode=yes -o StrictHostKeyChecking=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
+          KEY="$HOME/.ssh/deploy_key"
+          COMMON="-i $KEY -o ConnectTimeout=20 -o BatchMode=yes -o StrictHostKeyChecking=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
           ARCHIVE="bagcollect-source-${GITHUB_SHA}.tar.gz"
-          ssh $SSH_OPTS -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$TARGET_DIR'"
-          scp $SSH_OPTS -P "$DEPLOY_PORT" "$ARCHIVE" "$DEPLOY_USER@$DEPLOY_HOST:$TARGET_DIR/"
-          ssh $SSH_OPTS -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
+          echo "===== 1/3 远程建目录 ====="
+          timeout 60 ssh $COMMON -v -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$TARGET_DIR'"
+          echo "===== 2/3 上传源码包（-v 详细握手日志见 stderr）====="
+          timeout 300 scp $COMMON -v -P "$DEPLOY_PORT" "$ARCHIVE" "$DEPLOY_USER@$DEPLOY_HOST:$TARGET_DIR/"
+          echo "===== 3/3 校验文件完整性 ====="
+          timeout 60 ssh $COMMON -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
             "test -s '$TARGET_DIR/$ARCHIVE' && echo '源码包已上传并通过完整性检查：$TARGET_DIR/$ARCHIVE'"
 
       - name: Build and deploy fixed source SHA on the server
