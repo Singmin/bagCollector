@@ -46,8 +46,9 @@ jobs:
       - run: pnpm test:integration
       - name: Build Docker targets
         run: |
+          # api 这个 target 同时承载 api 与 worker 两个容器（compose 用 command 区分），
+          # 所以不单独构建 worker —— 理由见 infra/Dockerfile 顶部注释。
           docker build --target api -f infra/Dockerfile .
-          docker build --target worker -f infra/Dockerfile .
           docker build --target admin -f infra/Dockerfile .
           # 抠图已切换到腾讯云数据万象，rembg 不再参与生产链路。
           # 对应 target 仍保留在 infra/Dockerfile 中作为可回退的兜底实现，

@@ -18,7 +18,8 @@ GitHub 仓库 (main)
    ▼
 GitHub Actions
    ├─ verify   复用 ci.yml：lint → typecheck → 单测 → 迁移 → 构建
-   ├─ images   构建 api / worker / admin 三个镜像，打 commit SHA 标签，推 GHCR
+   ├─ images   构建 api / admin 两个镜像，打 commit SHA 标签，推 GHCR
+   │             （api 这个镜像同时跑 api 与 worker 两个容器，见第 5 节）
    └─ deploy   SSH 到服务器
                  ├─ docker login ghcr.io
                  ├─ scp infra/{docker-compose.yml,deploy.sh,.env.deploy.example}
@@ -144,10 +145,13 @@ openssl rand -base64 48  # → JWT_SECRET
 
 1. 打开 <https://github.com/settings/tokens/new>（或者：右上头像 → **Settings** → 左侧栏最下方 **Developer settings** → **Personal access tokens** → **Tokens (classic)** → **Generate new token (classic)**）。
 2. Note 填 `bagcollect-deploy`，Expiration 按你的习惯选。
-3. Scopes 只勾 **`read:packages`** 一项即可。
+3. Scopes 勾 **`read:packages`**；**如果这个仓库是私有的，再补一个 `repo`**。
+   - **怎么判断仓库是不是私有**：用未登录的浏览器打开 `https://github.com/<你的用户名>/<仓库名>`。能直接看到代码就是公开；要求登录、或返回 404，就是私有。
+     另一个等价的判断：`curl -s -w '\n%{http_code}\n' https://api.github.com/repos/<你的用户名>/<仓库名>` → `200` 公开、`404` 私有。
+   - **为什么私有仓库还需要 `repo`**：GHCR 上的包默认**继承所属仓库的可见性**。包挂在私有仓库下时，GitHub 要求 `repo` scope 才放行只读拉取 —— 这是 GitHub 的限制，不是 scope 配错了。缺它的话症状是 pull 报 `denied: denied`，而 `docker login` 本身是成功的，很容易误判成「token 无效」。
+   - **不确定就两个都勾**，多勾一个 `repo` 不会有坏处。
    - **不需要 `write:packages`** —— 推镜像的是 Actions 自带的 `GITHUB_TOKEN`（工作流里已声明 `permissions: packages: write`）。
-   - **不需要 `repo`** —— 那个 scope 只在「包关联的是私有仓库」时才是必需的（GHCR 的权限继承自仓库可见性）。本仓库是公开的，所以 `read:packages` 一项就够。如果以后把仓库改成私有，就要补上 `repo`，否则会看到 `denied: denied`。
-   - 也**不需要** `read:org`（那是有组织 SSO 时才要）。
+   - **不需要 `read:org`** —— 那是有组织 SSO 时才要。
 4. 生成后**立刻复制** —— GitHub 只显示这一次，关掉页面就再也看不到。
 5. 在仓库 Secrets 里加 `GHCR_USER`（你的 GitHub 用户名）和 `GHCR_TOKEN`（刚生成的 token）。
 
@@ -300,12 +304,33 @@ docker compose --env-file infra/.env.deploy -f infra/docker-compose.yml logs -f 
 ```bash
 cd /www/wwwroot/bagcollect
 API_IMAGE=ghcr.io/<你的用户名>/bagcollect-api:<旧SHA> \
-WORKER_IMAGE=ghcr.io/<你的用户名>/bagcollect-worker:<旧SHA> \
 ADMIN_IMAGE=ghcr.io/<你的用户名>/bagcollect-admin:<旧SHA> \
 sh infra/deploy.sh
 ```
 
+> api 与 worker 跑的是**同一个镜像**（compose 用不同的 `command` 区分角色），所以回滚只需要两个变量，不再有 `WORKER_IMAGE`。若你的 `.env.deploy` 里还留着 `WORKER_IMAGE=` 一行，删不删都行 —— 已经没有任何地方引用它。
+
 **数据库迁移不会回滚**，它是单向的。所以 migration 必须保持向前兼容 —— 旧版本代码要能在新 schema 上跑起来，否则镜像回滚也救不回来。这是 `deploy.sh` 顶部写明的前提，写新 migration 时请守住。
+
+### GHCR 拉取不稳定（大陆服务器）
+
+`ghcr.io` 的镜像层实际存放在 `pkg-containers.githubusercontent.com`，这个域名从大陆访问**经常在 TLS 握手阶段超时**。典型表现是下载到一半（例如 `Downloading 112.2MB` 之后）报 `net/http: TLS handshake timeout`，而 `docker login` 其实是成功的 —— **极易误判成鉴权问题**。
+
+`deploy.sh` 已内置 3 次重试，一般就够（已下载的层会保留，所以重试很便宜）。如果每次都失败、或不想赌链路，有三条路：
+
+1. **把三个 package 改成 Public**（见第 4 节方式 C）。少一次鉴权往返，成功率会好一些，但仍走同一条 CDN，不保证解决。
+2. **给 Docker 配 HTTP 代理**（你若有可用代理）：
+   ```bash
+   mkdir -p /etc/systemd/system/docker.service.d
+   cat > /etc/systemd/system/docker.service.d/proxy.conf <<'EOF'
+   [Service]
+   Environment="HTTP_PROXY=http://<代理地址>:<端口>"
+   Environment="HTTPS_PROXY=http://<代理地址>:<端口>"
+   EOF
+   systemctl daemon-reload && systemctl restart docker
+   ```
+   > 顺带纠一个常见误解：`daemon.json` 里的 `registry-mirrors` **只对 Docker Hub 生效，对 ghcr.io 无效**。给 ghcr.io 加速必须走代理，或者照下面第 3 条换仓库。
+3. **换用国内镜像仓库**（服务器在腾讯云的话推荐 TCR，拉取走内网、几乎免费）：把 `deploy.yml` 里 `ghcr.io/<用户名>/...` 换成 TCR 地址，登录方式换成 TCR 凭据，`.env.deploy` 的三个 `*_IMAGE` 同步改。**改动只集中在这两处，`deploy.sh` 完全不用动。**
 
 ### 清理磁盘
 
@@ -323,6 +348,8 @@ docker system df               # 看占用
 | 症状 | 几乎必然的原因 | 处理 |
 |---|---|---|
 | `pull access denied` / `403 Forbidden` 拉镜像失败 | GHCR 是私有包但服务器没登录 | 见第 4 节 |
+| `docker login` 成功，但 pull 报 `denied: denied` | PAT 缺 `repo` scope，而包挂在**私有**仓库下 | 给 token 补 `repo`（见第 4 节方式 A 第 3 步），或把三个 package 改成 Public |
+| 拉取镜像报 `TLS handshake timeout` / `net/http` / `i/o timeout` | 服务器在大陆访问 GHCR 的层 CDN（`pkg-containers.githubusercontent.com`）握手超时 —— **跟鉴权完全无关** | `deploy.sh` 已内置 3 次重试（已下载的层会保留，重试成本很低）。持续失败见第 8 节「GHCR 拉取不稳定」 |
 | `port is already allocated` | 5432 / 6379 被宝塔装的原生服务占了 | 改 `POSTGRES_HOST_PORT` / `REDIS_HOST_PORT` |
 | `password authentication failed` | 改过 `POSTGRES_PASSWORD`，但数据卷里还是初始化时的旧密码 | PostgreSQL 只在**首次初始化**数据目录时读这个变量。要么用旧密码，要么 `ALTER USER`，要么 `down -v`（**会删库**） |
 | api 容器起来就退出 | `.env.deploy` 缺 `JWT_SECRET`（<32 字符）或 `WECHAT_AUTH_MOCK=false` 却没填 AppID/AppSecret | 看 `docker compose logs api` 里的 zod 报错，它会指出具体缺哪项 |

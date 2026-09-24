@@ -37,7 +37,9 @@ jobs:
     strategy:
       matrix:
         # 抠图已切换到腾讯云数据万象，不再构建 rembg 镜像。详见 docs/TENCENT_CI_MATTING.md。
-        target: [api, worker, admin]
+        # api 这个镜像同时承载 api 与 worker 两个容器（compose 用 command 区分），
+        # 所以没有 worker 条目 —— 合并理由见 infra/Dockerfile 顶部注释。
+        target: [api, admin]
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -105,8 +107,8 @@ jobs:
             set -eu
             cd "${{ secrets.DEPLOY_PATH }}"
             # 用 commit SHA 而不是 latest：回滚和排障时能确切知道服务器上跑的是哪次提交。
+            # WORKER_IMAGE 已取消 —— worker 容器用同一个 bagcollect-api 镜像 + 别的 command。
             export API_IMAGE="${{ needs.prepare.outputs.registry }}/bagcollect-api:${{ github.sha }}"
-            export WORKER_IMAGE="${{ needs.prepare.outputs.registry }}/bagcollect-worker:${{ github.sha }}"
             export ADMIN_IMAGE="${{ needs.prepare.outputs.registry }}/bagcollect-admin:${{ github.sha }}"
             sh infra/deploy.sh
             echo "本次部署的镜像版本（commit）：${{ github.sha }}"

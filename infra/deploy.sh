@@ -53,7 +53,6 @@ require_env() {
 require_env POSTGRES_PASSWORD
 require_env JWT_SECRET
 require_env API_IMAGE
-require_env WORKER_IMAGE
 require_env ADMIN_IMAGE
 
 if grep -qE '^(POSTGRES_PASSWORD|JWT_SECRET)=.*(replace-|your-)' "$ENV_FILE"; then
@@ -85,18 +84,25 @@ current_image() {
   fi
 }
 
-previous_api=$(current_image api)
-previous_worker=$(current_image worker)
+# api 与 worker 共用同一个镜像（见 infra/Dockerfile 顶部说明），所以只需记录一条
+# previous_server —— 两个容器必然是同一次构建的产物，不可能分叉。
+#
+# ⚠ 回滚跨不过「结构变更点」：合并前 worker 跑的是 bagcollect-worker:<SHA>，那一版
+# api 镜像里没有 worker 的 dist，回滚会拿 bagcollect-api:<旧SHA> 去起 worker 然后失败
+# （症状：Cannot find module '/app/apps/worker/dist/main.js'）。合并时已核实服务器上
+# 没有任何 bagcollect 容器 → previous_* 为空 → 本次不会触发。将来再做同类结构变更
+# 时留意这一点。
+previous_server=$(current_image api)
 previous_admin=$(current_image admin)
 
-# 抠图走腾讯云数据万象，部署里没有推理服务容器，因此回滚只需恢复三个应用镜像。
+# 抠图走腾讯云数据万象，部署里没有推理服务容器，因此回滚只需恢复应用镜像。
 # 历史上存在过的 rembg 容器由下面的 --remove-orphans 清理。详见 docs/TENCENT_CI_MATTING.md。
 rollback() {
   exit_code=$?
   trap - EXIT
-  if [ "$exit_code" -ne 0 ] && [ -n "$previous_api" ] && [ -n "$previous_worker" ] && [ -n "$previous_admin" ]; then
+  if [ "$exit_code" -ne 0 ] && [ -n "$previous_server" ] && [ -n "$previous_admin" ]; then
     echo "部署失败；正在恢复上一组应用镜像。数据库迁移是单向的，不会回退。"
-    API_IMAGE="$previous_api" WORKER_IMAGE="$previous_worker" ADMIN_IMAGE="$previous_admin" \
+    API_IMAGE="$previous_server" ADMIN_IMAGE="$previous_admin" \
       compose up -d --remove-orphans api worker admin || true
   fi
   exit "$exit_code"
@@ -124,16 +130,43 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 5. 拉取镜像
+# 5. 拉取镜像（带重试）
+#   服务器在大陆时，ghcr.io 的层 CDN（pkg-containers.githubusercontent.com）
+#   经常在 TLS 握手阶段超时 —— 那是链路抖动，不是鉴权问题，重试通常就能过。
+#   注意两种失败的区分：unauthorized/denied 是没登录或 token 缺 scope，
+#   TLS handshake timeout / net/http 是网络。误判会把排查带到完全错误的方向。
 # ---------------------------------------------------------------------------
-if ! compose pull; then
-  cat >&2 <<'EOF'
-拉取镜像失败。私有 GHCR 包最常见的原因是服务器尚未登录：
-  echo "$GHCR_TOKEN" | docker login ghcr.io -u <你的GitHub用户名> --password-stdin
-GHCR_TOKEN 需要 read:packages 权限。详见 docs/DEPLOY_BAOTA.md 第 5 节。
+PULL_LOG=/tmp/bagcollect-pull.log
+PULL_MAX_ATTEMPTS=3
+pull_attempt=1
+
+until compose pull > "$PULL_LOG" 2>&1; do
+  cat "$PULL_LOG" >&2
+  if [ "$pull_attempt" -ge "$PULL_MAX_ATTEMPTS" ]; then
+    rm -f "$PULL_LOG"
+    cat >&2 <<EOF
+拉取镜像失败（已重试 ${PULL_MAX_ATTEMPTS} 次）。按上面的原始报错分两种情况：
+
+  · 报 unauthorized / denied
+      鉴权问题。确认服务器已登录，且 token 具备 read:packages
+      （仓库若是私有的，还需要 repo，否则登录会成功但拉取被拒）：
+        echo "<你的PAT>" | docker login ghcr.io -u <你的GitHub用户名> --password-stdin
+      详见 docs/DEPLOY_BAOTA.md 第 4 节。
+
+  · 报 TLS handshake timeout / net/http / i/o timeout / context deadline exceeded
+      跨境链路问题，跟鉴权无关。ghcr.io 的层 CDN（pkg-containers.githubusercontent.com）
+      在大陆访问不稳定，大层（百 MB 级）基本拉不下来，重试只是碰运气。
+      根治方案是把镜像仓库换成腾讯云 TCR（服务器在腾讯云，内网/同地域拉取），
+      详见 docs/DEPLOY_BAOTA.md 第 9 节「拉取镜像超时」一行。
 EOF
-  exit 1
-fi
+    exit 1
+  fi
+  echo "第 ${pull_attempt} 次拉取失败（大陆访问 GHCR 的握手超时很常见），10 秒后重试……" >&2
+  pull_attempt=$((pull_attempt + 1))
+  sleep 10
+done
+cat "$PULL_LOG"
+rm -f "$PULL_LOG"
 
 # ---------------------------------------------------------------------------
 # 6. 先起基础设施，再跑迁移

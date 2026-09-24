@@ -59,10 +59,13 @@ services:
 
   # 一次性数据库迁移。restart: "no" 是刻意的 —— 迁移失败必须让部署停下来，
   # 而不是反复重试。deploy.sh 会先确保 postgres 健康再单独跑它。
+  # 命令指向 apps/api 的 db:deploy 脚本（prisma CLI 是 api 的生产依赖），
+  # 不能再用根 package.json 的 db:deploy —— 根脚本的 prisma 来自根 devDependencies，
+  # 生产镜像按 --filter @bagcollect/api... --prod 安装，根 devDeps 不在镜像里。
   migrate:
     image: ${API_IMAGE:?set API_IMAGE}
     logging: *default-logging
-    command: ["pnpm", "db:deploy"]
+    command: ["pnpm", "--filter", "@bagcollect/api", "db:deploy"]
     env_file: ${BAGCOLLECT_RUNTIME_ENV_FILE:-.env.deploy}
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-bagcollect}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bagcollect}
@@ -75,6 +78,9 @@ services:
     image: ${API_IMAGE:?set API_IMAGE}
     restart: unless-stopped
     logging: *default-logging
+    # api 与 worker 共用同一个镜像（见 infra/Dockerfile 顶部的合并说明），
+    # 所以两个服务都必须显式写 command，不依赖镜像的默认 CMD。
+    command: ["node", "apps/api/dist/main.js"]
     env_file: ${BAGCOLLECT_RUNTIME_ENV_FILE:-.env.deploy}
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-bagcollect}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bagcollect}
@@ -99,9 +105,12 @@ services:
       start_period: 40s
 
   worker:
-    image: ${WORKER_IMAGE:?set WORKER_IMAGE}
+    # 与 api 是同一个镜像（同一 commit 的同一份构建产物），只是入口不同。
+    # 不再需要单独的 WORKER_IMAGE —— 少一个镜像变量、少一个 CI matrix target。
+    image: ${API_IMAGE:?set API_IMAGE}
     restart: unless-stopped
     logging: *default-logging
+    command: ["node", "apps/worker/dist/main.js"]
     env_file: ${BAGCOLLECT_RUNTIME_ENV_FILE:-.env.deploy}
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-bagcollect}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bagcollect}

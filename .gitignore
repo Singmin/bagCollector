@@ -37,3 +37,9 @@ apps/miniapp/miniprogram_npm/
 # Runtime data
 data/
 backups/
+
+# Local agent workspace & scratch files
+.workbuddy/
+logs/
+__MACOSX/
+testIMG.jpg
