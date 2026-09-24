@@ -326,7 +326,7 @@ node scripts/compare-matting-models.mjs \
 
 部署脚本已移除 rembg 的启动与回滚，`--remove-orphans` 会自动清理旧的 rembg 容器与网络。
 
-镜像构建矩阵也去掉了 rembg target，GHCR 上不再推送 `bagcollect-rembg`。
+镜像构建矩阵也去掉了 rembg target，镜像仓库里不再推送 `bagcollect-rembg`。
 
 ### 万象不可用时
 

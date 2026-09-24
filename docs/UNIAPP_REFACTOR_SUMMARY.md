@@ -35,7 +35,7 @@ BagCollect 用户端已从“直接编写微信原生 WXML/WXSS”调整为：
 - Redis：BullMQ 任务队列。
 - 腾讯云 COS：私有图片对象存储。
 - 自托管 rembg/BiRefNet：通用物品抠图。
-- GHCR：API、Worker、Admin、rembg 和小程序上传镜像。
+- 腾讯云 TCR：API/Worker（同一镜像，见 `infra/Dockerfile`）、Admin 和小程序上传镜像。
 - GitHub Actions：检查、构建、部署和微信开发版上传。
 
 ## 3. 小程序端修改
@@ -253,8 +253,8 @@ Prisma 当前包含：
 
 `.github/workflows/deploy.yml` 在 `main` 更新后：
 
-1. 构建 API、Worker、Admin 镜像。
-2. 使用 commit SHA 和 `latest` 推送 GHCR。
+1. 构建 API/Worker（同一镜像，compose 用 `command` 区分角色）与 Admin 镜像。
+2. 使用 commit SHA 和 `latest` 推送腾讯云 TCR（服务器同地域走内网拉取）。
 3. 通过 SSH 将部署文件同步到服务器。
 4. 服务器备份 PostgreSQL。
 5. 执行 Prisma migration。
@@ -269,7 +269,7 @@ Prisma 当前包含：
 `.github/workflows/upload-miniapp.yml` 使用 `workflow_dispatch` 手动触发：
 
 1. 构建 `miniapp-uploader` 镜像。
-2. 将镜像推送 GHCR。
+2. 将镜像推送腾讯云 TCR。
 3. 通过 SSH 在固定出口 IP 的服务器运行容器。
 4. 容器执行 uni-app `mp-weixin` 生产构建。
 5. `miniprogram-ci` 上传微信开发版本。

@@ -49,7 +49,7 @@ ADMIN_USERNAME=admin ADMIN_PASSWORD='使用强密码' pnpm db:seed
   小程序直传临时密钥**不需要**额外授权（`GetFederationToken` 只验签名不鉴权，子账号具备 COS 读写权限即可）。
   完整策略 JSON 见教程第 6 节。
 - COS 桶需已绑定数据万象并开通抠图服务；地域必须是公有云地域（图片处理不支持多 AZ 存储桶）。
-- API、Worker、Admin 三个 GHCR 镜像地址。抠图走万象后不再需要 rembg 镜像。
+- API、Worker、Admin 的镜像地址（腾讯云 TCR）。API 与 Worker 共用同一个镜像，靠 compose 的 `command` 区分角色。抠图走万象后不再需要 rembg 镜像。
 - 收藏数量、存储、每日抠图、上传大小和像素限制。每日抠图配额直接决定万象账单，需按用户量复核。
 
 建议为 API/Worker 使用只允许目标桶所需动作的 CAM 子账号密钥，不使用主账号永久密钥。COS 桶保持私有，并配置生命周期清理未完成上传和历史处理版本。
@@ -67,10 +67,14 @@ ADMIN_USERNAME=admin ADMIN_PASSWORD='使用强密码' pnpm db:seed
 
 完整步骤（宝塔 + Docker 部署）见 [部署到宝塔服务器](DEPLOY_BAOTA.md)。
 
+仓库级 Secrets / Variables（**必须在仓库级，不能放进某个 environment** —— 两条流水线分属不同 environment）：
+
+- `TCR_USERNAME`（腾讯云账号 ID）、`TCR_PASSWORD`（TCR 访问凭证密码）：TCR 仓库默认私有，服务器不登录就拉不到镜像。不配则沿用服务器上手工 `docker login ccr.ccs.tencentyun.com` 留下的持久凭据。
+- `TCR_NAMESPACE`（Variable）：TCR 命名空间名。`TCR_REGISTRY` 可选，留空即 `ccr.ccs.tencentyun.com`。开通步骤见 [部署到宝塔服务器](DEPLOY_BAOTA.md) 第 4 节。
+
 生产环境 `production`：
 
-- `DEPLOY_HOST`、`DEPLOY_USER`、`DEPLOY_SSH_KEY`、`DEPLOY_PATH`。
-- `GHCR_USER`、`GHCR_TOKEN`（可选但推荐）：GHCR 的 package 默认私有，服务器不登录就拉不到镜像。不配则沿用服务器上手工 `docker login ghcr.io` 留下的持久凭据。
+- `DEPLOY_HOST`、`DEPLOY_USER`、`DEPLOY_SSH_KEY`、`DEPLOY_PATH`。SSH 相关只在 `deploy.yml` 的 `deploy` job 里用到。
 
 小程序开发版环境 `miniapp-development`：
 
@@ -79,7 +83,7 @@ ADMIN_USERNAME=admin ADMIN_PASSWORD='使用强密码' pnpm db:seed
 - `WECHAT_PRIVATE_KEY_PATH`：服务器上上传私钥的绝对路径。
 - GitHub Environment Variable `MINIAPP_API_BASE_URL`：小程序访问的 HTTPS API 地址，包含 `/api`。
 
-PR 跑 `ci.yml`（类型检查、Lint、单测、数据库迁移、应用构建和三个 Docker target）。main 推送跑 `deploy.yml`，它先用 `workflow_call` 复用同一个 `ci.yml`，通过之后才构建镜像 —— **部署的一定是通过验证的那份代码**。镜像用 commit SHA 打标签推 GHCR（便于回滚和排障），随后 SSH 到服务器执行 `infra/deploy.sh`：备份 PostgreSQL → 拉镜像 → 启动 postgres/redis 并等健康 → 执行 migration → 切换 api/worker/admin → 等 API 健康检查，任一步失败则恢复上一组应用镜像。部署带 `concurrency` 串行锁，两个部署不会同时在服务器上执行迁移。抠图改走万象后不再构建或启动 rembg，旧容器由 `--remove-orphans` 清理。migration 必须保持向前兼容，因为镜像回滚不会反向修改数据库。
+PR 跑 `ci.yml`（类型检查、Lint、单测、数据库迁移、应用构建和两个 Docker target）。main 推送跑 `deploy.yml`，它先用 `workflow_call` 复用同一个 `ci.yml`，通过之后才构建镜像 —— **部署的一定是通过验证的那份代码**。镜像用 commit SHA 打标签推腾讯云 TCR（便于回滚和排障），随后 SSH 到服务器执行 `infra/deploy.sh`：备份 PostgreSQL → 拉镜像（走腾讯云内网）→ 启动 postgres/redis 并等健康 → 执行 migration → 切换 api/worker/admin → 等 API 健康检查，任一步失败则恢复上一组应用镜像。部署带 `concurrency` 串行锁，两个部署不会同时在服务器上执行迁移。抠图改走万象后不再构建或启动 rembg，旧容器由 `--remove-orphans` 清理。migration 必须保持向前兼容，因为镜像回滚不会反向修改数据库。
 
 小程序通过 `Upload mini program development version` 手动工作流上传开发版本。审核与正式发布仍在微信后台人工确认。
 

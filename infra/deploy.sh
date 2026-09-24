@@ -65,13 +65,17 @@ if ! grep -qE '^POSTGRES_PASSWORD=[A-Za-z0-9]+$' "$ENV_FILE"; then
 fi
 
 # ---------------------------------------------------------------------------
-# 2. GHCR 私有镜像登录
-#   GitHub Actions 会把 GHCR_TOKEN 传进来；手动执行时可以自己 export。
-#   仓库公开不等于 package 公开 —— GHCR 的包默认是私有的。
+# 2. 镜像仓库登录（腾讯云 TCR）
+#   GitHub Actions 会把 TCR_USERNAME / TCR_PASSWORD 传进来；手动执行时可以自己 export。
+#   TCR 个人版的镜像仓库默认私有（也可在控制台改成公开），不登录 pull 会 unauthorized。
+#   仓库地址从 API_IMAGE 里取主机名，避免再维护一个变量（shell 里没导出时就从
+#   .env.deploy 读，保证手动执行也能登录成功）。
 # ---------------------------------------------------------------------------
-if [ -n "${GHCR_TOKEN:-}" ] && [ -n "${GHCR_USER:-}" ]; then
-  echo "登录 ghcr.io（用户：$GHCR_USER）"
-  echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin >/dev/null
+registry_host=${API_IMAGE:-$(grep -m1 '^API_IMAGE=' "$ENV_FILE" | cut -d= -f2-)}
+registry_host=${registry_host%%/*}
+if [ -n "${TCR_PASSWORD:-}" ] && [ -n "${TCR_USERNAME:-}" ]; then
+  echo "登录镜像仓库 $registry_host（用户：$TCR_USERNAME）"
+  echo "$TCR_PASSWORD" | docker login "$registry_host" -u "$TCR_USERNAME" --password-stdin >/dev/null
 fi
 
 # ---------------------------------------------------------------------------
@@ -131,10 +135,10 @@ fi
 
 # ---------------------------------------------------------------------------
 # 5. 拉取镜像（带重试）
-#   服务器在大陆时，ghcr.io 的层 CDN（pkg-containers.githubusercontent.com）
-#   经常在 TLS 握手阶段超时 —— 那是链路抖动，不是鉴权问题，重试通常就能过。
-#   注意两种失败的区分：unauthorized/denied 是没登录或 token 缺 scope，
-#   TLS handshake timeout / net/http 是网络。误判会把排查带到完全错误的方向。
+#    TCR 个人版在腾讯云大陆地域**默认走内网**，不需要配 VPC / 网络 ACL，
+#    正常几秒到几十秒就拉完（换 TCR 之前走 GHCR 是 35KB/s、冷拉要 40 分钟）。
+#    重试保留着兜偶发抖动；注意区分两类失败：unauthorized / denied 是没登录，
+#    TLS handshake timeout / i/o timeout 才是网络 —— 误判会把排查带偏。
 # ---------------------------------------------------------------------------
 PULL_LOG=/tmp/bagcollect-pull.log
 PULL_MAX_ATTEMPTS=3
@@ -147,21 +151,20 @@ until compose pull > "$PULL_LOG" 2>&1; do
     cat >&2 <<EOF
 拉取镜像失败（已重试 ${PULL_MAX_ATTEMPTS} 次）。按上面的原始报错分两种情况：
 
-  · 报 unauthorized / denied
-      鉴权问题。确认服务器已登录，且 token 具备 read:packages
-      （仓库若是私有的，还需要 repo，否则登录会成功但拉取被拒）：
-        echo "<你的PAT>" | docker login ghcr.io -u <你的GitHub用户名> --password-stdin
+  · 报 unauthorized / denied / pull access denied
+      鉴权问题：服务器没登录 TCR，或仓库是私有的而没有凭据。手动登录一次：
+        echo '<TCR访问凭证密码>' | docker login ${registry_host} -u '<腾讯云账号ID>' --password-stdin
       详见 docs/DEPLOY_BAOTA.md 第 4 节。
 
   · 报 TLS handshake timeout / net/http / i/o timeout / context deadline exceeded
-      跨境链路问题，跟鉴权无关。ghcr.io 的层 CDN（pkg-containers.githubusercontent.com）
-      在大陆访问不稳定，大层（百 MB 级）基本拉不下来，重试只是碰运气。
-      根治方案是把镜像仓库换成腾讯云 TCR（服务器在腾讯云，内网/同地域拉取），
-      详见 docs/DEPLOY_BAOTA.md 第 9 节「拉取镜像超时」一行。
+      网络问题。腾讯云大陆机器访问 TCR 走内网、正常不该出现，先排查：
+        getent hosts ${registry_host}          # 能否解析
+        echo "${API_IMAGE:-未设置}"             # 镜像地址是否拼对
+      详见 docs/DEPLOY_BAOTA.md 第 9 节排错表。
 EOF
     exit 1
   fi
-  echo "第 ${pull_attempt} 次拉取失败（大陆访问 GHCR 的握手超时很常见），10 秒后重试……" >&2
+  echo "第 ${pull_attempt} 次拉取失败，10 秒后重试……" >&2
   pull_attempt=$((pull_attempt + 1))
   sleep 10
 done
