@@ -49,32 +49,49 @@ jobs:
             exit 1
           fi
 
+      - name: Set up SSH key
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # 预先采集主机指纹，之后 StrictHostKeyChecking=yes 也不会交互卡住
+          if ! ssh-keyscan -p "$DEPLOY_PORT" "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null; then
+            echo "::error::ssh-keyscan 失败：SSH 服务在 $DEPLOY_HOST:$DEPLOY_PORT 上无响应" >&2
+            exit 1
+          fi
+
       - name: Copy verified source to the server
         # git archive 只包含当前 commit 的已跟踪文件，不会把本机 .env、密钥、node_modules
         # 或工作区未提交文件带到服务器。每次 run 使用独立目录，重跑不会混入旧源码。
-        uses: appleboy/scp-action@v1.0.0
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          port: ${{ secrets.DEPLOY_PORT || 22 }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          # SSH 连接超时：默认 30s，海外 Runner 连国内服务器偶发握手慢，放宽到 120s
-          timeout: 120s
-          # 排查期间保留详细日志；问题定位后可删掉这一行
-          debug: true
-          source: "bagcollect-source-${{ github.sha }}.tar.gz"
-          target: "${{ secrets.DEPLOY_PATH }}/incoming/${{ github.run_id }}-${{ github.run_attempt }}"
+        # 用 Runner 自带的 OpenSSH 而非 scp-action：报错信息完整，失败快速可见。
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          TARGET_DIR: ${{ secrets.DEPLOY_PATH }}/incoming/${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          SSH_OPTS="-i ~/.ssh/deploy_key -o ConnectTimeout=20 -o BatchMode=yes -o StrictHostKeyChecking=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
+          ARCHIVE="bagcollect-source-${GITHUB_SHA}.tar.gz"
+          ssh $SSH_OPTS -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$TARGET_DIR'"
+          scp $SSH_OPTS -P "$DEPLOY_PORT" "$ARCHIVE" "$DEPLOY_USER@$DEPLOY_HOST:$TARGET_DIR/"
+          ssh $SSH_OPTS -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "test -s '$TARGET_DIR/$ARCHIVE' && echo '源码包已上传并通过完整性检查：$TARGET_DIR/$ARCHIVE'"
 
       - name: Build and deploy fixed source SHA on the server
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          port: ${{ secrets.DEPLOY_PORT || 22 }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          # 首次服务器构建需要拉基础镜像并安装依赖；后续命中 Docker BuildKit 缓存会快很多。
-          command_timeout: 90m
-          script: |
+        # 首次服务器构建需要拉基础镜像并安装依赖；后续命中 Docker BuildKit 缓存会快很多。
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -p "$DEPLOY_PORT" \
+            -o ConnectTimeout=20 -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" /bin/bash -s <<'REMOTE_SCRIPT'
             set -eu
             DEPLOY_DIR="${{ secrets.DEPLOY_PATH }}"
             TRANSFER_DIR="$DEPLOY_DIR/incoming/${{ github.run_id }}-${{ github.run_attempt }}"
@@ -123,3 +140,4 @@ jobs:
             [ "$status" -eq 0 ] || exit "$status"
             grep -q "部署完成" "$LOG"
             echo "本次部署的镜像版本（commit）：${{ github.sha }}"
+          REMOTE_SCRIPT
