@@ -54,13 +54,24 @@ jobs:
           SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
           mkdir -p ~/.ssh
           printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           # 预先采集主机指纹，之后 StrictHostKeyChecking=yes 也不会交互卡住
-          if ! ssh-keyscan -p "$DEPLOY_PORT" "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null; then
-            echo "::error::ssh-keyscan 失败：SSH 服务在 $DEPLOY_HOST:$DEPLOY_PORT 上无响应" >&2
+          # -T 30：默认 5s 超时对海外->国内链路太短，放宽到 30s
+          if ssh-keyscan -T 30 -p "$DEPLOY_PORT" "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null; then
+            echo "主机指纹采集成功"
+          else
+            echo "::error::ssh-keyscan 失败：TCP 能连通但 SSH 握手无响应（$DEPLOY_HOST:$DEPLOY_PORT）" >&2
+            echo "===== SSH 详细握手诊断（看卡在哪一步）=====" >&2
+            timeout 45 ssh -vv -o ConnectTimeout=20 -o BatchMode=yes \
+              -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" exit 2>&1 | tail -n 60 >&2 || true
+            echo "===== 诊断结束。常见原因 =====" >&2
+            echo "  1. 服务器上 sshd 未监听该端口：ss -tlnp | grep -E 'sshd|:22|:$DEPLOY_PORT'" >&2
+            echo "  2. fail2ban / 宝塔 SSH 防护 / 云安全组件拦截了海外 IP" >&2
+            echo "  3. 该端口实际是端口映射/转发到了其他机器" >&2
             exit 1
           fi
 
