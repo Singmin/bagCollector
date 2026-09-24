@@ -4,7 +4,8 @@
 # 由 .github/workflows/deploy.yml 通过 SSH 调用，也可以在服务器上手动执行：
 #   cd /www/wwwroot/bagcollect && sh infra/deploy.sh
 #
-# 流程：前置检查 → 备份数据库 → 拉镜像 → 起基础设施 → 跑迁移 → 切应用容器
+# 流程：前置检查 → 备份数据库 → 检查本地镜像或拉远程镜像 → 起基础设施
+#       → 跑迁移 → 切应用容器
 #       → 等健康检查 → 清理旧备份。任何一步失败都会尝试恢复上一组应用镜像。
 #
 # 设计约束：迁移是「向前兼容」的。镜像回滚不会反向修改数据库，
@@ -65,7 +66,7 @@ if ! grep -qE '^POSTGRES_PASSWORD=[A-Za-z0-9]+$' "$ENV_FILE"; then
 fi
 
 # ---------------------------------------------------------------------------
-# 2. 镜像仓库登录（腾讯云 TCR）
+# 2. 镜像仓库登录（远程镜像模式）
 #   GitHub Actions 会把 TCR_USERNAME / TCR_PASSWORD 传进来；手动执行时可以自己 export。
 #   TCR 个人版的镜像仓库默认私有（也可在控制台改成公开），不登录 pull 会 unauthorized。
 #   仓库地址从 API_IMAGE 里取主机名，避免再维护一个变量（shell 里没导出时就从
@@ -73,7 +74,7 @@ fi
 # ---------------------------------------------------------------------------
 registry_host=${API_IMAGE:-$(grep -m1 '^API_IMAGE=' "$ENV_FILE" | cut -d= -f2-)}
 registry_host=${registry_host%%/*}
-if [ -n "${TCR_PASSWORD:-}" ] && [ -n "${TCR_USERNAME:-}" ]; then
+if [ "${SKIP_IMAGE_PULL:-0}" != "1" ] && [ -n "${TCR_PASSWORD:-}" ] && [ -n "${TCR_USERNAME:-}" ]; then
   echo "登录镜像仓库 $registry_host（用户：$TCR_USERNAME）"
   echo "$TCR_PASSWORD" | docker login "$registry_host" -u "$TCR_USERNAME" --password-stdin >/dev/null
 fi
@@ -140,15 +141,20 @@ fi
 #    重试保留着兜偶发抖动；注意区分两类失败：unauthorized / denied 是没登录，
 #    TLS handshake timeout / i/o timeout 才是网络 —— 误判会把排查带偏。
 # ---------------------------------------------------------------------------
-PULL_LOG=/tmp/bagcollect-pull.log
-PULL_MAX_ATTEMPTS=3
-pull_attempt=1
+if [ "${SKIP_IMAGE_PULL:-0}" = "1" ]; then
+  echo "使用服务器本地构建镜像，跳过镜像仓库拉取"
+  docker image inspect "${API_IMAGE:?set API_IMAGE}" >/dev/null 2>&1 || die "本地不存在镜像 $API_IMAGE"
+  docker image inspect "${ADMIN_IMAGE:?set ADMIN_IMAGE}" >/dev/null 2>&1 || die "本地不存在镜像 $ADMIN_IMAGE"
+else
+  PULL_LOG=/tmp/bagcollect-pull.log
+  PULL_MAX_ATTEMPTS=3
+  pull_attempt=1
 
-until compose pull > "$PULL_LOG" 2>&1; do
-  cat "$PULL_LOG" >&2
-  if [ "$pull_attempt" -ge "$PULL_MAX_ATTEMPTS" ]; then
-    rm -f "$PULL_LOG"
-    cat >&2 <<EOF
+  until compose pull > "$PULL_LOG" 2>&1; do
+    cat "$PULL_LOG" >&2
+    if [ "$pull_attempt" -ge "$PULL_MAX_ATTEMPTS" ]; then
+      rm -f "$PULL_LOG"
+      cat >&2 <<EOF
 拉取镜像失败（已重试 ${PULL_MAX_ATTEMPTS} 次）。按上面的原始报错分两种情况：
 
   · 报 unauthorized / denied / pull access denied
@@ -162,18 +168,19 @@ until compose pull > "$PULL_LOG" 2>&1; do
         echo "${API_IMAGE:-未设置}"             # 镜像地址是否拼对
       详见 docs/DEPLOY_BAOTA.md 第 9 节排错表。
 EOF
-    exit 1
-  fi
-  echo "第 ${pull_attempt} 次拉取失败，10 秒后重试……" >&2
-  pull_attempt=$((pull_attempt + 1))
-  sleep 10
-done
-# 只回显末尾若干行。拉取日志里的进度行是每 200ms 一条，一次全量拉取能攒到
-# 2 万行 / 800KB 以上（首次全量拉取实测 24582 行），整份 cat 进 CI 日志既没有
-# 阅读价值，又让这一步长时间只做输出 —— 首次部署的失败点就在这里：脚本在
-# cat 与 rm 之间被掐断（拉取本身已成功，日志留了下来才得以定位）。
-tail -n 20 "$PULL_LOG"
-rm -f "$PULL_LOG"
+      exit 1
+    fi
+    echo "第 ${pull_attempt} 次拉取失败，10 秒后重试……" >&2
+    pull_attempt=$((pull_attempt + 1))
+    sleep 10
+  done
+  # 只回显末尾若干行。拉取日志里的进度行是每 200ms 一条，一次全量拉取能攒到
+  # 2 万行 / 800KB 以上（首次全量拉取实测 24582 行），整份 cat 进 CI 日志既没有
+  # 阅读价值，又让这一步长时间只做输出 —— 首次部署的失败点就在这里：脚本在
+  # cat 与 rm 之间被掐断（拉取本身已成功，日志留了下来才得以定位）。
+  tail -n 20 "$PULL_LOG"
+  rm -f "$PULL_LOG"
+fi
 
 # ---------------------------------------------------------------------------
 # 6. 先起基础设施，再跑迁移

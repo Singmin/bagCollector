@@ -2,7 +2,7 @@
 
 面向宝塔面板（aaPanel）+ Docker 的部署手册。CI/CD 由 GitHub Actions 驱动，仓库里已经配好，本文只讲怎么把它接到你的服务器上。
 
-抠图走腾讯云数据万象，是云端按次计费接口，**服务器上不需要任何推理服务**，所以 2 核 2G 也跑得起来。
+抠图走腾讯云数据万象，是云端按次计费接口，**服务器上不需要任何推理服务**。应用运行时 2 核 2G 可以承载；现在镜像改为服务器本地构建，建议 4G 内存，2G 机器至少配置 swap 并顺序构建。
 
 相关文档：
 - 环境变量与腾讯云凭据：[腾讯云数据万象抠图实施方案](TENCENT_CI_MATTING.md)、[腾讯云凭据获取教程](TENCENT_CLOUD_SETUP.md)
@@ -17,15 +17,12 @@ GitHub 仓库 (main)
    │  push / 手动触发
    ▼
 GitHub Actions
-   ├─ verify   复用 ci.yml：lint → typecheck → 单测 → 迁移 → 构建
-   ├─ images   构建 api / admin 两个镜像，打 commit SHA 标签，推腾讯云 TCR
-   │             （api 这个镜像同时跑 api 与 worker 两个容器，见第 5 节）
-   └─ deploy   SSH 到服务器
-                 ├─ docker login ccr.ccs.tencentyun.com
-                 ├─ scp infra/{docker-compose.yml,deploy.sh,.env.deploy.example}
-                 └─ sh infra/deploy.sh
-                       备份库 → 拉镜像（走腾讯云内网）→ 起 postgres/redis → 跑迁移
-                       → 切 api/worker/admin → 等健康检查 → 失败则回滚
+  ├─ verify   复用 ci.yml：lint → typecheck → 单测 → 迁移 → 构建
+   └─ deploy   git archive 固定 commit → SCP 约 2MB 源码包 → SSH 到服务器
+                  └─ sh infra/build-and-deploy.sh
+                        顺序构建 api / admin 本地镜像（SHA 标签）
+                        → 备份库 → 起 postgres/redis → 跑迁移
+                        → 切 api/worker/admin → 等健康检查 → 失败则回滚
 
 宝塔服务器 /www/wwwroot/bagcollect
    └─ docker compose 项目
@@ -42,7 +39,7 @@ GitHub Actions
 
 **关于「数据库也是容器」**：`postgres` 与 `redis` 由同一个 compose 文件统一下发，跑在你宝塔那台机器的 Docker 里。它们和 api/worker/admin 是同一个 docker daemon，因此在宝塔面板的 **Docker 管理器里能看到、能进终端、能看日志**（容器名前缀是 `infra-`，即 compose 文件所在的目录名）。之所以不让你在面板里手搓容器，是因为手搓出来的容器不在 compose 的管理范围内，下次部署对不上，且新机器要重来一遍。以 compose 文件为准，你要改数据库参数就改 `.env.deploy`。
 
-**镜像仓库用腾讯云 TCR 个人版**：服务器在腾讯云，拉取走内网（秒级）。早期用 GHCR 时，大陆到 GitHub 的层 CDN（`pkg-containers.githubusercontent.com`）实测只有 **35KB/s**，冷拉一个 106MB 的层要 40 分钟、还经常 TLS 握手超时 —— 换 TCR 就是为了根治这一点。
+**生产镜像在服务器本地构建**：GitHub 海外 Runner 推送广州 TCR 时，较大的 API 镜像曾长期卡在 `exporting to image`；服务器本地构建只需先传约 2MB 的已验证源码，并复用 Docker BuildKit 缓存，不再经过跨境镜像传输。TCR 仍由独立的小程序上传流水线使用。
 
 **端口一个都不对公网开放**：三个应用和两个数据库全部只绑 `127.0.0.1`，公网流量只能经宝塔 Nginx 进来。这样即使云安全组配漏了，服务也不会裸奔。
 
@@ -139,71 +136,25 @@ openssl rand -base64 48  # → JWT_SECRET
 
 ---
 
-## 4. 开通腾讯云 TCR 并把镜像仓库接进流水线
+## 4. 准备服务器本地构建环境
 
-镜像仓库用**腾讯云容器镜像服务（TCR）个人版**：免费、服务器同地域拉取走内网（秒级完成）。TCR 个人版的镜像仓库默认是私有的，所以要做两件事 —— 在腾讯云侧开通，在 GitHub 侧给凭据。
+生产部署不再从镜像仓库拉 API/Admin，而是在服务器从固定 commit 的源码包本地构建。服务器需要：
 
-### 4.1 开通 TCR 个人版
+- Docker daemon 正常运行，并支持 BuildKit；
+- Docker Compose v2；
+- 建议至少 4GB 内存；2GB 机器需要 swap，两个 target 会顺序构建；
+- `/var/lib/docker` 建议至少预留 8–10GB；
+- 能访问 Docker Hub 与 npm registry。首次构建需要下载基础镜像和依赖，后续会命中本机 BuildKit 缓存。
 
-1. 打开 <https://console.cloud.tencent.com/tcr>，首次进入会提示开通服务并授权，按提示点完（**个人版免费**，不需要买企业版实例）。
-2. 左侧 **实例管理** → 地域选**广州**（个人版在中国大陆只在广州部署，但腾讯云大陆各地域都能跨地域内网访问，不需要额外配置 VPC 或网络 ACL）。
-3. 在个人版实例卡片上点 **初始化密码**，设置访问凭证密码。**这个密码后面要填进 GitHub Secrets，先记下来**；忘了可以在这里点 **更多 → 重置登录密码** 重置。
-4. 左侧 **命名空间** → 顶部切到**个人版实例** → **新建**，名称建议就用项目名（例如 `bagcollect`）。
-   - 名称规则：4~30 个字符，只能含小写字母、数字和 `.` `_` `-`，且不能以分隔符开头/结尾或连续。
-   - ⚠ **个人版是共享实例，命名空间全局唯一** —— 如果 `bagcollect` 被别人占了，换一个（例如 `bagcollect-app`）。这个名字要原样填进 GitHub 的 `TCR_NAMESPACE` 变量，填错会导致 push 报 `denied`。
-5. **镜像仓库不用手工创建** —— 第一次 push 时会自动建出 `bagcollect-api` 和 `bagcollect-admin` 两个仓库。
+工作流用 `git archive $GITHUB_SHA` 生成源码包，只包含该 commit 的已跟踪文件，不包含 `.env`、密钥、`node_modules` 或本机未提交文件。源码解压到：
 
-顺手记下两个值，下一步要用：
-
-| 值 | 在哪里看 | 例子 |
-|---|---|---|
-| 腾讯云账号 ID（UIN） | <https://console.cloud.tencent.com/developer> → 账号信息 → **账号ID** | `100012345678` |
-| 访问凭证密码 | 4.1 第 3 步你自己设的 | — |
-| 命名空间 | 4.1 第 4 步你自己建的 | `bagcollect` |
-
-### 4.2 配置仓库变量与密钥
-
-仓库 → **Settings** → **Secrets and variables** → **Actions**。
-
-**Variables** 页签（不是 Secrets）：
-
-| Variable | 值 |
-|---|---|
-| `TCR_NAMESPACE` | 4.1 建的命名空间，例如 `bagcollect` |
-| `TCR_REGISTRY` | **留空即可**。默认就是 `ccr.ccs.tencentyun.com`；只有将来换 TCR 企业版实例（`xxx.tencentcloudcr.com`）时才需要填 |
-
-**Secrets** 页签：
-
-| Secret | 值 |
-|---|---|
-| `TCR_USERNAME` | 腾讯云账号 ID（UIN），就是一串数字 |
-| `TCR_PASSWORD` | 4.1 第 3 步设置的访问凭证密码 |
-
-之后每次部署 `deploy.yml` 会自动在服务器上执行 `docker login`，你换密码也不用登服务器。
-
-> ⚠ **这两个 secret 必须配成「仓库级」（Repository secrets），不要塞进 `production` 环境里。**
-> 原因：`deploy.yml` 推镜像的 `images` job 不在任何 environment 里，而 `upload-miniapp.yml` 跑在 `miniapp-development` 环境里 —— environment 级的变量和密钥只有该 job 声明了对应 `environment:` 才取得到。仓库级是两者都可见的。
-> 如果你就是想按环境隔离，那就把它俩在 `production` 和 `miniapp-development` 里各配一份。
-
-> **TCR 密码和 GHCR 的 PAT 不一样：它不会过期。** 换掉 GHCR 的附带好处之一就是这个 —— 以前 PAT 一到期，部署会在「拉取镜像」时报 403，而报错完全不提示「token 过期了」。
-
-### 4.3 手工登录（可选，兜底用）
-
-没配 `TCR_PASSWORD` 时，`deploy.sh` 会沿用服务器上已保存的持久凭据。手工登录一次即可：
-
-```bash
-echo '<访问凭证密码>' | docker login ccr.ccs.tencentyun.com -u '<腾讯云账号ID>' --password-stdin
+```text
+/www/wwwroot/bagcollect/releases/<commit>-<run>-<attempt>/
 ```
 
-凭据会落在 `/root/.docker/config.json`。验证是否生效（首次部署推过镜像之后才拉得到）：
+两个镜像都构建成功后，`build-and-deploy.sh` 才会把新版 compose/deploy 定义复制到稳定目录并调用 `deploy.sh`。因此编译失败不会改动正在运行的容器。
 
-```bash
-docker pull ccr.ccs.tencentyun.com/<命名空间>/bagcollect-api:latest
-```
-
-### 4.4 把仓库改成公开（可选）
-
-如果连登录都不想要，可以在 TCR 控制台把两个镜像仓库的访问级别改成**公开**，服务器就不需要任何凭据了。代价是任何人都能拉你的镜像（镜像里没有密钥，密钥只在服务器的 `.env.deploy` 里）。个人版默认私有，**推荐保持私有**。
+TCR 配置现在只供 `upload-miniapp.yml` 使用。如果暂时不用自动上传小程序，可以不配置 TCR；需要时再按腾讯云控制台提供的账号 ID、访问密码、命名空间配置仓库级 `TCR_USERNAME`、`TCR_PASSWORD`、`TCR_NAMESPACE`。
 
 ---
 
@@ -211,7 +162,7 @@ docker pull ccr.ccs.tencentyun.com/<命名空间>/bagcollect-api:latest
 
 仓库 → Settings → Secrets and variables → Actions。
 
-**仓库级 Secrets**（不属于任何 environment）：
+**仓库级 Secrets / Variables**（仅 `upload-miniapp.yml` 使用；不用自动上传小程序可暂不配置）：
 
 | Secret | 说明 |
 |---|---|
@@ -282,7 +233,7 @@ ssh-keygen -t ed25519 -C "github-actions-deploy" -f ~/.ssh/bagcollect_deploy -N 
 - **推荐**：GitHub → Actions → **Build and deploy** → Run workflow（选 `main`）。
 - 或者往 `main` 推一个 commit。
 
-它会自动完成「验证 → 构建镜像 → 同步部署文件 → SSH 部署」。首次部署时数据库是空的，`deploy.sh` 会打印「postgres 容器未运行（首次部署），跳过备份」，这是正常的。
+它会自动完成「验证 → 打包固定 commit 源码 → 上传约 2MB 源码包 → 服务器本地构建镜像 → SSH 部署」。首次服务器构建需要下载基础镜像和 pnpm 依赖，后续部署会复用 Docker 缓存。首次部署时数据库是空的，`deploy.sh` 会打印「postgres 容器未运行（首次部署），跳过备份」，这是正常的。
 
 部署成功后创建管理员账号：
 
@@ -335,12 +286,13 @@ docker compose --env-file infra/.env.deploy -f infra/docker-compose.yml logs -f 
 
 ### 回滚
 
-镜像回滚 = 用旧的 commit SHA 重跑 deploy.sh：
+镜像回滚 = 使用服务器上保留的旧 commit SHA 本地镜像重跑 deploy.sh：
 
 ```bash
 cd /www/wwwroot/bagcollect
-API_IMAGE=ccr.ccs.tencentyun.com/<命名空间>/bagcollect-api:<旧SHA> \
-ADMIN_IMAGE=ccr.ccs.tencentyun.com/<命名空间>/bagcollect-admin:<旧SHA> \
+SKIP_IMAGE_PULL=1 \
+API_IMAGE=bagcollect-api:<旧SHA> \
+ADMIN_IMAGE=bagcollect-admin:<旧SHA> \
 sh infra/deploy.sh
 ```
 
@@ -348,18 +300,13 @@ sh infra/deploy.sh
 
 **数据库迁移不会回滚**，它是单向的。所以 migration 必须保持向前兼容 —— 旧版本代码要能在新 schema 上跑起来，否则镜像回滚也救不回来。这是 `deploy.sh` 顶部写明的前提，写新 migration 时请守住。
 
-### 镜像拉取慢 / 超时
+### 服务器构建慢 / 失败
 
-镜像仓库是 TCR 个人版，服务器同地域走内网，正常几秒到几十秒就拉完。真遇到超时按顺序查：
-
-1. 确认解析到的是腾讯云内网地址：`getent hosts ccr.ccs.tencentyun.com`
-2. 确认镜像地址拼对了：
-   ```bash
-   docker compose --env-file infra/.env.deploy -f infra/docker-compose.yml config | grep image
-   ```
-3. `deploy.sh` 已内置 3 次重试，已下载的层会保留，所以重试成本很低。
-
-> **历史背景（已解决，留作参考）**：早期镜像放在 GitHub 的 GHCR 上。`ghcr.io` 的层实际存放在 `pkg-containers.githubusercontent.com`，大陆访问实测只有 **35KB/s** —— 冷拉一个 106MB 的层要 40 分钟，还经常在 TLS 握手阶段超时。两个当时踩过的坑一并记着：`daemon.json` 的 `registry-mirrors` **只对 Docker Hub 生效，对 ghcr.io 无效**；GHCR 的包默认继承仓库可见性，包挂在私有仓库下时 PAT 除了 `read:packages` 还必须给 `repo`（否则 login 成功但 pull 报 `denied: denied`）。
+- 首次构建下载基础镜像和 pnpm 依赖会比后续慢；每分钟可在 Actions 页面看到最近日志。
+- 服务器上直接查看完整进度：`tail -f /tmp/bagcollect-deploy.log`。
+- 出现 exit code 137 / `Killed` 通常是内存不足：增加 swap，或升级到 4GB 内存。
+- Docker Hub 或 npm 下载慢时，给服务器 Docker/npm 配可用的国内镜像源；这和应用镜像大小无关。
+- 构建已成功但部署失败时，`deploy.sh` 仍会恢复上一组本地镜像。
 
 ### 清理磁盘
 
@@ -368,7 +315,7 @@ docker image prune -f          # 清理无标签的中间层
 docker system df               # 看占用
 ```
 
-`deploy.sh` 每次只保留当前和上一组应用镜像，历史镜像会堆积，觉得占地方就定期 prune。
+服务器本地构建会保留带 commit SHA 的历史镜像，方便回滚；确认旧版本不再需要后再定期 prune，至少保留当前与上一组镜像。
 
 ---
 
@@ -376,10 +323,9 @@ docker system df               # 看占用
 
 | 症状 | 几乎必然的原因 | 处理 |
 |---|---|---|
-| `pull access denied` / `unauthorized` 拉镜像失败 | TCR 仓库默认私有，而服务器没登录 | 见第 4 节。确认 `TCR_USERNAME` 填的是**腾讯云账号 ID（一串数字）**，不是邮箱或昵称 |
-| push 报 `denied` / `do not have permission` | 仓库变量 `TCR_NAMESPACE` 指向的命名空间不存在或拼错（个人版命名空间全局唯一） | 在 TCR 控制台核对命名空间名，改仓库变量（见第 4.2 节） |
-| 拉取镜像报 `TLS handshake timeout` / `net/http` / `i/o timeout` | 网络问题 —— TCR 同地域内网正常不会出现 | `deploy.sh` 已内置 3 次重试（已下载的层会保留，重试成本很低）。持续失败见第 8 节「镜像拉取慢 / 超时」 |
-| GitHub 显示 `Run Command Timeout`（红叉），但服务器上容器其实起好了 | SSH 步骤自身超时被掐断，而部署脚本已脱离会话继续跑完 | **以服务器为准**：`tail -n 40 /tmp/bagcollect-deploy.log`。换 TCR 后拉取是秒级，理论上不会再触发（历史成因见第 8 节） |
+| `docker build` 报 exit code 137 / `Killed` | 服务器构建时内存不足 | 增加 swap 或升级到 4GB；API 与 Admin 已顺序构建 |
+| 构建时 Docker Hub / npm 超时 | 服务器访问依赖源不稳定 | 给 Docker daemon / npm 配国内镜像源后重跑，同一 SHA 的成功层会缓存 |
+| GitHub 显示 `Run Command Timeout`（红叉），但服务器仍在工作 | SSH 步骤超时，但 nohup 后台构建不会随会话退出 | `tail -n 80 /tmp/bagcollect-deploy.log`；后台完成后日志会出现「部署完成」 |
 | `port is already allocated` | 5432 / 6379 被宝塔装的原生服务占了 | 改 `POSTGRES_HOST_PORT` / `REDIS_HOST_PORT` |
 | `password authentication failed` | 改过 `POSTGRES_PASSWORD`，但数据卷里还是初始化时的旧密码 | PostgreSQL 只在**首次初始化**数据目录时读这个变量。要么用旧密码，要么 `ALTER USER`，要么 `down -v`（**会删库**） |
 | api 容器起来就退出 | `.env.deploy` 缺 `JWT_SECRET`（<32 字符）或 `WECHAT_AUTH_MOCK=false` 却没填 AppID/AppSecret | 看 `docker compose logs api` 里的 zod 报错，它会指出具体缺哪项 |

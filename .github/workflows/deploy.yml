@@ -1,6 +1,8 @@
 name: Build and deploy
 
-# main 分支每次合并：先跑完整验证（复用 ci.yml），再构建镜像推腾讯云 TCR，最后 SSH 部署。
+# main 分支每次合并：先跑完整验证（复用 ci.yml），再把已验证 commit 的源码传到
+# 生产服务器，在服务器本地构建镜像并部署。源码只有几 MB，避免 GitHub 海外 Runner
+# 向国内镜像仓库推送百 MB 镜像时长期卡在 exporting to image。
 # 手动触发（workflow_dispatch）走同一条链路，只是不需要新的 commit。
 on:
   push:
@@ -21,133 +23,81 @@ jobs:
   verify:
     uses: ./.github/workflows/ci.yml
 
-  prepare:
-    runs-on: ubuntu-latest
-    outputs:
-      registry: ${{ steps.registry.outputs.registry }}
-      prefix: ${{ steps.registry.outputs.prefix }}
-    steps:
-      - id: registry
-        # 用仓库变量拼镜像地址，而不是写死在 workflow 里：TCR 个人版的命名空间
-        # 是全局唯一的（共享实例，别人占了你就得换名字），只能由你在控制台创建后填进来。
-        env:
-          TCR_REGISTRY: ${{ vars.TCR_REGISTRY }}
-          TCR_NAMESPACE: ${{ vars.TCR_NAMESPACE }}
-        run: |
-          # ccr.ccs.tencentyun.com 是 TCR 个人版（免费）的固定地址，当前只有广州实例。
-          # 允许用 TCR_REGISTRY 覆盖是为了将来切企业版实例（xxx.tencentcloudcr.com）。
-          registry="${TCR_REGISTRY:-ccr.ccs.tencentyun.com}"
-          if [ -z "$TCR_NAMESPACE" ]; then
-            echo "::error::仓库变量 TCR_NAMESPACE 未配置。TCR 个人版的命名空间全局唯一，需先在控制台创建，见 docs/DEPLOY_BAOTA.md 第 4 节。"
-            exit 1
-          fi
-          echo "registry=$registry" >> "$GITHUB_OUTPUT"
-          echo "prefix=$registry/$TCR_NAMESPACE" >> "$GITHUB_OUTPUT"
-
-  images:
-    needs: [verify, prepare]
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        # 抠图已切换到腾讯云数据万象，不再构建 rembg 镜像。详见 docs/TENCENT_CI_MATTING.md。
-        # api 这个镜像同时承载 api 与 worker 两个容器（compose 用 command 区分），
-        # 所以没有 worker 条目 —— 合并理由见 infra/Dockerfile 顶部注释。
-        target: [api, admin]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
-        with:
-          registry: ${{ needs.prepare.outputs.registry }}
-          # TCR 个人版的用户名就是腾讯云账号 ID（UIN），密码是在控制台「初始化密码」设的
-          # 固定密码，不会过期 —— 这也是换掉 GHCR 的附带好处（PAT 有时间限制）。
-          # 注意这两个 secret 必须配在**仓库级**：本 job 与 miniapp 那条流水线分属不同的
-          # environment，environment 级 secret 在另一处取不到。
-          username: ${{ secrets.TCR_USERNAME }}
-          password: ${{ secrets.TCR_PASSWORD }}
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: infra/Dockerfile
-          target: ${{ matrix.target }}
-          push: true
-          tags: |
-            ${{ needs.prepare.outputs.prefix }}/bagcollect-${{ matrix.target }}:${{ github.sha }}
-            ${{ needs.prepare.outputs.prefix }}/bagcollect-${{ matrix.target }}:latest
-          # 构建缓存仍放在 GitHub Actions 自己的缓存里（type=gha），与镜像仓库无关。
-          cache-from: type=gha,scope=${{ matrix.target }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.target }}
-
   deploy:
-    needs: [prepare, images]
+    needs: [verify]
     runs-on: ubuntu-latest
     environment: production
     steps:
       - uses: actions/checkout@v4
 
-      - name: Log in to TCR on the server
-        # TCR 个人版的镜像仓库默认私有，服务器不登录就 pull 会 unauthorized。
-        # 两种做法都支持：
-        #   1) 配了 TCR_USERNAME / TCR_PASSWORD → 每次部署自动登录（推荐，换密码无需上服务器）；
-        #   2) 没配 → 沿用服务器上 `docker login ccr.ccs.tencentyun.com` 留下的持久凭据。
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          command_timeout: 3m
-          script: |
-            set -eu
-            if [ -n "${{ secrets.TCR_PASSWORD }}" ]; then
-              echo "${{ secrets.TCR_PASSWORD }}" | docker login "${{ needs.prepare.outputs.registry }}" -u "${{ secrets.TCR_USERNAME }}" --password-stdin
-            else
-              echo "未配置 TCR_PASSWORD，沿用服务器上已保存的 docker 凭据"
-            fi
+      - name: Package verified source
+        run: git archive --format=tar.gz --output="bagcollect-source-${GITHUB_SHA}.tar.gz" "$GITHUB_SHA"
 
-      - name: Copy deployment definition
-        # 只同步部署定义，不动服务器上的 .env.deploy 与备份目录。
+      - name: Copy verified source to the server
+        # git archive 只包含当前 commit 的已跟踪文件，不会把本机 .env、密钥、node_modules
+        # 或工作区未提交文件带到服务器。每次 run 使用独立目录，重跑不会混入旧源码。
         uses: appleboy/scp-action@v1.0.0
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
-          source: "infra/docker-compose.yml,infra/deploy.sh,infra/.env.deploy.example"
-          target: ${{ secrets.DEPLOY_PATH }}
+          source: "bagcollect-source-${{ github.sha }}.tar.gz"
+          target: "${{ secrets.DEPLOY_PATH }}/incoming/${{ github.run_id }}-${{ github.run_attempt }}"
 
-      - name: Deploy fixed image SHA
+      - name: Build and deploy fixed source SHA on the server
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
-          # 服务器是腾讯云大陆机器，TCR 个人版走内网，拉取是秒级，所以 30m 远远够用
-          # （换 TCR 之前是 GHCR：冷拉一个 106MB 层要 ~45 分钟，35KB/s）。
-          # 保留富余是因为拉取之外还有迁移、健康检查等步骤。
-          command_timeout: 30m
+          # 首次服务器构建需要拉基础镜像并安装依赖；后续命中 Docker BuildKit 缓存会快很多。
+          command_timeout: 90m
           script: |
             set -eu
-            cd "${{ secrets.DEPLOY_PATH }}"
-            # 用 commit SHA 而不是 latest：回滚和排障时能确切知道服务器上跑的是哪次提交。
-            # WORKER_IMAGE 已取消 —— worker 容器用同一个 bagcollect-api 镜像 + 别的 command。
-            export API_IMAGE="${{ needs.prepare.outputs.prefix }}/bagcollect-api:${{ github.sha }}"
-            export ADMIN_IMAGE="${{ needs.prepare.outputs.prefix }}/bagcollect-admin:${{ github.sha }}"
+            DEPLOY_DIR="${{ secrets.DEPLOY_PATH }}"
+            TRANSFER_DIR="$DEPLOY_DIR/incoming/${{ github.run_id }}-${{ github.run_attempt }}"
+            ARCHIVE="$TRANSFER_DIR/bagcollect-source-${{ github.sha }}.tar.gz"
+            RELEASE_DIR="$DEPLOY_DIR/releases/${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}"
 
-            # 关键：让部署脚本脱离 SSH 会话运行。直接跑的话，脚本的一切输出都写进
-            # SSH 管道 —— 会话一旦断掉（超时/网络抖动），下一次 stdout 写入就会收到
-            # SIGPIPE 被杀，部署停在半路。重定向到文件之后，即使本步骤超时变红，
-            # 服务器上的部署也会继续跑完；日志留在 /tmp/bagcollect-deploy.log 可查。
+            [ -f "$ARCHIVE" ] || { echo "找不到源码包：$ARCHIVE" >&2; exit 1; }
+            mkdir -p "$RELEASE_DIR"
+            tar -xzf "$ARCHIVE" -C "$RELEASE_DIR"
+
+            # 构建和部署都脱离 SSH 会话。即使网页/SSH 中断，服务器仍会继续完成；
+            # 每分钟回显一次末尾日志，GitHub 页面不会再长时间看起来像卡死。
             LOG=/tmp/bagcollect-deploy.log
+            STATUS_FILE="/tmp/bagcollect-deploy-${{ github.run_id }}-${{ github.run_attempt }}.status"
             rm -f "$LOG"
-            nohup sh infra/deploy.sh </dev/null >"$LOG" 2>&1 &
+            rm -f "$STATUS_FILE"
+            nohup sh -c '
+              status=0
+              env \
+                BAGCOLLECT_DEPLOY_DIR="$2" \
+                BAGCOLLECT_RELEASE_DIR="$3" \
+                BAGCOLLECT_IMAGE_TAG="$4" \
+                sh "$3/infra/build-and-deploy.sh" || status=$?
+              printf "%s\n" "$status" > "$1.tmp"
+              mv "$1.tmp" "$1"
+            ' sh "$STATUS_FILE" "$DEPLOY_DIR" "$RELEASE_DIR" "${{ github.sha }}" \
+              </dev/null >"$LOG" 2>&1 &
 
-            # 轮询等它结束（80 次 × 20s ≈ 27 分钟，在 command_timeout 之内）。
-            # pgrep 模式必须锚定行首：本脚本自身的命令行里也含这个字符串。
-            for i in $(seq 1 80); do
-              pgrep -f "^sh infra/deploy.sh" >/dev/null 2>&1 || break
+            for i in $(seq 1 260); do
+              [ ! -f "$STATUS_FILE" ] || break
+              if [ $((i % 3)) -eq 0 ]; then
+                echo "--- 服务器构建/部署仍在进行（最近日志）---"
+                tail -n 12 "$LOG" || true
+              fi
               sleep 20
             done
 
-            tail -n 40 "$LOG"
-            # 脚本成功结束时固定打印「部署完成」；没等到 = 失败，set -e 让本步骤变红。
+            status=0
+            if [ ! -f "$STATUS_FILE" ]; then
+              echo "服务器构建/部署超过等待上限；后台任务仍会继续，查看 $LOG" >&2
+              status=124
+            else
+              status=$(cat "$STATUS_FILE")
+            fi
+            tail -n 80 "$LOG"
+            [ "$status" -eq 0 ] || exit "$status"
             grep -q "部署完成" "$LOG"
             echo "本次部署的镜像版本（commit）：${{ github.sha }}"
