@@ -8,20 +8,21 @@
    ① 壳上的 `catchtap="swallow"`（空方法，`index.wxml` / `index.js`，有 handler 才吃得住点击）；
    ② 页面侧的 `.tab-shield` 护垫（`pages/library/index.vue`）。
    三处缺一不可，别再只改这一处。 */
-.tab-shell { position: fixed; z-index: 900; left: 0; right: 0; bottom: 0; height: 170rpx; box-sizing: border-box; padding-bottom: env(safe-area-inset-bottom); background: #f2f3f7; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif; pointer-events: auto; }
+.tab-shell { position: fixed; z-index: 900; left: 0; right: 0; bottom: 0; height: 176rpx; box-sizing: border-box; padding-bottom: env(safe-area-inset-bottom); background: #f2f3f7; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif; pointer-events: auto; }
 .tab-bar { position: relative; width: 750rpx; height: 100%; margin: 0 auto; background: #f2f3f7; pointer-events: auto; }
 /* top + bottom 拉满：内容仍靠 flex-start 贴在顶部（视觉不变），但整列都变成可点区域。
    ⚠ top/bottom 是按**最近的定位祖先** `.tab-bar` 解出来的，`.tab-bar` 只是壳的内容高度
    （170rpx 减去安全区的 padding），所以安全区那一带其实**不在** .tab-item 里 ——
    真正兜住安全区的是壳自己的 pointer-events: auto 与壳上的 catchtap（见下面那条注释）。
    写这条时别以为「绝对定位会连 padding box 一起算」，实测不会。 */
-.tab-item { position: absolute; top: 12rpx; bottom: 0; width: 60rpx; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8rpx; align-items: center; background: transparent; color: #9d9890; font-size: 24rpx; font-weight: 500; line-height: 28rpx; }
-.tab-item:first-child { left: 104rpx; width: 56rpx; }
-.tab-item:last-child { left: 550rpx; width: 96rpx; }
+/* 条目：图标+文字纵排，内容在条目内垂直居中；文字 24rpx/600；
+   选中红 #c50405、未选中灰 #7a7c80（按用户设计图）。
+   水平位置：在「屏幕边缘 ↔ ＋胶囊」的可用空间内居中（左中心 118rpx / 右中心 632rpx） */
+.tab-item { position: absolute; bottom: 12rpx; height: 124rpx; width: 192rpx; margin: 0; padding: 0; display: flex; flex-direction: column; justify-content: center; gap: 12rpx; align-items: center; background: transparent; color: #7a7c80; font-size: 24rpx; font-weight: 600; line-height: 1; }
+.tab-item:first-child { left: 20rpx; }
+.tab-item:last-child { left: 538rpx; }
 .tab-item text { white-space: nowrap; }
-/* 选中态跟 H5：墨黑（H5 .nav-item.is-active { color: var(--ink) }，图标与文字同一个 currentColor），
-   未选中也是 H5 的暖灰 #9d9890（原来是自定义的冷灰 #7A7C80 / 品牌红 #C50405）。 */
-.tab-item.is-active { color: #141414; }
+.tab-item.is-active { color: #c50405; }
 .tab-icon { width: 56rpx; height: 56rpx; }
 
 /* ── 顶边渐隐：内容卷到底栏上方时柔和地淡入底色，而不是被切一条硬边 ──
@@ -40,13 +41,18 @@
    3px 模糊（和图标文字同档）会把 ＋ 抹掉、只剩一坨黑糊（用户实测反馈「这什么鬼」）。
    1.5px 下 ＋ 的对比度还剩约八成，肉眼是「柔了一层但还认得出」——要再糊就会开始消失。 */
 .tab-shell.is-masked .tab-item { filter: blur(3px); }
-.tab-shell.is-masked .add-icon { filter: blur(1.5px); }
+.tab-shell.is-masked .add-glyph { filter: blur(1.5px); }
 .tab-shell.is-masked,
 .tab-shell.is-masked .tab-bar,
 .tab-shell.is-masked .tab-item,
 .tab-shell.is-masked .add-button { pointer-events: none; }
 .tab-shell.is-masked::before { background: linear-gradient(180deg, rgba(161,160,162,0) 0%, #a1a0a2 100%); }
 .tab-shell.is-masked::after { content: ""; position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(17,15,12,.36); }
-.add-slot { position: absolute; left: 316rpx; top: 0; width: 100rpx; height: 100rpx; }
-.add-button { width: 100rpx; height: 100rpx; margin: 0; padding: 0; display: flex; align-items: center; justify-content: center; background: transparent; }
-.add-icon { width: 100rpx; height: 100rpx; }
+/* 添加键：红色胶囊（266×96rpx、全圆角），外圈用双层 box-shadow 画 ——
+   第一层 6rpx 是底色缝（与栏底同色），第二层 5rpx 是红描边环。
+   ⚠ 必须 bottom 锚定（bottom 40 + 96/2 = 88rpx = 条目内容垂直中心）：
+   内容区高度 = 176rpx − 安全区，是变量；用 top 定位在全面屏上会与
+   bottom 锚定的条目错开约一个安全区的高度（历史 bug，勿改回 top）。 */
+.add-slot { position: absolute; left: 242rpx; bottom: 26rpx; width: 266rpx; height: 96rpx; }
+.add-button { width: 266rpx; height: 96rpx; margin: 0; padding: 0; display: flex; align-items: center; justify-content: center; border-radius: 48rpx; background: #c50405; box-shadow: 0 0 0 6rpx #f2f3f7, 0 0 0 11rpx #c50405; }
+.add-glyph { margin-top: -4rpx; color: #ffffff; font-size: 52rpx; font-weight: 300; line-height: 1; }

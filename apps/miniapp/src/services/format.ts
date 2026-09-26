@@ -5,10 +5,10 @@
  * 两处口径必须完全一致，所以统一放在这里，别在页面里各写一份。
  */
 
-export function formattedDate(value: string) {
+export function formattedDate(value: string, separator: '/' | '-' = '/') {
   const date = new Date(value);
   const two = (part: number) => String(part).padStart(2, '0');
-  return `${date.getFullYear()}/${two(date.getMonth() + 1)}/${two(date.getDate())}`;
+  return `${date.getFullYear()}${separator}${two(date.getMonth() + 1)}${separator}${two(date.getDate())}`;
 }
 
 /** 入库时长：按自然日差算，与 H5 的 daysAgo 同口径（今天 / 昨天 / N 天前）。 */

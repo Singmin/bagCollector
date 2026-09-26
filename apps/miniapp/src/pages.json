@@ -1,7 +1,7 @@
 {
   "pages": [
-    { "path": "pages/showcase/index", "style": { "enablePullDownRefresh": true } },
-    { "path": "pages/library/index", "style": { "enablePullDownRefresh": true, "onReachBottomDistance": 240 } }
+    { "path": "pages/showcase/index", "style": { "navigationStyle": "custom", "enablePullDownRefresh": true } },
+    { "path": "pages/library/index", "style": { "navigationStyle": "custom", "enablePullDownRefresh": true, "onReachBottomDistance": 240 } }
   ],
   "subPackages": [
     {
@@ -16,12 +16,12 @@
     { "root": "package-library", "pages": [{ "path": "pages/detail/index" }] },
     {
       "root": "package-settings",
-      "pages": [{ "path": "pages/settings/index" }, { "path": "pages/shelves/index" }]
+      "pages": [{ "path": "pages/settings/index", "style": { "navigationStyle": "custom" } }, { "path": "pages/shelves/index" }]
     }
   ],
   "globalStyle": {
     "navigationStyle": "default",
-    "navigationBarTitleText": "袋袋集",
+    "navigationBarTitleText": "",
     "navigationBarBackgroundColor": "#f2f3f7",
     "navigationBarTextStyle": "black",
     "backgroundColor": "#f2f3f7",

@@ -20,6 +20,7 @@
     "ci:compare-models": "node scripts/compare-matting-models.mjs",
     "preview:library": "node scripts/preview-miniapp-library.mjs",
     "build:miniapp:local": "pnpm --filter @bagcollect/miniapp build:mp-weixin:local",
+    "build:miniapp:mock": "pnpm --filter @bagcollect/miniapp build:mp-weixin:mock",
     "typecheck": "pnpm --filter @bagcollect/contracts build && pnpm -r --if-present typecheck",
     "lint": "eslint apps packages",
     "test": "vitest run",

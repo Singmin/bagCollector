@@ -28,7 +28,7 @@ page {
 }
 view, text, image, button, input, textarea, scroll-view, canvas { box-sizing: border-box; }
 button::after { border: 0; }
-.page { min-height: 100vh; padding: 48rpx 30rpx 206rpx; }
+.page { min-height: 100vh; padding: 48rpx 30rpx 212rpx; }
 .eyebrow { display: block; color: #777064; font-size: var(--wc-font-footnote); font-weight: 500; letter-spacing: 4rpx; text-transform: uppercase; }
 .display-title { font-family: Georgia, "Iowan Old Style", "Songti SC", serif; font-size: 70rpx; line-height: 1; font-weight: 600; letter-spacing: -2rpx; }
 .section-title { font-family: Georgia, "Iowan Old Style", "Songti SC", serif; font-size: 40rpx; font-weight: 600; }
