@@ -8,7 +8,7 @@
    ① 壳上的 `catchtap="swallow"`（空方法，`index.wxml` / `index.js`，有 handler 才吃得住点击）；
    ② 页面侧的 `.tab-shield` 护垫（`pages/library/index.vue`）。
    三处缺一不可，别再只改这一处。 */
-.tab-shell { position: fixed; z-index: 900; left: 0; right: 0; bottom: 0; height: 176rpx; box-sizing: border-box; padding-bottom: env(safe-area-inset-bottom); background: #f2f3f7; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif; pointer-events: auto; }
+.tab-shell { position: fixed; z-index: 900; left: 0; right: 0; bottom: 0; height: 150rpx; box-sizing: border-box; padding-bottom: env(safe-area-inset-bottom); background: #f2f3f7; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif; pointer-events: auto; }
 .tab-bar { position: relative; width: 750rpx; height: 100%; margin: 0 auto; background: #f2f3f7; pointer-events: auto; }
 /* top + bottom 拉满：内容仍靠 flex-start 贴在顶部（视觉不变），但整列都变成可点区域。
    ⚠ top/bottom 是按**最近的定位祖先** `.tab-bar` 解出来的，`.tab-bar` 只是壳的内容高度
@@ -46,6 +46,9 @@
 .tab-shell.is-masked .tab-bar,
 .tab-shell.is-masked .tab-item,
 .tab-shell.is-masked .add-button { pointer-events: none; }
+/* hidden：编辑半窗等浮层要求底栏完全让位 —— 整条下滑出屏，连顶部渐隐一起带走 */
+.tab-shell.is-hidden { transform: translateY(110%); pointer-events: none; }
+.tab-shell { transition: transform .32s cubic-bezier(.2,.75,.22,1); }
 .tab-shell.is-masked::before { background: linear-gradient(180deg, rgba(161,160,162,0) 0%, #a1a0a2 100%); }
 .tab-shell.is-masked::after { content: ""; position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(17,15,12,.36); }
 /* 添加键：红色胶囊（266×96rpx、全圆角），外圈用双层 box-shadow 画 ——
@@ -53,6 +56,6 @@
    ⚠ 必须 bottom 锚定（bottom 40 + 96/2 = 88rpx = 条目内容垂直中心）：
    内容区高度 = 176rpx − 安全区，是变量；用 top 定位在全面屏上会与
    bottom 锚定的条目错开约一个安全区的高度（历史 bug，勿改回 top）。 */
-.add-slot { position: absolute; left: 242rpx; bottom: 26rpx; width: 266rpx; height: 96rpx; }
-.add-button { width: 266rpx; height: 96rpx; margin: 0; padding: 0; display: flex; align-items: center; justify-content: center; border-radius: 48rpx; background: #c50405; box-shadow: 0 0 0 6rpx #f2f3f7, 0 0 0 11rpx #c50405; }
+.add-slot { position: absolute; left: 242rpx; bottom: 40rpx; width: 266rpx; height: 68rpx; }
+.add-button { width: 266rpx; height: 68rpx; margin: 0; padding: 0; display: flex; align-items: center; justify-content: center; border-radius: 34rpx; background: #c50405; box-shadow: 0 0 0 6rpx #f2f3f7, 0 0 0 11rpx #c50405; }
 .add-glyph { margin-top: -4rpx; color: #ffffff; font-size: 52rpx; font-weight: 300; line-height: 1; }

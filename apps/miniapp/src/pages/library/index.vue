@@ -7,7 +7,7 @@ import { collectionRevision, shouldRefreshCollection } from '../../services/coll
 import { daysAgoText, formattedDate } from '../../services/format';
 import { resolveCollectibleThumbnail } from '../../services/images';
 import { maskPageChrome } from '../../services/overlay';
-import { syncTabBar, setTabBarMasked } from '../../services/tab-bar';
+import { syncTabBar, setTabBarMasked, setTabBarHidden } from '../../services/tab-bar';
 
 interface ShelfGroup extends Shelf { items: CollectibleSummary[] }
 
@@ -464,6 +464,7 @@ function open(item: CollectibleSummary) {
 function closeDetail() {
   detailToken += 1;
   if (detailItem.value) maskPageChrome(false);
+  setTabBarHidden(false);
   detailItem.value = null;
   detailData.value = null;
   detailArtwork.value = '';
@@ -491,21 +492,18 @@ async function startEdit() {
   editNote.value = detail.notes ?? '';
   focusedField.value = '';
   editing.value = true;
+  /* 底栏是框架层，页面 z-index 压不住：半窗打开时整条隐藏，关闭时还原 */
+  setTabBarHidden(true);
   hideSuggests();
   /* H5 也是「等切换的样式落定再聚焦」（它等 140ms），
      立刻聚焦会在布局变化中途触发滚动，卡片会先跳一下。 */
   setTimeout(() => { if (editing.value) editNameFocused.value = true; }, 150);
 }
 
-/* 退出编辑态：不写回任何值，表单内容丢弃（H5 的 exitDetailEdit 同样这么做） */
+/* 退出编辑态：不写回任何值，表单内容丢弃；半窗与详情卡一并关闭回列表 */
 function cancelEdit() {
   commitTags();
-  editTags.value = [];
-  editTagDraft.value = '';
-  editNameFocused.value = false;
-  focusedField.value = '';
-  editing.value = false;
-  hideSuggests();
+  closeDetail();
 }
 
 /* 「名称 / 品牌 / 备注」三个输入框共用一个取值写法：
@@ -603,11 +601,8 @@ async function saveEdit() {
     }
     const updated = await dataService.updateCollectible(item.id, { name, notes, tags, shelfId: shelf.id });
     applyUpdated(updated);
-    editNameFocused.value = false;
-    focusedField.value = '';
-    editing.value = false;
-    hideSuggests();
-    /* H5 保存后是「退回详情态」而不是关掉卡片，让用户直接看见改完的结果 */
+    /* 保存后半窗与卡片一并关闭，回到列表（applyUpdated 已把改动铺进列表） */
+    closeDetail();
     uni.showToast({ title: `“${name}”已更新`, icon: 'none' });
   } catch (error) {
     uni.showToast({ title: error instanceof Error ? error.message : '保存失败', icon: 'none' });
@@ -917,7 +912,8 @@ function onScrollToLower() { void loadMore(); }
          才不会被内容滚走。 -->
     <view v-if="detailItem" class="detail-layer">
       <view class="detail-backdrop" @tap="closeDetail" @touchmove.stop.prevent="blockScroll" />
-      <view class="detail-card">
+      <!-- 编辑半窗拉起时卡片让位关闭（半窗 + 遮罩独占屏幕） -->
+      <view v-show="!editing" class="detail-card">
         <view class="detail-glass">
           <view class="detail-glow" />
           <view class="detail-noise" />
@@ -1157,7 +1153,7 @@ function onScrollToLower() { void loadMore(); }
 /* 顶部标题区固定：页面改为 100vh 弹性列，头部不滚，内容区独立滚动（scroll-view） */
 .library-page { position: relative; height: 100vh; display: flex; flex-direction: column; overflow: hidden; background-color: #f2f3f7; }
 .library-scroll { flex: 1 1 auto; min-height: 0; }
-.library-body { padding-bottom: 212rpx; }
+.library-body { padding-bottom: 186rpx; }
 
 /* ── 头部：大标题 + 副文案（切换钮已移到搜索行）。
    padding-top 由脚本按胶囊按钮矩形注入（inline style），标题顶=胶囊顶；整体上移。 ── */
@@ -1176,11 +1172,14 @@ function onScrollToLower() { void loadMore(); }
 .library-summary { margin-top: 11rpx; color: #77736d; font-size: var(--wc-font-description); line-height: 1.4; }
 /* 右上切换钮：与首页 .header-settings 完全同尺寸（H5 padding 9px 12px 7px / 圆角 16px /
    图标 24px = 44rpx / 文字 9px 按注释档提到 Footnote 12pt），只是图标与语义不同 */
-.mode-button { flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; gap: 10rpx; min-width: 0; margin: 0; padding: 16rpx 22rpx 13rpx; border: 2rpx solid rgba(255,255,255,.75); border-radius: 29rpx; background: rgba(255,255,255,.6); box-shadow: inset 0 2rpx 0 rgba(255,255,255,.8); color: #77736d; font-size: 24rpx; font-weight: 400; line-height: 1.1; transition: transform .18s ease, box-shadow .18s ease; }
+/* 图标与文字间距 4px；上下内边距对称 + justify-content:center，整体在按钮内垂直居中
+   （等高拉伸时行高随搜索框变化，内容始终居中） */
+.mode-button { flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8rpx; min-width: 0; margin: 0; padding: 14rpx 22rpx; border: 2rpx solid rgba(255,255,255,.75); border-radius: 29rpx; background: rgba(255,255,255,.6); box-shadow: inset 0 2rpx 0 rgba(255,255,255,.8); color: #77736d; font-size: 20rpx; font-weight: 400; line-height: 1.1; transition: transform .18s ease, box-shadow .18s ease; }
 /* 按压反馈：对齐 H5 .header-settings:active scale(.94) */
 .mode-button.is-pressed { transform: scale(.94); box-shadow: inset 0 2rpx 0 rgba(255,255,255,.8); }
 .mode-button image { width: 44rpx; height: 44rpx; }
-.mode-button text { letter-spacing: 2rpx; }
+/* letter-spacing 会在末字后多出 2rpx 空隙，负 margin 抵消，让可见字形与 icon 同轴 */
+.mode-button text { letter-spacing: 2rpx; margin-right: -2rpx; }
 
 /* ── 搜索行：输入框 + 右侧切换钮（2026-09-26 起切换钮从头部移到这里） ── */
 /* 底部外边距：24 → 10 → 20rpx（2026-09-26 两轮反馈后取中间值）。
@@ -1324,7 +1323,7 @@ function onScrollToLower() { void loadMore(); }
    z-index 899 是算好的：高于页面内容（宫格 / 展架板体最高 z-index 3），
    低于自定义底栏（900，本来是框架层、页面 z-index 压不过它，所以护垫不会挡住底栏自己的点击），
    也低于详情浮层（950）—— 卡片开着时点这一带要能关卡片，不能被护垫吃掉。 */
-.tab-shield { position: fixed; z-index: 899; left: 0; right: 0; bottom: 0; height: 176rpx; }
+.tab-shield { position: fixed; z-index: 899; left: 0; right: 0; bottom: 0; height: 150rpx; }
 /* 遮罩：对齐 H5 的 .sheet-backdrop —— rgba(17,15,12,.36) + blur(3px)。
    模糊是用户 2026-09-24 明确要的：不支持 backdrop-filter 的环境会退化成纯压暗，
    所以底色本身也要够（不要把透明度调低）。
@@ -1422,10 +1421,10 @@ function onScrollToLower() { void loadMore(); }
    列宽不三等分（H5 实测后改的）：首块固定、中间吃掉剩余、末块固定并靠右，
    这样三条竖线的间距与内容量成正比，不会出现「小值占大栏」。 */
 .ef-readout { display: flex; align-items: flex-start; margin: 0 0 25rpx; padding: 4rpx 0 0; }
-.ef-readout__cell { min-width: 0; padding: 0 22rpx; border-left: 2rpx solid rgba(20,20,20,.085); }
-.ef-readout__cell--no { flex: 0 0 auto; min-width: 120rpx; padding-left: 0; border-left: 0; }
-.ef-readout__cell--mid { flex: 1 1 auto; min-width: 190rpx; }
-.ef-readout__cell--last { flex: 0 0 auto; min-width: 120rpx; padding-right: 0; display: flex; flex-direction: column; align-items: flex-end; text-align: right; }
+/* 三块等宽（flex 基准 0 均分），编号/收藏日期/入库时长的文案在各自格内水平居中
+   （2026-09-26 用户要求；原先编号/时长按内容定宽、时长右对齐） */
+.ef-readout__cell { flex: 1 1 0; min-width: 0; text-align: center; border-left: 2rpx solid rgba(20,20,20,.085); }
+.ef-readout__cell--no { border-left: 0; }
 .ef-readout__v { display: block; margin: 0 0 9rpx; color: #3a3630; font-size: var(--wc-font-description); font-weight: 600; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ef-readout__k { display: block; color: #a8a49d; font-size: var(--wc-font-footnote); font-weight: 700; line-height: 1.2; letter-spacing: .8rpx; white-space: nowrap; }
 

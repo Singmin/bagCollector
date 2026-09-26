@@ -78,10 +78,6 @@ function openLibrary() { uni.switchTab({ url: '/pages/library/index' }); }
 /* 设置改为首页内半窗浮层：上滑进入、下滑收起（不再 navigateTo） */
 const settingsShow = ref(false);
 function openSettings() { settingsShow.value = true; }
-function openHero() {
-  if (!heroItem.value) return;
-  uni.navigateTo({ url: `/package-library/pages/detail/index?id=${heroItem.value.id}` });
-}
 let refreshPromise: Promise<void> | undefined;
 
 function assertRenderable(nextItems: CollectibleSummary[]) {
@@ -340,7 +336,6 @@ async function onRefresherRefresh() {
               <text v-for="tag in heroTags" :key="tag"># {{ tag }}</text>
             </view>
             <text v-if="heroNote" class="back-note">{{ heroNote }}</text>
-            <button class="back-more" @tap.stop="openHero">查看完整详情 →</button>
           </view>
         </view>
       </view>
@@ -495,9 +490,9 @@ async function onRefresherRefresh() {
 .stage-section { margin: 0 33rpx 47rpx; perspective: 1400px; }
 /* 卡片宽度：H5 是 308/412（左右各留 52px），按需求把左右间隔收到 47rpx（≈26px），
    于是 750 − 47×2 = 656rpx。高度按放大后的字号抬到 660rpx（两面都装得下）。
-   2026-09-26 用户指定卡片尺寸 300×318（px 口径 → 600×636rpx）。
+   2026-09-26 用户指定卡片尺寸 300×318（px 口径 → 600×636rpx）；高度随后又按要求再矮 12px → 612rpx。
    rotateY(-180deg) 是「把卡片向右翻过去」的方向。 */
-.flip-card { position: relative; width: 600rpx; height: 636rpx; margin: 0 auto; border: 2rpx solid rgba(255,255,255,.62); border-radius: 47rpx; transform-style: preserve-3d; transition: transform .78s cubic-bezier(.2,.78,.22,1); box-shadow: inset 0 2rpx 0 rgba(255,255,255,.9); }
+.flip-card { position: relative; width: 600rpx; height: 612rpx; margin: 0 auto; border: 2rpx solid rgba(255,255,255,.62); border-radius: 47rpx; transform-style: preserve-3d; transition: transform .78s cubic-bezier(.2,.78,.22,1); box-shadow: inset 0 2rpx 0 rgba(255,255,255,.9); }
 .flip-card.is-flipped { transform: rotateY(-180deg); }
 /* 点击遮罩：铺满整卡，翻到背面后依然可点（整块卡片都能翻回正面）；
    背面的「翻回去」「查看完整详情」层级更高，压在它之上 */
@@ -564,11 +559,8 @@ async function onRefresherRefresh() {
 .back-facts__value { flex: 0 1 auto; min-width: 0; color: #2b2720; font-size: 24rpx; font-weight: 600; line-height: 1.4; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .back-tags { display: flex; flex-wrap: wrap; gap: 9rpx; margin-top: 22rpx; }
 .back-tags text { padding: 7rpx 16rpx; border-radius: 18rpx; background: rgba(20,20,20,.055); color: #5d594f; font-size: 24rpx; line-height: 1.2; }
-/* 备注：引用式文字。后端 notes 最长 2000 字而卡内高度固定，限两行裁掉
-   （原 H5 不裁，但这里多了「查看完整详情」入口占一行） */
+/* 备注：引用式文字。后端 notes 最长 2000 字而卡内高度固定，限两行裁掉 */
 .back-note { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; margin-top: 20rpx; padding: 15rpx 18rpx; border-left: 4rpx solid rgba(20,20,20,.14); border-radius: 0 16rpx 16rpx 0; background: rgba(20,20,20,.035); color: #5f5b53; font-size: 24rpx; line-height: 1.55; }
-/* 详情页入口：挂袋区点击改成「送到上方主卡位」后，进详情的入口落在这里 */
-.back-more { display: flex; align-items: center; justify-content: center; min-height: 0; margin: auto 0 0; padding: 0; border: 0; background: transparent; color: #8a8479; font-size: var(--wc-font-description); line-height: 1.4; letter-spacing: .4rpx; }
 /* 背面右上角的「翻回去」：图标按钮不受字号规范约束，z-index 必须高于
    .flip-card__hit(6) 才点得到（H5 .flip-back） */
 .flip-back { position: absolute; z-index: 8; top: 22rpx; right: 22rpx; display: flex; align-items: center; justify-content: center; width: 51rpx; height: 51rpx; min-width: 0; margin: 0; padding: 0; border: 0; border-radius: 50%; background: rgba(20,20,20,.055); color: #6d675e; font-size: 30rpx; line-height: 1; }
@@ -597,7 +589,7 @@ async function onRefresherRefresh() {
 /* 标题与副行小字的间距：原为 0（贴死），2026-09-26 用户要求调大 */
 .recent-heading { padding-bottom: 16rpx; }
 /* 副行：「最近收藏 · N 件」与「查看全部」底部对齐（两端撑开） */
-.recent-sub { display: flex; align-items: flex-end; justify-content: space-between; gap: 16rpx; padding: 0 40rpx 22rpx; }
+.recent-sub { display: flex; align-items: flex-end; justify-content: space-between; gap: 16rpx; padding: 0 40rpx 18rpx; }
 .recent-all { min-height: 0; margin: 0; padding: 0; border: 0; background: transparent; color: #77736d; font-size: 24rpx; line-height: 32rpx; }
 .recent-all-arrow { color: #141414; margin-left: 6rpx; }
 .stage-count { display: block; color: #77736d; font-size: 24rpx; line-height: 1.4; }
@@ -606,9 +598,12 @@ async function onRefresherRefresh() {
 /* ⚠ 轮心对齐的唯一真源：--rail-center（杆心离场景顶的高度）与 --hang-origin（轮心到卡顶的距离）。
    padding-top = 两者之和 → 杆心与轮心从同一组常量推导，数学上保证重合；
    滑环 top、吊线 top、摆动轴心全部引用这两个变量，改轮位只动这里。
-   卡宽是调参入口（原型 --rack-card-w）：2026-09-26 用户要求调小，106px → 96px = 175rpx；
-   照片区高度与 meta 字号都按卡宽 calc 派生，改这一个变量整排跟着缩。 */
-.recent-scene { --rail-center: 29rpx; --hang-origin: 80rpx; --rack-card-w: 175rpx; --rack-overlap: 22rpx; position: relative; display: inline-flex; min-width: 100%; padding: calc(var(--rail-center) + var(--hang-origin)) 22rpx 22rpx; }
+   卡宽是调参入口（原型 --rack-card-w）：106px → 96px → 2026-09-26 方案 A 再调小至 80px = 160rpx
+   （重叠同步 22 → 20rpx）；照片区高度与 meta 字号都按卡宽 calc 派生，改这一个变量整排跟着缩。 */
+.recent-scene { --rail-center: 26rpx; --hang-origin: 80rpx; --rack-card-w: 160rpx; --rack-overlap: 20rpx; position: relative; display: inline-flex; min-width: 100%;
+  /* rail-center 必须 ≥ 滑轮半径 19.5rpx + 高亮环 2rpx + 余量：否则滑轮顶超出滚动内容上缘被裁。
+     26rpx 时轮顶留 4.5rpx 余量，且轮心（卡顶 − hang-origin）天然等于杆心，勿用 padding 补 */
+  padding: calc(var(--rail-center) + var(--hang-origin)) 22rpx 22rpx; }
 .recent-row { position: relative; z-index: 1; display: inline-flex; align-items: flex-start; }
 /* 轻叠 -12px（后压前）；--lift 给选中上提 4px=7rpx */
 .recent-item { --lift: 0rpx; width: var(--rack-card-w); flex: 0 0 var(--rack-card-w); margin: 0; padding: 0; overflow: visible; background: transparent; text-align: center; }
@@ -714,12 +709,14 @@ async function onRefresherRefresh() {
   background: radial-gradient(circle at 34% 30%, #FDFEFE, #AEB8C2 62%, #87919B); box-shadow: 0 1rpx 2rpx rgba(46,56,66,.5); }
 .grip__mouth { position: absolute; left: 3rpx; right: 3rpx; bottom: 6rpx; height: 4rpx; border-radius: 2rpx;
   background: linear-gradient(180deg, rgba(120,132,144,.65), rgba(72,84,96,.85)); }
-/* ── 卡框：磨砂玻璃边框（玻璃只露 5px=9rpx 内边环，半透 + 背板模糊 + 受光高光）──
+/* ── 卡框：玻璃边框（2026-09-26 用户要求所有卡片观感统一）──
+   边框改**不透明白**、玻璃底提高不透明度、去掉 backdrop-filter ——
+   半透明 + 磨砂会透出背后内容且真机渲染不一致，导致各卡边框有色差；
+   现在所有未选中卡片渲染完全一致（选中红环不受影响）。
    垂距已由 swing 的 padding-top 承载（含选中上提 -lift），卡框自身不再带 margin */
 .rack-frame { position: relative; z-index: 1;
-  border: 2rpx solid rgba(255,255,255,.55); border-radius: 11rpx; padding: 9rpx;
-  background: linear-gradient(160deg, rgba(255,255,255,.42) 0%, rgba(255,255,255,.18) 48%, rgba(240,236,229,.30) 100%);
-  -webkit-backdrop-filter: blur(13rpx) saturate(135%); backdrop-filter: blur(13rpx) saturate(135%);
+  border: 2rpx solid #ffffff; border-radius: 11rpx; padding: 9rpx;
+  background: linear-gradient(160deg, rgba(255,255,255,.80) 0%, rgba(255,255,255,.58) 48%, rgba(244,240,233,.66) 100%);
   box-shadow: 0 7rpx 25rpx rgba(60,52,40,.16), inset 0 2rpx 0 rgba(255,255,255,.85), inset 0 -2rpx 0 rgba(255,255,255,.28); }
 /* 四角螺点：不锈钢样式（conic 拉丝环 + 左上高光 + 沉孔阴影，冷银调），4px=7rpx */
 .rack-screw { position: absolute; width: 7rpx; height: 7rpx; border-radius: 50%; z-index: 5;
@@ -744,5 +741,6 @@ async function onRefresherRefresh() {
    上提由 --lift 变量驱动（吊线缩短 / 夹具与卡框上移），不再用 translateY */
 .recent-item.is-active .rail-frame { box-shadow: 0 0 0 3rpx #c50205, 0 11rpx 29rpx rgba(150,10,10,.28), inset 0 2rpx 0 rgba(255,255,255,.85); }
 .recent-item.is-active .rail-name { color: #8a5a10; }
-.rack-hint { display: block; padding: 15rpx 36rpx 0; color: #77736d; font-size: 20rpx; line-height: 1.4; text-align: center; opacity: .8; }
+/* 与大卡片「轻点翻面 · 查看详情」（.flip-hint）字号/颜色/字距完全一致 */
+.rack-hint { display: block; padding: 2rpx 36rpx 0; color: #c0bab1; font-size: 20rpx; line-height: 1.2; letter-spacing: .5rpx; text-align: center; }
 </style>

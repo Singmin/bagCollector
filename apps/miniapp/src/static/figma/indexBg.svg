@@ -3,14 +3,14 @@
 <rect width="318" height="318" rx="36" fill="#DEF6FF" fill-opacity="0.1"/>
 <rect x="24" y="88.0193" width="256" height="256" transform="rotate(-45 24 88.0193)" fill="url(#pattern0_23_22233)"/>
 <g filter="url(#filter1_f_23_22233)">
-<path d="M303.293 -41.2302L319.966 -28.497L237.956 96.9824L205 71.8143L303.293 -41.2302Z" fill="#F0E075" fill-opacity="0.6"/>
+<path d="M321.293 -41.2302L337.966 -28.497L249.956 99.9824L215 75.8143L321.293 -41.2302Z" fill="#F0E075" fill-opacity="0.6"/>
 </g>
 </g>
 <defs>
 <pattern id="pattern0_23_22233" patternContentUnits="objectBoundingBox" width="1" height="1">
 <use xlink:href="#image0_23_22233" transform="scale(0.00390625)"/>
 </pattern>
-<filter id="filter1_f_23_22233" x="145" y="-101.23" width="234.966" height="258.213" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+<filter id="filter1_f_23_22233" x="145" y="-101.23" width="290" height="290" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
 <feFlood flood-opacity="0" result="BackgroundImageFix"/>
 <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"/>
 <feGaussianBlur stdDeviation="30" result="effect1_foregroundBlur_23_22233"/>

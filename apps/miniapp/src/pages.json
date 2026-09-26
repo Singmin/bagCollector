@@ -13,7 +13,6 @@
         { "path": "pages/metadata/index", "style": { "navigationBarTitleText": "完善纸袋信息" } }
       ]
     },
-    { "root": "package-library", "pages": [{ "path": "pages/detail/index" }] },
     {
       "root": "package-settings",
       "pages": [{ "path": "pages/settings/index", "style": { "navigationStyle": "custom" } }, { "path": "pages/shelves/index" }]

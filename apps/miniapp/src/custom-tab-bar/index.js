@@ -1,7 +1,8 @@
 Component({
   // masked：页面级浮层（全部收藏的详情卡）打开时置 true，
   // 让底栏自己蒙上遮罩并关掉点击 —— 页面里的浮层压不住框架画的底栏。
-  data: { selected: 0, masked: false },
+  // hidden：编辑半窗等需要独占最顶层的浮层打开时置 true，整条下滑隐藏。
+  data: { selected: 0, masked: false, hidden: false },
   lifetimes: {
     // 冷启动先按当前路由猜一次；正确值随后由页面 onShow 里的 syncTabBar() 推过来覆盖
     attached() { this.syncSelected(); }
