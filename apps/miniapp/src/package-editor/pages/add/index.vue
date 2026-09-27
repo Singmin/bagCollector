@@ -202,7 +202,14 @@ onLoad(() => {
 <template>
   <view class="camera-page">
     <view class="camera-header" :style="{ paddingTop: `${statusBarHeight}px`, height: `${statusBarHeight + navBarHeight}px` }">
-      <button class="back-button" aria-label="返回" @tap="back">
+      <!-- 返回键中心 = 状态栏 + 导航行高/2（与标题同轴）；top:50% 会按含状态栏内边距的
+           整个头部算，偏高半个状态栏 -->
+      <button
+        class="back-button"
+        :style="{ top: `${statusBarHeight + navBarHeight / 2}px` }"
+        aria-label="返回"
+        @tap="back"
+      >
         <image class="back-icon" src="/static/figma/back.svg" mode="aspectFit" />
       </button>
       <text class="camera-title">上传纸袋</text>
@@ -214,7 +221,7 @@ onLoad(() => {
         class="camera-view"
         device-position="back"
         resolution="high"
-        :flash="flashOn ? 'on' : 'off'"
+        :flash="flashOn ? 'torch' : 'off'"
         @error="cameraError"
       />
       <image v-else class="captured-image" :src="filePath" mode="aspectFit" />
@@ -235,7 +242,7 @@ onLoad(() => {
         <view class="shutter-core" />
       </button>
       <button class="round-button album-button" aria-label="从相册选择" :disabled="uploading" @tap="chooseFromAlbum">
-        <image class="control-icon" src="/static/figma/album.svg" mode="aspectFit" />
+        <image class="album-icon" src="/static/figma/album.svg" mode="aspectFit" />
       </button>
     </view>
   </view>
@@ -247,7 +254,8 @@ onLoad(() => {
 /* 头部总高 = 状态栏 + 胶囊行（inline style 注入），内容行 flex 居中 → 与胶囊同轴 */
 .camera-header { position: relative; flex: 0 0 auto; box-sizing: border-box; display: flex; align-items: center; justify-content: center; }
 .camera-title { font-size: 32rpx; font-weight: 500; line-height: 48rpx; }
-.back-button { position: absolute; left: 36rpx; top: 50%; transform: translateY(-50%); width: 56rpx; height: 56rpx; margin: 0; padding: 0; display: grid; place-items: center; background: transparent; }
+/* top 由 inline style 注入（状态栏 + 导航行高/2），这里只保留 translateY 自身居中 */
+.back-button { position: absolute; left: 36rpx; transform: translateY(-50%); width: 56rpx; height: 56rpx; margin: 0; padding: 0; display: grid; place-items: center; background: transparent; }
 .back-icon { width: 22rpx; height: 38rpx; }
 /* 取景卡：左右 40rpx（宽 670）、圆角 60rpx、浅棕 #e2c4ae；
    高度弹性填充 + 上限 1070rpx —— 参考图卡高 ≈66% 屏高，同时小屏（667pt）不溢出 */
@@ -264,6 +272,9 @@ onLoad(() => {
 .flash-button { left: 94rpx; }
 .album-button { left: 548rpx; }
 .control-icon { width: 56rpx; height: 56rpx; }
+/* 相册图形是宽扁形（28 视框内只占 73% 高），64rpx 盒子渲染高 ≈46.6rpx
+   （70rpx 等高版偏大，回调取中） */
+.album-icon { width: 64rpx; height: 64rpx; }
 /* 快门：外圈 150rpx（红描边 4rpx + 白环 6rpx）、红芯 130rpx，水平居中 */
 .shutter { position: absolute; left: 300rpx; top: 0; width: 150rpx; height: 150rpx; margin: 0; padding: 6rpx; display: grid; place-items: center; box-sizing: border-box; border: 4rpx solid #c50405; border-radius: 50%; background: #fff; }
 .shutter[disabled] { opacity: .45; }

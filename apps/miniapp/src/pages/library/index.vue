@@ -3,7 +3,7 @@ import { computed, getCurrentInstance, nextTick, ref, watch } from 'vue';
 import { onHide, onShow } from '@dcloudio/uni-app';
 import type { Collectible, CollectibleSummary, Shelf } from '../../types';
 import { dataService } from '../../services/data';
-import { collectionRevision, shouldRefreshCollection } from '../../services/collection-state';
+import { collectionRevision, shouldRefreshCollection, markCollectionDataStale } from '../../services/collection-state';
 import { daysAgoText, formattedDate } from '../../services/format';
 import { resolveCollectibleThumbnail } from '../../services/images';
 import { maskPageChrome } from '../../services/overlay';
@@ -476,6 +476,41 @@ function closeDetail() {
   hideSuggests();
 }
 
+/* ── 长按删除（展架槽 / 宫格两视图共用）──
+   确认弹窗 → DELETE 接口 → 本地四处铺平：列表、展架件数、详情缓存、
+   若正开着的详情卡属于它则一并关闭；markCollectionDataStale 让首页下次进入时刷新 */
+async function confirmRemove(item: CollectibleSummary) {
+  const confirmed = await new Promise<boolean>((resolve) => {
+    uni.showModal({
+      title: '删除收藏',
+      content: `确定删除「${item.name}」？删除后不可恢复`,
+      confirmText: '删除',
+      confirmColor: '#c50405',
+      success: (result) => resolve(Boolean(result.confirm)),
+      fail: () => resolve(false)
+    });
+  });
+  if (!confirmed) return;
+  try {
+    await dataService.removeCollectible(item.id);
+  } catch (error) {
+    uni.showToast({ title: error instanceof Error ? error.message : '删除失败', icon: 'none' });
+    return;
+  }
+  if (detailItem.value?.id === item.id) closeDetail();
+  detailCache.delete(`${item.id}:${item.updatedAt}`);
+  items.value = items.value.filter((current) => current.id !== item.id);
+  shelves.value = shelves.value.map((shelf) => (shelf.id === item.shelfId && shelf.itemCount > 0
+    ? { ...shelf, itemCount: shelf.itemCount - 1 }
+    : shelf));
+  markCollectionDataStale();
+  uni.showToast({ title: '已删除', icon: 'none' });
+}
+
+function goAdd() {
+  uni.navigateTo({ url: '/package-editor/pages/add/index' });
+}
+
 /* ── 进 / 出编辑态 ──
    表单里要填标签与备注，而列表摘要里没有这两样：详情还没回来就先去取一份，
    取不到就不进编辑态 —— 否则一保存会把标签和备注一起清空（这是最贵的一种失手）。 */
@@ -801,6 +836,15 @@ function onScrollToLower() { void loadMore(); }
       </view>
     </view>
 
+    <!-- 零数据空态：一条收藏都没有（首次使用 / 长按删除清空后）。
+         此分支此前缺失，空列表时内容区域直接空白，看起来像「页面没有内容了」 -->
+    <view v-else-if="!items.length" class="zero-state">
+      <image class="zero-state__art" src="/static/figma/empty-state.png" mode="aspectFit" />
+      <text class="zero-state__title">还没有收藏</text>
+      <text class="zero-state__sub">拍下你的第一个纸袋，开始你的陈列柜</text>
+      <button class="zero-state__cta" @tap="goAdd">去添加收藏</button>
+    </view>
+
     <view v-else-if="displayMode === 'shelf'" class="shelf-list">
       <view v-for="(group, groupIndex) in groups" :key="group.id" class="shelf-group">
         <view class="shelf-heading">
@@ -842,7 +886,7 @@ function onScrollToLower() { void loadMore(); }
           @touchend="snapShelf(group.id)"
         >
           <view class="shelf-items">
-            <button v-for="item in group.items" :key="item.id" class="shelf-item" @tap="open(item)">
+            <button v-for="item in group.items" :key="item.id" class="shelf-item" @tap="open(item)" @longpress="confirmRemove(item)">
               <image
                 v-if="thumbnailUrls[item.id] && !failedThumbnails[item.id]"
                 class="shelf-image"
@@ -887,6 +931,7 @@ function onScrollToLower() { void loadMore(); }
             class="grid-item"
             :style="{ width: `${gridW}rpx`, height: `${gridCardH}rpx`, borderRadius: `${gridRadius}rpx` }"
             @tap="open(item)"
+            @longpress="confirmRemove(item)"
           >
             <image
               v-if="thumbnailUrls[item.id] && !failedThumbnails[item.id]"
@@ -1174,10 +1219,10 @@ function onScrollToLower() { void loadMore(); }
    图标 24px = 44rpx / 文字 9px 按注释档提到 Footnote 12pt），只是图标与语义不同 */
 /* 图标与文字间距 4px；上下内边距对称 + justify-content:center，整体在按钮内垂直居中
    （等高拉伸时行高随搜索框变化，内容始终居中） */
-.mode-button { flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8rpx; min-width: 0; margin: 0; padding: 14rpx 22rpx; border: 2rpx solid rgba(255,255,255,.75); border-radius: 29rpx; background: rgba(255,255,255,.6); box-shadow: inset 0 2rpx 0 rgba(255,255,255,.8); color: #77736d; font-size: 20rpx; font-weight: 400; line-height: 1.1; transition: transform .18s ease, box-shadow .18s ease; }
+.mode-button { flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8rpx; min-width: 0; margin: 0; padding: 14rpx 22rpx; border: 2rpx solid rgba(255,255,255,.75); border-radius: 24rpx; background: rgba(255,255,255,.6); box-shadow: inset 0 2rpx 0 rgba(255,255,255,.8); color: #77736d; font-size: 20rpx; font-weight: 400; line-height: 1.1; transition: transform .18s ease, box-shadow .18s ease; }
 /* 按压反馈：对齐 H5 .header-settings:active scale(.94) */
 .mode-button.is-pressed { transform: scale(.94); box-shadow: inset 0 2rpx 0 rgba(255,255,255,.8); }
-.mode-button image { width: 44rpx; height: 44rpx; }
+.mode-button image { display: block; width: 44rpx; height: 44rpx; }
 /* letter-spacing 会在末字后多出 2rpx 空隙，负 margin 抵消，让可见字形与 icon 同轴 */
 .mode-button text { letter-spacing: 2rpx; margin-right: -2rpx; }
 
@@ -1258,6 +1303,13 @@ function onScrollToLower() { void loadMore(); }
 .acrylic-shelf--SKY { --shelf-fill: rgba(34,158,232,.66); }
 .acrylic-shelf--ROSE { --shelf-fill: rgba(253,83,192,.72); }
 
+/* ── 零数据空态：长按删除清空 / 首次使用时引导去添加（此前此分支缺失，列表区直接空白）── */
+.zero-state { display: flex; flex-direction: column; align-items: center; padding: 110rpx 60rpx 60rpx; }
+.zero-state__art { width: 300rpx; height: 300rpx; opacity: .92; }
+.zero-state__title { margin-top: 20rpx; color: #141414; font-family: Iowan Old Style, Baskerville, "Times New Roman", "Songti SC", serif; font-size: 34rpx; font-weight: 700; }
+.zero-state__sub { margin-top: 12rpx; color: #77736d; font-size: 24rpx; }
+.zero-state__cta { min-height: 0; margin: 40rpx 0 0; padding: 20rpx 56rpx; display: flex; align-items: center; border: 0; border-radius: 44rpx; background: #141414; color: #ffffff; font-size: 26rpx; font-weight: 650; line-height: 1; }
+
 /* ── 搜索无结果：对齐 H5 .empty-state（padding 58px / 34px 衬线水印大字 16% 不透明 / 12px 副文案 / 标签 chips） ── */
 .search-empty { padding: 106rpx 36rpx 55rpx; text-align: center; }
 .search-empty__mark { display: block; color: #141414; font-family: Iowan Old Style, Baskerville, "Times New Roman", "Songti SC", serif; font-size: 62rpx; font-weight: 900; letter-spacing: 3.6rpx; line-height: 1; opacity: .16; }
@@ -1313,7 +1365,7 @@ function onScrollToLower() { void loadMore(); }
 /* ═══ 编辑半窗（H5 .bottom-sheet）：盖在详情卡之上（960 > 950），
    卡面用详情卡同款白渐变 —— 表单的「下划线 · 纸感」版式原样平移过来。 ═══ */
 .edit-layer { position: fixed; z-index: 960; top: 0; left: 0; right: 0; bottom: 0; }
-.edit-sheet { position: absolute; left: 0; right: 0; bottom: 0; display: flex; flex-direction: column; max-height: calc(100vh - 90rpx); padding-bottom: env(safe-area-inset-bottom); border-radius: 58rpx 58rpx 0 0; background: linear-gradient(160deg, #ffffff 0%, #fafbfd 56%, #f2f4f8 100%); box-shadow: 0 -36rpx 127rpx rgba(0,0,0,.24); overflow: hidden; animation: sheet-up .38s cubic-bezier(.2,.75,.22,1) both; }
+.edit-sheet { position: absolute; left: 0; right: 0; bottom: 0; display: flex; flex-direction: column; max-height: calc(100vh - 90rpx); padding-bottom: env(safe-area-inset-bottom); border-radius: 58rpx 58rpx 0 0; background: #ffffff; box-shadow: 0 -36rpx 127rpx rgba(0,0,0,.24); overflow: hidden; animation: sheet-up .38s cubic-bezier(.2,.75,.22,1) both; }
 @keyframes sheet-up { from { transform: translateY(105%); } to { transform: translateY(0); } }
 /* 顶部拖拽指示条（H5 .sheet-handle：38×4px 圆角） */
 .sheet-handle { flex: 0 0 auto; width: 69rpx; height: 7rpx; margin: 18rpx auto 4rpx; border-radius: 4rpx; background: #c4beb4; }

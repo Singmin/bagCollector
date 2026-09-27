@@ -5,7 +5,7 @@ import type { Collectible, CollectibleSummary } from '../../types';
 import { dataService } from '../../services/data';
 import { daysAgoText, formattedDate } from '../../services/format';
 import { resolveCollectibleThumbnail } from '../../services/images';
-import { syncTabBar } from '../../services/tab-bar';
+import { syncTabBar, setTabBarHidden } from '../../services/tab-bar';
 
 const loading = ref(true);
 const initialized = ref(false);
@@ -75,9 +75,11 @@ const RACK_DY = [0, 13, 25, 13] as const;
 function shortDate(value: string) { return formattedDate(value).slice(5).replace('/', '.'); }
 function isHero(item: CollectibleSummary) { return heroItem.value?.id === item.id; }
 function openLibrary() { uni.switchTab({ url: '/pages/library/index' }); }
-/* 设置改为首页内半窗浮层：上滑进入、下滑收起（不再 navigateTo） */
+/* 设置改为首页内半窗浮层：上滑进入、下滑收起（不再 navigateTo）。
+   底栏是框架层、页面 z-index 压不住：半窗打开期间整条隐藏（同编辑半窗方案） */
 const settingsShow = ref(false);
-function openSettings() { settingsShow.value = true; }
+function openSettings() { settingsShow.value = true; setTabBarHidden(true); }
+function closeSettings() { settingsShow.value = false; setTabBarHidden(false); }
 let refreshPromise: Promise<void> | undefined;
 
 function assertRenderable(nextItems: CollectibleSummary[]) {
@@ -289,7 +291,7 @@ async function onRefresherRefresh() {
         <view class="flip-face flip-face--front">
           <image class="frame85-background" src="/static/figma/indexBg.svg" mode="scaleToFill" />
           <view class="glass-glow" />
-          <view class="light-beam" />
+          <view class="corner-glow" />
           <view class="brand-badge">最新</view>
 
           <view class="flip-face__art">
@@ -317,6 +319,7 @@ async function onRefresherRefresh() {
         <view class="flip-face flip-face--back">
           <image class="frame85-background" src="/static/figma/indexBg.svg" mode="scaleToFill" />
           <view class="glass-glow" />
+          <view class="corner-glow" />
           <button class="flip-back" aria-label="翻回正面" @tap.stop="flipBack">
             <text>↺</text>
           </button>
@@ -356,7 +359,7 @@ async function onRefresherRefresh() {
       </view>
       <view class="recent-sub">
         <text class="stage-count">最近15天 · {{ items.length }} 件</text>
-        <button class="recent-all" @tap="openLibrary">查看全部 <text class="recent-all-arrow">→</text></button>
+        <button class="recent-all" @tap="openLibrary">查看全部 <image class="recent-all-arrow" src="/static/figma/arrow-right.svg" mode="aspectFit" /></button>
       </view>
       <scroll-view class="recent-scroll" scroll-x :show-scrollbar="false" @scroll="onRailScroll">
         <view class="recent-scene">
@@ -432,7 +435,7 @@ async function onRefresherRefresh() {
     </scroll-view>
 
     <!-- 设置半窗：蒙层 + 上滑进入/下滑收起（fixed 定位，放在滚动区外） -->
-    <settings-sheet :show="settingsShow" @close="settingsShow = false" />
+    <settings-sheet :show="settingsShow" @close="closeSettings" />
   </view>
 </template>
 
@@ -518,8 +521,10 @@ async function onRefresherRefresh() {
 /* 左上角冷白高光 + 1px 内白边（H5 .glass-glow / .flip-face--front）。
    内白边必须画在这一层而不是卡片底图上：底图是替换元素，会整块盖住自身的 inset 阴影。 */
 .glass-glow { position: absolute; z-index: 1; top: 0; left: 0; right: 0; bottom: 0; border-radius: 47rpx; box-shadow: inset 0 0 0 2rpx rgba(255,255,255,.9); pointer-events: none; background: radial-gradient(120% 78% at 16% -12%, rgba(255,255,255,.95) 0%, rgba(255,255,255,0) 58%), linear-gradient(128deg, rgba(255,255,255,.5) 0%, rgba(255,255,255,0) 34%, rgba(255,255,255,0) 66%, rgba(255,255,255,.34) 100%); }
-/* 卡面顶沿一道细亮线：射灯打在玻璃上沿的反光（H5 .light-beam::before） */
-.light-beam { position: absolute; z-index: 2; top: 22rpx; right: 11rpx; left: 34%; height: 3rpx; border-radius: 4rpx; pointer-events: none; background: linear-gradient(90deg, rgba(255,236,190,0) 0%, rgba(255,246,220,.9) 58%, rgba(255,236,190,0) 100%); }
+/* 右上角黄色光晕：radial 渐变锚定在卡片右上角（中心 = 100% 0%），
+   天然柔和无线条 —— 替代 indexBg.svg 的光带（微信 <image> 不支持 SVG 滤镜，
+   30px 高斯模糊不生效，光带硬边渲染成两条细线）。右上圆角随卡片裁形 */
+.corner-glow { position: absolute; z-index: 1; top: 0; right: 0; width: 260rpx; height: 260rpx; border-radius: 0 47rpx 0 0; pointer-events: none; background: radial-gradient(circle at 100% 0%, rgba(240,224,117,.62) 0%, rgba(240,224,117,.34) 32%, rgba(240,224,117,0) 70%); }
 
 /* 右上角「最新」徽标（H5 .brand-badge：top/right 12px、padding 4px 10px、radius 12px、9.5px 字） */
 .brand-badge { position: absolute; z-index: 4; top: 22rpx; right: 22rpx; padding: 7rpx 18rpx; border-radius: 22rpx; background: rgba(255,255,255,.58); box-shadow: inset 0 2rpx 0 rgba(255,255,255,.9), 0 6rpx 18rpx rgba(40,34,24,.09); color: #96703a; font-size: 24rpx; font-weight: 700; line-height: 1.1; letter-spacing: 1rpx; }
@@ -588,10 +593,13 @@ async function onRefresherRefresh() {
 .recent-title { color: #141414; font-family: Iowan Old Style, Baskerville, "Times New Roman", "Songti SC", serif; font-size: 38rpx; font-weight: 700; line-height: 1.05; letter-spacing: -1rpx; }
 /* 标题与副行小字的间距：原为 0（贴死），2026-09-26 用户要求调大 */
 .recent-heading { padding-bottom: 16rpx; }
-/* 副行：「最近收藏 · N 件」与「查看全部」底部对齐（两端撑开） */
-.recent-sub { display: flex; align-items: flex-end; justify-content: space-between; gap: 16rpx; padding: 0 40rpx 18rpx; }
-.recent-all { min-height: 0; margin: 0; padding: 0; border: 0; background: transparent; color: #77736d; font-size: 24rpx; line-height: 32rpx; }
-.recent-all-arrow { color: #141414; margin-left: 6rpx; }
+/* 副行：「最近15天 · N 件」与「查看全部」垂直居中对齐（两端撑开） */
+.recent-sub { display: flex; align-items: center; justify-content: space-between; gap: 16rpx; padding: 0 40rpx 18rpx; }
+/* flex 垂直居中：图片是内联元素时按基线对齐，27rpx 的图标底边坐在文字基线上，
+   视觉上箭头比文字高一截 —— 改 flex 后图标与文字垂直居中 */
+.recent-all { min-height: 0; margin: 0; padding: 0; border: 0; background: transparent; color: #77736d; font-size: 24rpx; line-height: 32rpx; display: flex; align-items: center; }
+/* 箭头与展架标题行的同款 SVG 图标（#77736d 描边、27rpx），观感一致 */
+.recent-all-arrow { width: 27rpx; height: 27rpx; margin-left: 6rpx; }
 .stage-count { display: block; color: #77736d; font-size: 24rpx; line-height: 1.4; }
 /* 挂袋区通栏：scroll-view 铺满整块屏幕，横杆（left/right 0）才能真正顶到左右尽头 */
 .recent-scroll { position: relative; z-index: 1; width: 100%; }
@@ -651,8 +659,11 @@ async function onRefresherRefresh() {
 /* 端部夹块：不锈钢 conic 拉丝 + 左上高光 + 沉边（与四角螺点同材质族）。
    ⚠ top 必须随 --rail-center 走（H5 端件中心 = 杆心 15.98px）：上一轮杆身下移
    16rpx 时端件没跟，悬在杆上方 8px —— 就是「没对齐」的元凶 */
+/* 端件三件套 top 全部绑定 --rail-center，几何中心与杆心一致（曾试过光学上提，已回退） */
 .rack-endcap { position: absolute; top: calc(var(--rail-center) - 12rpx); width: 16rpx; height: 25rpx; border-radius: 4rpx;
-  background: linear-gradient(180deg, rgba(255,255,255,.55), rgba(255,255,255,0) 30%, rgba(0,0,0,.18) 100%), conic-gradient(from 210deg at 30% 22%, #f4f6f8, #c3cad1 25%, #97a1ab 50%, #d5dce2 75%, #f4f6f8 100%);
+  /* 原用 conic-gradient 模拟拉丝，其最暗扇区（#97a1ab @ 50%）指向顶部，叠上高光淡出带
+     形成顶部「黑点」——改平滑纵向金属渐变，暗部落在中下并柔和过渡 */
+  background: linear-gradient(180deg, rgba(255,255,255,.55), rgba(255,255,255,0) 30%, rgba(0,0,0,.08) 100%), linear-gradient(180deg, #f8fafb 0%, #d4dae0 45%, #bcc5cd 70%, #e6eaee 100%);
   box-shadow: 0 2rpx 4rpx rgba(0,0,0,.40), 0 2rpx 5rpx rgba(0,0,0,.18), inset 0 0 0 1rpx rgba(255,255,255,.60), inset 0 -1rpx 2rpx rgba(0,0,0,.30); }
 .rack-endcap--l { left: 31rpx; }
 .rack-endcap--r { right: 31rpx; }
@@ -677,7 +688,7 @@ async function onRefresherRefresh() {
 .rack-clip { position: absolute; top: calc(-1 * var(--hang-origin) - 19.5rpx); left: 50%; transform: translateX(-50%); z-index: 3; }
 .pulley { position: relative; box-sizing: border-box; width: 39rpx; height: 39rpx; border-radius: 50%;
   /* 环带粗细对齐 H5（stroke 3.4px → 6rpx）：孔径 27rpx > 杆厚 18rpx，杆从孔中穿过、上下各留 ~4rpx 空隙 */
-  border: 6rpx solid #C9D2DA;
+  border: 6rpx solid #E9EEF3;
   /* 孔必须透空：芥黄杆从孔中穿过（预期图的关键特征），背景保持透明，光影靠描边 */
   box-shadow: 0 0 0 1rpx rgba(88,100,112,.32), 0 0 0 2rpx rgba(255,255,255,.75), inset 0 2rpx 2rpx rgba(255,255,255,.9), inset 0 -2rpx 3rpx rgba(0,0,0,.12); }
 /* 银臂：从轮毂边缘连到环内缘（原型 M7.371→4.021，即盒内 8~15rpx 一段） */
@@ -690,8 +701,9 @@ async function onRefresherRefresh() {
   border: 1rpx solid #B88810; box-shadow: 0 1rpx 2rpx rgba(90,60,10,.35); }
 .pulley__hub::before { content: ""; position: absolute; left: 18%; top: 14%; width: 32%; height: 32%; border-radius: 50%; background: rgba(255,255,255,.95); }
 .recent-item.is-active .pulley__hub { background: #c50205; border-color: #8f0204; }
-/* 选中滑环：玻璃层只留一圈细亮边（0.25s 淡入，原型⑰⑱⑲） */
-.rack-clip::after { content: ""; position: absolute; inset: -2rpx; border-radius: 50%; z-index: 2; opacity: 0; border: 2rpx solid rgba(255,255,255,.55); pointer-events: none; transition: opacity .25s ease; }
+/* 选中滑环：玻璃层只留一圈细亮边（0.25s 淡入，原型⑰⑱⑲）。
+   白色必须近乎不透明：背后是压暗蒙层（深色），55% 白会混成灰圈 */
+.rack-clip::after { content: ""; position: absolute; inset: -2rpx; border-radius: 50%; z-index: 2; opacity: 0; border: 2rpx solid rgba(255,255,255,.95); pointer-events: none; transition: opacity .25s ease; }
 .recent-item.is-active .rack-clip::after { opacity: 1; }
 
 /* 吊线：从轮心垂到夹具顶，上半段藏在轮体后面，选中上提时跟着缩短 */
