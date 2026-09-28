@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import { onShow } from '@dcloudio/uni-app';
+import { onHide, onShow } from '@dcloudio/uni-app';
 import type { Collectible, CollectibleSummary } from '../../types';
 import { dataService } from '../../services/data';
 import { daysAgoText, formattedDate } from '../../services/format';
@@ -234,6 +234,10 @@ onShow(() => {
   syncTabBar(0);
   void load();
 });
+/* 切走页面时收起设置半窗（settingsShow 是普通数据，不会随页面隐藏自动归位）。
+   半窗开着就等于底栏整条隐藏被推上去过，人回来了半窗还压着、底栏却已经复位，
+   会露一条底栏在面板底下 —— 半窗收起时会自行把底栏还原，这里关掉最省事。 */
+onHide(() => { settingsShow.value = false; });
 /* 顶部标题区固定后，下拉刷新迁移到内容区 scroll-view */
 const refresherTriggered = ref(false);
 async function onRefresherRefresh() {

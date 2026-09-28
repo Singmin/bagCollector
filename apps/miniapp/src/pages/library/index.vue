@@ -7,7 +7,7 @@ import { collectionRevision, shouldRefreshCollection, markCollectionDataStale } 
 import { daysAgoText, formattedDate } from '../../services/format';
 import { resolveCollectibleThumbnail } from '../../services/images';
 import { maskPageChrome } from '../../services/overlay';
-import { syncTabBar, setTabBarMasked, setTabBarHidden } from '../../services/tab-bar';
+import { syncTabBar, setTabBarHidden } from '../../services/tab-bar';
 
 interface ShelfGroup extends Shelf { items: CollectibleSummary[] }
 
@@ -741,10 +741,10 @@ function clearSearch() {
 
 onShow(() => {
   syncTabBar(1);
-  /* 底栏的蒙层态无条件复位：它由 services/tab-bar.ts 写到「当时的当前页」那份实例上，
-     切页时可能落到别处，本页的底栏就会一直留着蒙层 —— 蒙着的时候底栏不接手势，
-     点它直接穿透到页面上（表现就是「点底栏弹出详情卡」）。回到本页先复位最省事。 */
-  setTabBarMasked(false);
+  /* ⚠ 这里刻意不复位底栏的隐藏态：它由 open / startEdit 与 closeDetail 成对维护
+     （详情卡与编辑半窗都会让底栏整条收起，关闭时还原）。输入框聚焦弹键盘时
+     页面也可能走一次 onShow，在这清掉隐藏态就等于「半窗里点一下输入框，底栏又冒出来」。
+     页面被切走的情况由 onHide -> closeDetail() 兜住。 */
   if (!initialized.value || shouldRefreshCollection(loadedAt, loadedRevision)) void load();
 });
 /* 页面被切走（跳编辑页、切 tab）时收起浮层，回来不会还压着一层 */
@@ -1369,7 +1369,12 @@ function onScrollToLower() { void loadMore(); }
 @keyframes sheet-up { from { transform: translateY(105%); } to { transform: translateY(0); } }
 /* 顶部拖拽指示条（H5 .sheet-handle：38×4px 圆角） */
 .sheet-handle { flex: 0 0 auto; width: 69rpx; height: 7rpx; margin: 18rpx auto 4rpx; border-radius: 4rpx; background: #c4beb4; }
-.edit-scroll { flex: 1 1 auto; height: calc(100vh - 480rpx); box-sizing: border-box; padding: 18rpx 44rpx 40rpx; }
+/* 高度交给内容，只留一条上限：H5 的 .bottom-sheet 也是「max-height + 内容撑高」。
+   这里原写死 height: calc(100vh - 480rpx)，半窗永远撑到接近整屏，表单填不满时
+   底部空出一大块白（用户 2026-09-28 截图指出）。改成 flex: 0 1 auto 之后：
+   内容少 → 半窗就矮（露出后面的列表），内容多 → 撞上 .edit-sheet 的 max-height
+   被压缩，scroll-view 照旧能滚。min-height: 0 是给 flex 子项解绑默认下限。 */
+.edit-scroll { flex: 0 1 auto; min-height: 0; box-sizing: border-box; padding: 18rpx 44rpx 40rpx; }
 .edit-scroll::-webkit-scrollbar, .edit-scroll ::-webkit-scrollbar { width: 0; height: 0; display: none; }
 /* 底栏护垫：把「穿透下来的点击」接住（见模板里的注释）。
    z-index 899 是算好的：高于页面内容（宫格 / 展架板体最高 z-index 3），

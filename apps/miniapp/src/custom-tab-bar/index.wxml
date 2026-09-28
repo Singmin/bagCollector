@@ -1,4 +1,4 @@
-<view class="tab-shell {{masked ? 'is-masked' : ''}} {{hidden ? 'is-hidden' : ''}}" catchtap="swallow">
+<view class="tab-shell {{hidden ? 'is-hidden' : ''}}" catchtap="swallow">
   <view class="tab-bar">
     <button class="tab-item {{selected === 0 ? 'is-active' : ''}}" data-index="0" bindtap="switchTab">
       <image class="tab-icon" src="{{selected === 0 ? '/static/figma/nav-home-active.svg' : '/static/figma/nav-home.svg'}}" mode="aspectFit" />

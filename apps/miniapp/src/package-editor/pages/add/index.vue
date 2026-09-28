@@ -202,17 +202,12 @@ onLoad(() => {
 <template>
   <view class="camera-page">
     <view class="camera-header" :style="{ paddingTop: `${statusBarHeight}px`, height: `${statusBarHeight + navBarHeight}px` }">
-      <!-- 返回键中心 = 状态栏 + 导航行高/2（与标题同轴）；top:50% 会按含状态栏内边距的
-           整个头部算，偏高半个状态栏 -->
-      <button
-        class="back-button"
-        :style="{ top: `${statusBarHeight + navBarHeight / 2}px` }"
-        aria-label="返回"
-        @tap="back"
-      >
-        <image class="back-icon" src="/static/figma/back.svg" mode="aspectFit" />
-      </button>
-      <text class="camera-title">上传纸袋</text>
+      <view class="camera-nav">
+        <button class="back-button" aria-label="返回" @tap="back">
+          <image class="back-icon" src="/static/figma/back.svg" mode="aspectFit" />
+        </button>
+        <text class="camera-title">上传纸袋</text>
+      </view>
     </view>
 
     <view class="capture-stage">
@@ -251,11 +246,17 @@ onLoad(() => {
 <style scoped>
 /* ── 按参考图 Frame 92 测量对齐（1 图px ≈ 1.5rpx）── */
 .camera-page { height: 100vh; display: flex; flex-direction: column; overflow: hidden; background: #fff; color: #000; }
-/* 头部总高 = 状态栏 + 胶囊行（inline style 注入），内容行 flex 居中 → 与胶囊同轴 */
-.camera-header { position: relative; flex: 0 0 auto; box-sizing: border-box; display: flex; align-items: center; justify-content: center; }
+/* 头部总高 = 状态栏 + 胶囊行（inline style 注入：padding-top 撑状态栏、height 含状态栏）。
+   里面再套一层「胶囊行」.camera-nav 专供内容居中与返回键定位：
+   ⚠ 返回键原来直接挂在外层盒子上，那个盒子的 50% 是「含状态栏 padding 的 padding box」的中点，
+   而标题是内容区（去掉 padding-top）的中点 —— 两者差着半个状态栏高度，
+   表现就是返回箭头压到状态栏、与标题不同轴（用户 2026-09-28 截图）。
+   多一层 .camera-nav（高度正好 = 胶囊行）之后，两者的参照系才一致。 */
+.camera-header { position: relative; flex: 0 0 auto; box-sizing: border-box; }
+.camera-nav { position: relative; height: 100%; display: flex; align-items: center; justify-content: center; }
 .camera-title { font-size: 32rpx; font-weight: 500; line-height: 48rpx; }
-/* top 由 inline style 注入（状态栏 + 导航行高/2），这里只保留 translateY 自身居中 */
-.back-button { position: absolute; left: 36rpx; transform: translateY(-50%); width: 56rpx; height: 56rpx; margin: 0; padding: 0; display: grid; place-items: center; background: transparent; }
+/* top: 50% 相对 .camera-nav（只含导航行、不含状态栏）算，才是与标题同轴的中点 */
+.back-button { position: absolute; left: 36rpx; top: 50%; transform: translateY(-50%); width: 56rpx; height: 56rpx; margin: 0; padding: 0; display: grid; place-items: center; background: transparent; }
 .back-icon { width: 22rpx; height: 38rpx; }
 /* 取景卡：左右 40rpx（宽 670）、圆角 60rpx、浅棕 #e2c4ae；
    高度弹性填充 + 上限 1070rpx —— 参考图卡高 ≈66% 屏高，同时小屏（667pt）不溢出 */

@@ -1,11 +1,16 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from 'vue';
 import { api, logout } from '../../services/http';
-import { setTabBarMasked } from '../../services/tab-bar';
+import { setTabBarHidden } from '../../services/tab-bar';
 
 /* ── 设置半窗（首页内浮层，不再跳页）──
    上滑进入 / 下滑收起（双向都是 transition，状态机见 watch(show)）；
-   蒙层是纯色淡黑 rgba(0,0,0,.42)，不用任何图片；打开时联动压暗自定义底栏。 */
+   蒙层是纯色淡黑 rgba(0,0,0,.42)，不用任何图片。
+
+   底栏：半窗贴着屏幕底部、本来就该把它整条盖住，但自定义底栏是框架层、
+   页面里的浮层压不住它 —— 蒙一层（masked）仍会露出轮廓和顶部那条渐隐带，
+   压在「完成」按钮下面（用户 2026-09-28 截图指出）。所以跟编辑半窗一样
+   整条下滑隐藏，关闭时还原。 */
 
 const props = defineProps<{ show: boolean }>();
 const emit = defineEmits<{ (e: 'close'): void }>();
@@ -27,13 +32,13 @@ watch(() => props.show, (val) => {
   if (closeTimer) { clearTimeout(closeTimer); closeTimer = undefined; }
   if (val) {
     visible.value = true;
-    setTabBarMasked(true);
+    setTabBarHidden(true);
     void load();
     /* 等节点挂上、首帧画出 translateY(100%) 的起点，再过渡到 0 —— 上滑才生效 */
     nextTick(() => setTimeout(() => { opened.value = true; }, 30));
   } else if (visible.value) {
     opened.value = false;
-    setTabBarMasked(false);
+    setTabBarHidden(false);
     closeTimer = setTimeout(() => { visible.value = false; }, 360);
   }
 });
@@ -75,7 +80,7 @@ function requestClose() { emit('close'); }
 </template>
 
 <style scoped>
-/* 根容器：盖住页面视口；自定义底栏是框架层，由 setTabBarMasked 联动压暗 */
+/* 根容器：盖住页面视口；自定义底栏是框架层，由 setTabBarHidden 整条下滑让位 */
 .ss-root { position: fixed; z-index: 950; top: 0; left: 0; right: 0; bottom: 0; }
 /* 蒙层：淡淡的黑色，透明度过渡 */
 .ss-mask { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, .42); opacity: 0; transition: opacity .3s ease; }
