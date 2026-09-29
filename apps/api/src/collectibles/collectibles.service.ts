@@ -250,6 +250,12 @@ export class CollectiblesService {
       0n
     );
     const keys = collectible.imageAssets.map((asset) => asset.objectKey);
+    // 「拥有」官方袋子得到的收藏被删除时，同步解除拥有关系并回减计数，
+    // 否则用户删掉后将永远无法再次拥有同一个袋子（唯一约束会一直命中）。
+    const claim = await this.prisma.officialClaim.findFirst({
+      where: { collectibleId: id, userId },
+      select: { id: true, officialBagId: true }
+    });
     await this.prisma.$transaction(async (transaction) => {
       await transaction.collectible.delete({ where: { id } });
       await transaction.$executeRaw`
@@ -257,6 +263,13 @@ export class CollectiblesService {
         SET "storageUsedBytes" = GREATEST(0, "storageUsedBytes" - ${bytes})
         WHERE "id" = ${userId}
       `;
+      if (claim) {
+        await transaction.officialClaim.delete({ where: { id: claim.id } });
+        await transaction.officialBag.update({
+          where: { id: claim.officialBagId },
+          data: { claimedCount: { decrement: 1 } }
+        });
+      }
     });
     if (keys.length) await this.queues.add('cleanup', { keys });
     return { success: true };

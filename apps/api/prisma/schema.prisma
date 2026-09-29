@@ -57,6 +57,28 @@ enum JobStatus {
   FAILED
 }
 
+enum OfficialBagStatus {
+  DRAFT
+  PUBLISHED
+  OFFLINE
+}
+
+enum OfficialProcessStatus {
+  PENDING
+  PROCESSING
+  READY
+  FAILED
+}
+
+model Brand {
+  id        String       @id @default(cuid())
+  name      String       @unique
+  sortOrder Int          @default(0)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+  bags      OfficialBag[]
+}
+
 model User {
   id                String          @id @default(cuid())
   openid            String          @unique
@@ -76,6 +98,7 @@ model User {
   imageAssets       ImageAsset[]
   processingJobs    ProcessingJob[]
   auditLogs         AuditLog[]
+  officialClaims    OfficialClaim[]
 }
 
 model Session {
@@ -209,6 +232,67 @@ model Admin {
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
   auditLogs    AuditLog[]
+  officialBags OfficialBag[]
+}
+
+model OfficialBag {
+  id            String              @id @default(cuid())
+  name          String
+  brandId       String?
+  notes         String              @default("")
+  tags          String[]            @default([])
+  // 运营上传时勾选是否对图片执行抠图；只影响上传后的那次处理，不影响已生成的展示图。
+  matting       Boolean             @default(false)
+  sortOrder     Int                 @default(0)
+  status        OfficialBagStatus   @default(DRAFT)
+  processStatus OfficialProcessStatus @default(PENDING)
+  processError  String?
+  // 每次上传图片自增；首次上传后为 1。0 表示还没有上传过图片。
+  version       Int                 @default(0)
+  claimedCount  Int                 @default(0)
+  publishedAt   DateTime?
+  createdById   String?
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+  createdBy     Admin?              @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  brand         Brand?              @relation(fields: [brandId], references: [id], onDelete: SetNull)
+  images        OfficialBagImage[]
+  claims        OfficialClaim[]
+
+  @@index([status, sortOrder])
+}
+
+model OfficialBagImage {
+  id               String      @id @default(cuid())
+  officialBagId    String
+  kind             AssetKind
+  status           AssetStatus @default(AVAILABLE)
+  objectKey        String      @unique
+  contentType      String
+  declaredByteSize BigInt      @default(0)
+  byteSize         BigInt      @default(0)
+  width            Int?
+  height           Int?
+  version          Int         @default(1)
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+  officialBag      OfficialBag @relation(fields: [officialBagId], references: [id], onDelete: Cascade)
+
+  @@unique([officialBagId, kind, version])
+  @@index([officialBagId, kind])
+}
+
+model OfficialClaim {
+  id            String      @id @default(cuid())
+  userId        String
+  officialBagId String
+  collectibleId String
+  createdAt     DateTime    @default(now())
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  officialBag   OfficialBag @relation(fields: [officialBagId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, officialBagId])
+  @@index([userId, createdAt])
 }
 
 model AuditLog {

@@ -9,6 +9,7 @@ import { QueueModule } from './common/queue.module.js';
 import { DatabaseModule } from './database/database.module.js';
 import { HealthController } from './health.controller.js';
 import { JobsModule } from './jobs/jobs.module.js';
+import { OfficialBagsModule } from './official-bags/official-bags.module.js';
 import { ShelvesModule } from './shelves/shelves.module.js';
 import { UploadsModule } from './uploads/uploads.module.js';
 
@@ -23,7 +24,8 @@ import { UploadsModule } from './uploads/uploads.module.js';
     CollectiblesModule,
     UploadsModule,
     JobsModule,
-    AdminModule
+    AdminModule,
+    OfficialBagsModule
   ],
   controllers: [HealthController]
 })

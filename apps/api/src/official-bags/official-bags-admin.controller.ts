@@ -1,0 +1,74 @@
+import { Body, Controller, Delete, Get, HttpStatus, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
+import type { FastifyRequest } from 'fastify';
+import { createOfficialBagSchema, officialBagStatuses, updateOfficialBagSchema } from '@bagcollect/contracts';
+import { ApiError } from '../common/api-error.js';
+import { parseBody } from '../common/zod.js';
+import { AdminGuard, type AdminAuth } from '../admin/admin.guard.js';
+import { OfficialBagsAdminService } from './official-bags-admin.service.js';
+
+function currentAdmin(request: FastifyRequest & { adminAuth?: AdminAuth }): AdminAuth {
+  if (!request.adminAuth) {
+    throw new ApiError('UNAUTHORIZED', '管理员未登录', HttpStatus.UNAUTHORIZED);
+  }
+  return request.adminAuth;
+}
+
+@Controller('admin/official-bags')
+@UseGuards(AdminGuard)
+export class OfficialBagsAdminController {
+  constructor(private readonly admin: OfficialBagsAdminService) {}
+
+  @Post()
+  create(@Req() request: FastifyRequest & { adminAuth?: AdminAuth }, @Body() body: unknown) {
+    return this.admin.create(currentAdmin(request).adminId, parseBody(createOfficialBagSchema, body));
+  }
+
+  @Get()
+  list(
+    @Query('status') status?: string,
+    @Query('search') search?: string,
+    @Query('cursor') cursor?: string,
+    @Query('limit') rawLimit?: string
+  ) {
+    const statusValue =
+      status && (officialBagStatuses as readonly string[]).includes(status)
+        ? (status as (typeof officialBagStatuses)[number])
+        : undefined;
+    return this.admin.list({
+      status: statusValue,
+      search,
+      cursor,
+      limit: rawLimit ? Number(rawLimit) : undefined
+    });
+  }
+
+  @Get(':id')
+  detail(@Param('id') id: string) {
+    return this.admin.detail(id);
+  }
+
+  @Patch(':id')
+  update(
+    @Req() request: FastifyRequest & { adminAuth?: AdminAuth },
+    @Param('id') id: string,
+    @Body() body: unknown
+  ) {
+    return this.admin.update(currentAdmin(request).adminId, id, parseBody(updateOfficialBagSchema, body));
+  }
+
+  @Post(':id/image')
+  async uploadImage(
+    @Req() request: FastifyRequest & { adminAuth?: AdminAuth },
+    @Param('id') id: string
+  ) {
+    const file = await request.file();
+    if (!file) throw new ApiError('UPLOAD_INVALID', '没有收到图片文件', HttpStatus.BAD_REQUEST);
+    const body = await file.toBuffer();
+    return this.admin.uploadImage(currentAdmin(request).adminId, id, { body, contentType: file.mimetype });
+  }
+
+  @Delete(':id')
+  remove(@Req() request: FastifyRequest & { adminAuth?: AdminAuth }, @Param('id') id: string) {
+    return this.admin.remove(currentAdmin(request).adminId, id);
+  }
+}

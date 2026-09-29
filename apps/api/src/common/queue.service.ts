@@ -10,11 +10,14 @@ export class QueueService implements OnModuleDestroy {
   readonly images = new Queue(IMAGE_QUEUE, { connection: this.connection });
 
   async add(name: ImageJobName, data: object, jobId?: string) {
-    const isCleanup = name === 'cleanup';
+    // cleanup 与 official-claim 是纯复制/删除操作，可安全重试；
+    // normalize/matting/official-process 涉及万象抠图按次计费，失败不自动重跑，
+    // 由管理后台或用户手动重新触发。
+    const retryable = name === 'cleanup' || name === 'official-claim';
     return this.images.add(name, data, {
       ...(jobId ? { jobId } : {}),
-      attempts: isCleanup ? 3 : 1,
-      ...(isCleanup ? { backoff: { type: 'exponential' as const, delay: 2_000 } } : {}),
+      attempts: retryable ? 3 : 1,
+      ...(retryable ? { backoff: { type: 'exponential' as const, delay: 2_000 } } : {}),
       removeOnComplete: 500,
       removeOnFail: 1_000
     });
