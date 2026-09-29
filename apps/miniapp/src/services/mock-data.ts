@@ -17,10 +17,6 @@ const BAG_IMAGES = [
   '/static/figma/bags/bag-06.png'
 ];
 
-function iso(daysAgo: number) {
-  return new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000).toISOString();
-}
-
 interface MockCollectible extends Collectible {
   addedAtMs: number;
 }
@@ -115,8 +111,8 @@ function matchSearch(item: MockCollectible, search: string) {
     || item.tags.some((tag) => tag.toLowerCase().includes(search));
 }
 
-function jsonResponse<T>(data: T) {
-  return Promise.resolve(data as T);
+function jsonResponse<T>(data: T): Promise<any> {
+  return Promise.resolve(data);
 }
 
 function touchShelvesSortOrder() {
@@ -193,7 +189,7 @@ export function mockRequest<T>(path: string, options: ApiRequestOptions = {}): P
       const now = Date.now();
       const item: MockCollectible = {
         id: nextId('collectible'),
-        name: String(body.name ?? '未命名收藏'),
+        name: String(body.name ?? '未命名藏品'),
         shelfId: shelf?.id ?? '',
         shelfName: shelf?.name ?? '',
         processingStatus: 'READY',

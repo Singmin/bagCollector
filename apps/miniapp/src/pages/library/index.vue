@@ -80,8 +80,6 @@ function measureShelves() {
   });
 }
 
-watch(groups, () => measureShelves());
-
 function onShelfScroll(groupId: string, event: { detail: { scrollLeft: number } }) {
   const left = event.detail.scrollLeft;
   const metrics = shelfMetrics.get(groupId);
@@ -120,6 +118,8 @@ const groups = computed<ShelfGroup[]>(() => {
     items: items.value.filter((item) => item.shelfId === shelf.id)
   })).filter((group) => group.items.length);
 });
+
+watch(groups, () => measureShelves());
 
 function query(cursor?: string) {
   const params = ['limit=30'];
