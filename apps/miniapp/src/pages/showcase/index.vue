@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import { onHide, onShow } from '@dcloudio/uni-app';
-import type { Collectible, CollectibleSummary } from '../../types';
+import { onHide, onShow, onShareAppMessage, onShareTimeline } from '@dcloudio/uni-app';
+import type { Collectible, CollectibleSummary, Shelf } from '../../types';
 import { dataService } from '../../services/data';
 import { daysAgoText, formattedDate } from '../../services/format';
 import { resolveCollectibleThumbnail } from '../../services/images';
@@ -11,23 +11,24 @@ const loading = ref(true);
 const initialized = ref(false);
 const refreshing = ref(false);
 const loadError = ref('');
-const items = ref<CollectibleSummary[]>([]);
+/* 发现页数据源 = 官方精选 feed（别人的纸袋，带 ownerName 与完整标签/备注） */
+const items = ref<Collectible[]>([]);
 const totalCount = ref(0);
 const thumbnailUrls = ref<Record<string, string>>({});
 const failedThumbnails = ref<Record<string, boolean>>({});
+/* 心愿袋：已在心愿袋的纸袋 id 集合 */
+const wishlistIds = ref<Set<string>>(new Set());
+/* 已「标记已有」的 feed 条目 → 创建的收藏 id（本页内存态）：标记与心愿互斥；
+   再次点击「标记已有」时凭收藏 id 弹删除确认，可撤回标记 */
+const markedMap = ref<Map<string, string>>(new Map());
 
 /* 自定义导航（与全部收藏页同一套对齐方式）：
-   标题顶部 = 胶囊按钮顶部；设置钮（只留图标）贴在胶囊左侧，尺寸与胶囊对齐。 */
+   标题顶部 = 胶囊按钮顶部；设置钮在头部文档流内，与标题块垂直居中。 */
 const headerTop = ref(0);
-const settingsRight = ref(10);
-const settingsSize = ref(32);
 // #ifdef MP-WEIXIN
 try {
   const capsule = uni.getMenuButtonBoundingClientRect();
-  const win = uni.getSystemInfoSync();
   headerTop.value = capsule.top;
-  settingsRight.value = win.windowWidth - capsule.left + 8;
-  settingsSize.value = capsule.height;
 } catch {
   /* 取不到胶囊矩形（非微信端）时用默认值 */
 }
@@ -37,12 +38,18 @@ try {
 // 卡片由「最近收集」里选中的那一张驱动，默认是最新的一张。
 // 背面要展示标签与备注，而列表接口只返回摘要，所以选中后补拉一次详情；
 // 拉失败就让背面省略标签/备注（正面照常可用），不打断首页。
-const heroItem = ref<CollectibleSummary | null>(null);
+const heroItem = ref<Collectible | null>(null);
 const heroDetail = ref<Collectible | null>(null);
 const flipped = ref(false);
 const detailCache = new Map<string, Collectible>();
 
 const heroTags = computed(() => heroDetail.value?.tags ?? []);
+/* 今日上新件数：addedAt 是今天的 feed 条目数 */
+const todayCount = computed(() => items.value.filter(isTodayNew).length);
+/* 今日上新判定：addedAt 是今天 → 挂卡左下角挂 NEW 角标 */
+function isTodayNew(item: Collectible) {
+  return new Date(item.addedAt).toDateString() === new Date().toDateString();
+}
 const heroNote = computed(() => heroDetail.value?.notes?.trim() ?? '');
 
 /* 编号：对齐 H5 背面的 NO.001。后端没有 no 字段，用「总数 − 倒序下标」倒推
@@ -60,9 +67,8 @@ const heroFacts = computed(() => {
   const item = heroItem.value;
   if (!item) return [];
   return [
-    { label: '品牌 / 店铺', value: item.shelfName },
-    { label: '收藏日期', value: formattedDate(item.addedAt).replace(/\//g, '-') },
-    { label: '入库时长', value: daysAgoText(item.addedAt) },
+    { label: '品牌 / 店铺', value: item.ownerName ?? '官方精选' },
+    { label: '上架日期', value: formattedDate(item.addedAt).replace(/\//g, '-') },
     { label: '编号', value: heroNo.value }
   ].filter((row) => row.value);
 });
@@ -75,11 +81,6 @@ const RACK_DY = [0, 13, 25, 13] as const;
 function shortDate(value: string) { return formattedDate(value).slice(5).replace('/', '.'); }
 function isHero(item: CollectibleSummary) { return heroItem.value?.id === item.id; }
 function openLibrary() { uni.switchTab({ url: '/pages/library/index' }); }
-/* 设置改为首页内半窗浮层：上滑进入、下滑收起（不再 navigateTo）。
-   底栏是框架层、页面 z-index 压不住：半窗打开期间整条隐藏（同编辑半窗方案） */
-const settingsShow = ref(false);
-function openSettings() { settingsShow.value = true; setTabBarHidden(true); }
-function closeSettings() { settingsShow.value = false; setTabBarHidden(false); }
 let refreshPromise: Promise<void> | undefined;
 
 function assertRenderable(nextItems: CollectibleSummary[]) {
@@ -88,7 +89,7 @@ function assertRenderable(nextItems: CollectibleSummary[]) {
   }
 }
 
-function hydrateThumbnails(nextItems: CollectibleSummary[]) {
+function hydrateThumbnails(nextItems: Collectible[]) {
   for (const item of nextItems) {
     void resolveCollectibleThumbnail(item).then((url) => {
       if (!url || !items.value.some((current) => current.id === item.id && current.updatedAt === item.updatedAt)) return;
@@ -100,14 +101,6 @@ function hydrateThumbnails(nextItems: CollectibleSummary[]) {
   }
 }
 
-async function loadRecentCollectibles() {
-  const page = await dataService.collectibles('limit=9');
-  if (page.items.length || page.totalCount === 0) return page;
-
-  const recoveryPage = await dataService.collectibles('limit=30');
-  return { ...recoveryPage, items: recoveryPage.items.slice(0, 9) };
-}
-
 function load() {
   if (refreshPromise) return refreshPromise;
   if (initialized.value) refreshing.value = true;
@@ -115,21 +108,21 @@ function load() {
   loadError.value = '';
   refreshPromise = (async () => {
     try {
-      const page = await loadRecentCollectibles();
+      /* feed = 官方精选纸袋上新；心愿袋状态一并拉取（标记/取消心愿后要保持同步） */
+      const [page, wish] = await Promise.all([dataService.feed('limit=9'), dataService.wishlist()]);
       assertRenderable(page.items);
-      items.value = page.items;
+      items.value = page.items as unknown as Collectible[];
       totalCount.value = page.totalCount;
       initialized.value = true;
-      hydrateThumbnails(page.items);
-      // 刷新后沿用当前选中的那一张（可能刚被改名/换架），它不在列表里才退回最新一张。
-      // 与 H5 的「每次渲染都重置到最新」有意不同：小程序从详情页返回会重新 load，
-      // 重置会让用户刚挑的那张突然跳掉。
+      wishlistIds.value = new Set(wish.map((item) => item.id));
+      hydrateThumbnails(page.items as unknown as CollectibleSummary[]);
+      // 刷新后沿用当前选中的那一张，它不在列表里才退回最新一张。
       const kept = page.items.find((item) => item.id === heroItem.value?.id);
       if (kept) heroItem.value = kept;
       else selectHero(page.items[0] ?? null);
     } catch (error) {
       console.error(error);
-      const message = error instanceof Error ? error.message : '陈列加载失败';
+      const message = error instanceof Error ? error.message : '发现加载失败';
       if (initialized.value) uni.showToast({ title: message, icon: 'none' });
       else loadError.value = message;
     } finally {
@@ -143,18 +136,11 @@ function load() {
 /* 日期与「入库时长」已抽到 services/format.ts（formattedDate / daysAgoText），
    与「全部收藏」的详情卡共用同一口径，别在这页再写一份。 */
 
-/* 选中某一张作为主展位展品：先翻回正面（对齐 H5 换袋子时的行为），再补拉详情。 */
-function selectHero(item: CollectibleSummary | null) {
+/* 选中某一张作为主展位展品：先翻回正面。feed 返回的就是完整条目，无需补拉。 */
+function selectHero(item: Collectible | null) {
   heroItem.value = item;
   flipped.value = false;
-  heroDetail.value = item ? detailCache.get(item.id) ?? null : null;
-  if (!item || heroDetail.value) return;
-  void dataService.collectible(item.id).then((detail) => {
-    detailCache.set(item.id, detail);
-    if (heroItem.value?.id === item.id) heroDetail.value = detail;
-  }).catch(() => {
-    // 详情拉不到：背面省略标签与备注即可，不弹提示打断首页
-  });
+  heroDetail.value = item;
 }
 
 /* 轻点挂袋：照 H5 的 pointerup「轻点」分支 —— 先给这张一个摆动冲量（"先荡一下"），
@@ -164,7 +150,7 @@ const kickedId = ref('');
 let kickTimer: ReturnType<typeof setTimeout> | undefined;
 let kickClearTimer: ReturnType<typeof setTimeout> | undefined;
 
-function pickItem(item: CollectibleSummary) {
+function pickItem(item: Collectible) {
   selectHero(item);
   if (kickTimer) clearTimeout(kickTimer);
   if (kickClearTimer) clearTimeout(kickClearTimer);
@@ -173,6 +159,78 @@ function pickItem(item: CollectibleSummary) {
     kickedId.value = item.id;
     kickClearTimer = setTimeout(() => { kickedId.value = ''; }, 2000);
   }, 20);
+}
+
+/* ── 心愿袋：加入 / 取消（同一按钮再点一次即取消；官方精选只支持取消心愿）──
+   wishToggling：请求在途时忽略再次点击，防止连点竞态导致本地集合与服务端错位 */
+let wishToggling = false;
+function isWished(id: string) { return wishlistIds.value.has(id); }
+
+async function toggleWish(item: Collectible) {
+  /* 互斥：已标记已有的纸袋不能再进心愿袋 */
+  if (markedMap.value.has(item.id)) return void uni.showToast({ title: '已标记已有，无需加入心愿袋', icon: 'none' });
+  if (wishToggling) return;
+  wishToggling = true;
+  try {
+    if (wishlistIds.value.has(item.id)) {
+      await dataService.removeWishlist(item.id);
+      const next = new Set(wishlistIds.value);
+      next.delete(item.id);
+      wishlistIds.value = next;
+      uni.showToast({ title: '已移出心愿袋', icon: 'none' });
+    } else {
+      await dataService.addWishlist(item.id);
+      wishlistIds.value = new Set(wishlistIds.value).add(item.id);
+      uni.showToast({ title: '已加入心愿袋', icon: 'none' });
+    }
+  } catch (error) {
+    uni.showToast({ title: error instanceof Error ? error.message : '操作失败', icon: 'none' });
+  } finally {
+    wishToggling = false;
+  }
+}
+
+/* ── 标记已有（方案 A：先编辑后入库）──
+   点击只打开半窗预填 feed 信息，点「收进收藏」时才真正创建 ——
+   取消/关闭不产生任何数据（旧版先 create 再核对，取消会留下默认信息的脏数据） */
+/* 标记已有：统一拉起共享 mark-sheet 半窗（components/mark-sheet），本页只管状态与本地同步 */
+const markShow = ref(false);
+const markItem = ref<Collectible | null>(null);
+function openMark(item: Collectible) {
+  /* 已标记 → 弹删除确认，可撤回标记 */
+  const createdId = markedMap.value.get(item.id);
+  if (createdId) {
+    return void uni.showModal({
+      title: '删除这条收藏？',
+      content: `将从收藏架删除「${item.name}」的记录。`,
+      confirmText: '删除',
+      confirmColor: '#9d3d36',
+      success: async (result) => {
+        if (!result.confirm) return;
+        try {
+          await dataService.removeCollectible(createdId);
+          markedMap.value.delete(item.id);
+          uni.showToast({ title: '已从收藏架移除', icon: 'none' });
+        } catch (error) {
+          uni.showToast({ title: error instanceof Error ? error.message : '移除失败', icon: 'none' });
+        }
+      }
+    });
+  }
+  markItem.value = item;
+  markShow.value = true;
+}
+function closeMark() {
+  markShow.value = false;
+}
+function onMarkSaved(source: Collectible, created: Collectible) {
+  /* 组件已落库并（如在心愿袋）自动移出；这里同步本地互斥与心愿状态 */
+  markedMap.value.set(source.id, created.id);
+  if (wishlistIds.value.has(source.id)) {
+    const next = new Set(wishlistIds.value);
+    next.delete(source.id);
+    wishlistIds.value = next;
+  }
 }
 
 /* ── 拖动这一排时挂袋的滞后摆动 ──
@@ -224,8 +282,6 @@ function toggleFlip() {
   flipped.value = !flipped.value;
 }
 
-function flipBack() { flipped.value = false; }
-
 function add() {
   uni.navigateTo({ url: '/package-editor/pages/add/index' });
 }
@@ -237,7 +293,20 @@ onShow(() => {
 /* 切走页面时收起设置半窗（settingsShow 是普通数据，不会随页面隐藏自动归位）。
    半窗开着就等于底栏整条隐藏被推上去过，人回来了半窗还压着、底栏却已经复位，
    会露一条底栏在面板底下 —— 半窗收起时会自行把底栏还原，这里关掉最省事。 */
-onHide(() => { settingsShow.value = false; });
+onHide(() => {
+  if (markShow.value) { markShow.value = false; setTabBarHidden(false); }
+});
+/* 分享：转发给朋友 / 分享到朋友圈（封面用袋子图，5:4 内自动裁切） */
+onShareAppMessage(() => ({
+  title: '袋袋集 · 收集每一个纸袋的故事',
+  path: '/pages/showcase/index',
+  imageUrl: '/static/figma/bags/bag-04.png'
+}));
+onShareTimeline(() => ({
+  title: '袋袋集 · 收集每一个纸袋的故事',
+  query: '',
+  imageUrl: '/static/figma/bags/bag-04.png'
+}));
 /* 顶部标题区固定后，下拉刷新迁移到内容区 scroll-view */
 const refresherTriggered = ref(false);
 async function onRefresherRefresh() {
@@ -249,26 +318,13 @@ async function onRefresherRefresh() {
 <template>
   <view class="home-page">
     <!-- 头部：与全部收藏页同一套对齐（标题顶 = 胶囊顶，padding-top 由胶囊矩形注入）。
-         设置钮改为绝对定位：贴在微信胶囊左侧，只留图标，尺寸与胶囊对齐。 -->
+         设置入口已迁至「我的」页头部右上角（2026-09-29） -->
     <view class="bags-header" :style="{ paddingTop: `${headerTop}px` }">
       <view class="bags-header__text">
         <text class="bags-title">袋袋集</text>
         <text class="bags-tagline">收集每一个纸袋的故事</text>
       </view>
     </view>
-    <button
-      class="header-settings"
-      aria-label="打开设置"
-      :style="{ top: `${headerTop}px`, right: `${settingsRight}px`, width: `${settingsSize}px`, height: `${settingsSize}px` }"
-      @tap="openSettings"
-    >
-      <image
-        class="header-settings__icon"
-        :style="{ width: `${Math.round(settingsSize * 0.7)}px`, height: `${Math.round(settingsSize * 0.7)}px` }"
-        src="/static/figma/settings-nut.svg"
-        mode="aspectFit"
-      />
-    </button>
 
     <scroll-view
       class="home-scroll"
@@ -292,11 +348,21 @@ async function onRefresherRefresh() {
       <view v-else-if="heroItem && !loadError" class="flip-card" :class="{ 'is-flipped': flipped }">
         <view class="flip-card__hit" @tap="toggleFlip" />
 
+        <!-- 右上角固定快捷操作（仅正面显示；背面有同功能的文字按钮，不重复）：
+             心形 = 加入/移出心愿袋（实心红 = 已在），靶心 = 标记已有 -->
+        <view v-if="!flipped" class="hero-quick">
+          <view class="hero-quick__btn" hover-class="is-pressed" :hover-stay-time="80" @tap.stop="toggleWish(heroItem)">
+            <image class="hero-quick__icon" :src="isWished(heroItem.id) ? '/static/figma/heart-active.svg' : '/static/figma/heart.svg'" mode="aspectFit" />
+          </view>
+          <view class="hero-quick__btn" hover-class="is-pressed" :hover-stay-time="80" @tap.stop="openMark(heroItem)">
+            <image class="hero-quick__icon" src="/static/figma/target.svg" mode="aspectFit" />
+          </view>
+        </view>
+
         <view class="flip-face flip-face--front">
           <image class="frame85-background" src="/static/figma/indexBg.svg" mode="scaleToFill" />
           <view class="glass-glow" />
           <view class="corner-glow" />
-          <view class="brand-badge">最新</view>
 
           <view class="flip-face__art">
             <image
@@ -311,7 +377,7 @@ async function onRefresherRefresh() {
           <view class="front-caption">
             <text class="front-caption__title">{{ heroItem.name }}</text>
             <view class="front-caption__sub">
-              <text class="front-caption__part">{{ heroItem.shelfName }}</text>
+              <text class="front-caption__part">{{ heroItem.ownerName ?? '官方精选' }}</text>
               <view class="front-caption__dot" />
               <text class="front-caption__part front-caption__part--fixed">{{ formattedDate(heroItem.addedAt) }}</text>
             </view>
@@ -320,18 +386,15 @@ async function onRefresherRefresh() {
           <text class="flip-hint">轻点翻面 · 查看详情</text>
         </view>
 
-        <view class="flip-face flip-face--back">
+        <view class="flip-face flip-face--back" @tap="toggleFlip">
           <image class="frame85-background" src="/static/figma/indexBg.svg" mode="scaleToFill" />
           <view class="glass-glow" />
           <view class="corner-glow" />
-          <button class="flip-back" aria-label="翻回正面" @tap.stop="flipBack">
-            <text>↺</text>
-          </button>
 
           <view class="back-inner">
             <text v-if="heroNo" class="back-eyebrow">{{ heroNo }}</text>
             <text class="back-name">{{ heroItem.name }}</text>
-            <text class="back-brand">{{ heroItem.shelfName }}</text>
+            <text class="back-brand">{{ heroItem.ownerName ?? '官方精选' }}</text>
             <view class="back-divider" />
             <view class="back-facts">
               <view v-for="row in heroFacts" :key="row.label" class="back-facts__row">
@@ -343,6 +406,17 @@ async function onRefresherRefresh() {
               <text v-for="tag in heroTags" :key="tag"># {{ tag }}</text>
             </view>
             <text v-if="heroNote" class="back-note">{{ heroNote }}</text>
+            <!-- 发现页操作：加入/取消心愿袋 + 标记已有（收进我的收藏并核对信息） -->
+            <view class="back-actions">
+              <button class="back-action" :class="{ 'is-on': isWished(heroItem.id) }" @tap.stop="toggleWish(heroItem)">
+                <image class="back-action__icon" :src="isWished(heroItem.id) ? '/static/figma/heart-active.svg' : '/static/figma/heart.svg'" mode="aspectFit" />
+                <text>{{ isWished(heroItem.id) ? '已在心愿袋' : '加入心愿袋' }}</text>
+              </button>
+              <button class="back-action back-action--primary" @tap.stop="openMark(heroItem)">
+                <image class="back-action__icon" src="/static/figma/target-white.svg" mode="aspectFit" />
+                <text>标记已有</text>
+              </button>
+            </view>
           </view>
         </view>
       </view>
@@ -359,11 +433,11 @@ async function onRefresherRefresh() {
 
     <view v-if="items.length && !loadError" class="recent-section">
       <view class="recent-heading">
-        <text class="recent-title">最近收集</text>
+        <text class="recent-title">精选上新</text>
       </view>
       <view class="recent-sub">
-        <text class="stage-count">最近15天 · {{ items.length }} 件</text>
-        <button class="recent-all" @tap="openLibrary">查看全部 <image class="recent-all-arrow" src="/static/figma/arrow-right.svg" mode="aspectFit" /></button>
+        <text class="stage-count">今日上新 · {{ todayCount }} 件</text>
+        <button class="recent-all" @tap="openLibrary">我的收藏架 <image class="recent-all-arrow" src="/static/figma/arrow-right.svg" mode="aspectFit" /></button>
       </view>
       <scroll-view class="recent-scroll" scroll-x :show-scrollbar="false" @scroll="onRailScroll">
         <view class="recent-scene">
@@ -422,10 +496,19 @@ async function onRefresherRefresh() {
                       />
                       <view v-else class="recent-placeholder" />
                     </view>
+                    <view v-if="isTodayNew(item)" class="rack-new">New!</view>
+                    <!-- 心愿袋按钮：点按加入/取消，不影响轻点送主卡位 -->
+                    <view
+                      class="card-wish"
+                      :class="{ 'is-on': isWished(item.id) }"
+                      hover-class="is-pressed"
+                      :hover-stay-time="80"
+                      @tap.stop="toggleWish(item)"
+                    >♥</view>
                   </view>
                   <view class="rail-meta">
                     <text class="rail-name">{{ item.name }}</text>
-                    <text class="rail-info">{{ item.shelfName }} · {{ shortDate(item.addedAt) }}</text>
+                    <text class="rail-info">{{ item.ownerName ?? '官方精选' }} · {{ shortDate(item.addedAt) }}</text>
                   </view>
                 </view>
               </view>
@@ -438,8 +521,8 @@ async function onRefresherRefresh() {
       </view>
     </scroll-view>
 
-    <!-- 设置半窗：蒙层 + 上滑进入/下滑收起（fixed 定位，放在滚动区外） -->
-    <settings-sheet :show="settingsShow" @close="closeSettings" />
+    <!-- 标记已有半窗：共享组件（首页/我的页统一交互），show=false 时自动还原底栏 -->
+    <mark-sheet :show="markShow" :item="markItem" :wished="markItem ? isWished(markItem.id) : false" @close="closeMark" @saved="onMarkSaved" />
   </view>
 </template>
 
@@ -470,9 +553,10 @@ async function onRefresherRefresh() {
 .home-scroll { flex: 1 1 auto; min-height: 0; }
 .home-body { padding-bottom: 176rpx; }
 
-/* ── 头部：一级标题 + 辅助文案（设置钮已绝对定位到胶囊左侧，不占文档流）──
+/* ── 头部：一级标题 + 辅助文案，右侧设置钮与标题块垂直居中（H5 .bags-header 同款：
+   align-items:center + space-between，右钮与左侧文字块中线对齐，两页位置一致）──
    padding-top 由脚本按胶囊矩形注入，与全部收藏页同款对齐方式 */
-.bags-header { display: flex; align-items: flex-start; gap: 16rpx; padding: 0 36rpx 29rpx; }
+.bags-header { display: flex; align-items: center; justify-content: space-between; gap: 16rpx; padding: 0 36rpx 29rpx; }
 .bags-header__text { display: flex; flex-direction: column; min-width: 0; }
 /* 一级标题：H5 .bags-title 是 38px × 1.82 = 69rpx（900 / 字距 2px = 3.6rpx）。
    ⚠ 这一档**没有**用微信六档的 Headline(44rpx)：首页的「袋袋集」和「全部收藏」在 H5 里
@@ -481,14 +565,11 @@ async function onRefresherRefresh() {
 /* 字体栈照搬 H5 的 h1（袋袋集原型.html:117）：Iowan Old Style / Baskerville 都是 iOS 系统
    衬线，中文没有对应字形会回退到 "Songti SC"（宋体）—— 截图里「袋袋集」的宋体感就来自这里。
    Android 上前面几个都缺失，落到通用 serif，属于预期内的降级。 */
-/* 2026-09-26 用户要求调小：69rpx → 60rpx（两页保持一致，「全部收藏」同步改） */
-.bags-title { margin-bottom: 11rpx; color: #141414; font-family: Iowan Old Style, Baskerville, "Times New Roman", "Songti SC", serif; font-size: 60rpx; font-weight: 900; line-height: 1; letter-spacing: 3rpx; }
+/* 2026-09-29 用户要求：54rpx / 900 / 无字距 */
+.bags-title { margin-bottom: 11rpx; color: #141414; font-family: Iowan Old Style, Baskerville, "Times New Roman", "Songti SC", serif; font-size: 54rpx; font-weight: 900; line-height: 1; letter-spacing: 0; }
 /* 辅助内容：EmDesc 14pt（与「全部收藏」的副文案同档，两页一致） */
 .bags-tagline { color: #77736d; font-size: var(--wc-font-description); line-height: 1.4; }
-/* 设置钮：绝对定位贴胶囊左侧（top/right/宽高由脚本按胶囊矩形注入），
-   只留图标、尺寸与胶囊对齐；玻璃托底材质保留 */
-.header-settings { position: absolute; z-index: 20; display: flex; align-items: center; justify-content: center; margin: 0; padding: 0; border: 2rpx solid rgba(255,255,255,.75); border-radius: 14px; background: rgba(255,255,255,.6); box-shadow: 0 11rpx 25rpx rgba(52,66,92,.08), inset 0 2rpx 0 rgba(255,255,255,.8); }
-.header-settings__icon { display: block; }
+/* 设置钮已迁至「我的」页头部（2026-09-29），首页头部只保留标题块 */
 
 .load-error { margin: 28rpx 36rpx; padding: 24rpx; border-radius: 20rpx; background: #fae2de; color: #943d37; font-size: var(--wc-font-description); text-align: center; }
 
@@ -515,7 +596,9 @@ async function onRefresherRefresh() {
 .flip-face--front { z-index: 1; display: flex; flex-direction: column; align-items: center; padding: 60rpx 36rpx 40rpx; }
 .flip-face--back { z-index: 2; transform: rotateY(-180deg); opacity: 0; }
 .flip-card.is-flipped .flip-face--front { opacity: 0; transition: opacity .06s linear 0s; }
-.flip-card.is-flipped .flip-face--back { opacity: 1; transition: opacity .1s linear .11s; }
+/* 翻面后把整个背面层提到整卡点击层（.flip-card__hit z 6）之上：
+   背面的「加入心愿袋 / 标记已有」按钮才能点到，否则点击全被翻面截走 */
+.flip-card.is-flipped .flip-face--back { opacity: 1; z-index: 7; transition: opacity .1s linear .11s; }
 .flip-card:not(.is-flipped) .flip-face--front { opacity: 1; transition: opacity .1s linear .11s; }
 .flip-card:not(.is-flipped) .flip-face--back { opacity: 0; transition: opacity .06s linear 0s; }
 
@@ -530,8 +613,7 @@ async function onRefresherRefresh() {
    30px 高斯模糊不生效，光带硬边渲染成两条细线）。右上圆角随卡片裁形 */
 .corner-glow { position: absolute; z-index: 1; top: 0; right: 0; width: 260rpx; height: 260rpx; border-radius: 0 47rpx 0 0; pointer-events: none; background: radial-gradient(circle at 100% 0%, rgba(240,224,117,.62) 0%, rgba(240,224,117,.34) 32%, rgba(240,224,117,0) 70%); }
 
-/* 右上角「最新」徽标（H5 .brand-badge：top/right 12px、padding 4px 10px、radius 12px、9.5px 字） */
-.brand-badge { position: absolute; z-index: 4; top: 22rpx; right: 22rpx; padding: 7rpx 18rpx; border-radius: 22rpx; background: rgba(255,255,255,.58); box-shadow: inset 0 2rpx 0 rgba(255,255,255,.9), 0 6rpx 18rpx rgba(40,34,24,.09); color: #96703a; font-size: 24rpx; font-weight: 700; line-height: 1.1; letter-spacing: 1rpx; }
+/* 「最新」徽标已按用户要求移除（2026-09-29） */
 
 /* 袋子区：H5 固定 248px 高、宽度按图片自身比例（这里交给 aspectFit 在定高框内等比居中）。
    2026-09-26 用户两轮要求收小：451 → 436 → 400rpx */
@@ -544,7 +626,7 @@ async function onRefresherRefresh() {
    （375 屏基准）而非 1.82，否则比 H5 均匀小 10% —— 用户 2026-09-26 实测反馈。 */
 .front-caption { position: relative; z-index: 3; flex: 0 0 auto; width: 100%; margin-top: 15rpx; text-align: center; }
 /* 卡片标题是另一套栈（H5 .front-caption__title / .back-name，均以 Georgia 打头） */
-.front-caption__title { display: block; color: #1a1815; font-family: Georgia, "Iowan Old Style", "Songti SC", serif; font-size: 42rpx; font-weight: 700; line-height: 1.2; letter-spacing: .2rpx; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.front-caption__title { display: block; color: #1a1815; font-family: Georgia, "Iowan Old Style", "Songti SC", serif; font-size: 38rpx; font-weight: 700; line-height: 1.2; letter-spacing: .2rpx; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .front-caption__sub { display: flex; align-items: center; justify-content: center; gap: 13rpx; margin-top: 9rpx; color: #8d877c; font-size: 24rpx; line-height: 1.4; letter-spacing: .4rpx; }
 .front-caption__part { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .front-caption__part--fixed { flex: 0 0 auto; }
@@ -559,8 +641,10 @@ async function onRefresherRefresh() {
    字号按 1px=2rpx（375 屏基准，见正面说明）── */
 .back-inner { position: relative; z-index: 3; height: 100%; display: flex; flex-direction: column; padding: 29rpx 33rpx 25rpx; overflow: hidden; }
 .back-eyebrow { color: #77736d; font-size: 20rpx; font-weight: 700; line-height: 1.2; letter-spacing: 3rpx; }
-.back-name { margin-top: 7rpx; color: #1d1a15; font-family: Georgia, "Iowan Old Style", "Songti SC", serif; font-size: 38rpx; font-weight: 600; line-height: 1.2; }
-.back-brand { margin-top: 9rpx; color: #6f6a62; font-size: 22rpx; line-height: 1.4; }
+/* 背面字段与正面对齐：名称 19px/700 同 .front-caption__title，
+   品牌行 24rpx #8d877c 同 .front-caption__sub（2026-09-29 用户要求两面对齐） */
+.back-name { margin-top: 7rpx; color: #1a1815; font-family: Georgia, "Iowan Old Style", "Songti SC", serif; font-size: 38rpx; font-weight: 700; line-height: 1.2; letter-spacing: .2rpx; }
+.back-brand { margin-top: 9rpx; color: #8d877c; font-size: 24rpx; line-height: 1.4; letter-spacing: .4rpx; }
 .back-divider { height: 1rpx; margin: 20rpx 0; background: linear-gradient(90deg, rgba(20,20,20,.12), rgba(20,20,20,.04) 70%, transparent); }
 .back-facts { display: flex; flex-direction: column; gap: 11rpx; }
 .back-facts__row { display: flex; align-items: baseline; justify-content: space-between; gap: 18rpx; }
@@ -570,14 +654,14 @@ async function onRefresherRefresh() {
 .back-tags text { padding: 7rpx 16rpx; border-radius: 18rpx; background: rgba(20,20,20,.055); color: #5d594f; font-size: 24rpx; line-height: 1.2; }
 /* 备注：引用式文字。后端 notes 最长 2000 字而卡内高度固定，限两行裁掉 */
 .back-note { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; margin-top: 20rpx; padding: 15rpx 18rpx; border-left: 4rpx solid rgba(20,20,20,.14); border-radius: 0 16rpx 16rpx 0; background: rgba(20,20,20,.035); color: #5f5b53; font-size: 24rpx; line-height: 1.55; }
-/* 背面右上角的「翻回去」：图标按钮不受字号规范约束，z-index 必须高于
-   .flip-card__hit(6) 才点得到（H5 .flip-back） */
-.flip-back { position: absolute; z-index: 8; top: 22rpx; right: 22rpx; display: flex; align-items: center; justify-content: center; width: 51rpx; height: 51rpx; min-width: 0; margin: 0; padding: 0; border: 0; border-radius: 50%; background: rgba(20,20,20,.055); color: #6d675e; font-size: 30rpx; line-height: 1; }
+/* 背面右上角的「翻回去」按钮已删除：整卡点击区（.flip-card__hit）本身就能翻回 */
 
 /* 空状态：卡片收成一个安静的占位，不参与翻面 */
 .empty-card { display: flex; flex-direction: column; align-items: center; }
 .empty-illustration { position: absolute; z-index: 3; left: 50%; top: 82rpx; width: 334rpx; height: 332rpx; margin-left: -167rpx; }
-.empty-caption { position: absolute; z-index: 3; left: 36rpx; right: 36rpx; bottom: 78rpx; }
+/* width:auto 覆盖 .front-caption 的 width:100%：左右定位同时生效才真正居中
+   （否则 left+width 过度约束，right 被忽略，文字整体右偏 36rpx） */
+.empty-caption { position: absolute; z-index: 3; left: 36rpx; right: 36rpx; bottom: 78rpx; width: auto; }
 .front-caption__hint { display: block; margin-top: 9rpx; color: #8d877c; font-size: var(--wc-font-description); line-height: 1.5; }
 
 /* 骨架屏 */
@@ -742,6 +826,10 @@ async function onRefresherRefresh() {
 .rack-screw--tr { top: 5rpx; right: 5rpx; }
 .rack-screw--bl { bottom: 5rpx; left: 5rpx; }
 .rack-screw--br { bottom: 5rpx; right: 5rpx; }
+/* 今日上新角标「New!」（用户选定方案 A 并要求描边加粗）：
+   亮黄字身 #FFDE59 + 深红描边 #8F0204（3rpx，比初版 2rpx 粗一档）+ 白外圈（八向偏移画在字形后面，
+   须比描边宽一档才露出环边）+ 底部软影；微斜 -6° 俏皮姿态 */
+.rack-new { position: absolute; z-index: 4; left: 10rpx; bottom: 12rpx; color: #1da84a; font-size: 22rpx; font-weight: 900; font-style: italic; line-height: 1; font-family: "Yuanti SC", "YouYuan", "PingFang SC", sans-serif; -webkit-text-stroke: 0; text-shadow: -2rpx -2rpx 0 #ffffff, 2rpx -2rpx 0 #ffffff, -2rpx 2rpx 0 #ffffff, 2rpx 2rpx 0 #ffffff, -3rpx 0 0 #ffffff, 3rpx 0 0 #ffffff, 0 -3rpx 0 #ffffff, 0 3rpx 0 #ffffff, 0 4rpx 6rpx rgba(6, 80, 30, .4); }
 /* 照片区：无底色（原型④），袋子直接落在玻璃卡内的透明底上；袋宽 84% 靠左（.paper-bag 规则）；
    高度 = 卡宽 × 1.29（H5 .rack-photo 用 --rack-card-w 推导，这里同式） */
 .rack-photo { position: relative; height: calc(var(--rack-card-w) * 1.29); border-radius: 4rpx; overflow: hidden; display: flex; align-items: center; justify-content: flex-start;
@@ -759,4 +847,33 @@ async function onRefresherRefresh() {
 .recent-item.is-active .rail-name { color: #8a5a10; }
 /* 与大卡片「轻点翻面 · 查看详情」（.flip-hint）字号/颜色/字距完全一致 */
 .rack-hint { display: block; padding: 2rpx 36rpx 0; color: #c0bab1; font-size: 20rpx; line-height: 1.2; letter-spacing: .5rpx; text-align: center; }
+
+/* ── 发现页：心愿袋按钮 / 主卡操作区（标记已有半窗壳层复用 styles/edit-form.css）── */
+/* 挂卡心愿按钮：右上角小圆钮，空心灰 → 实心红（已在心愿袋） */
+.card-wish { position: absolute; z-index: 6; top: 10rpx; right: 10rpx; width: 44rpx; height: 44rpx; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: rgba(255,255,255,.88); color: #b3afa8; font-size: 24rpx; line-height: 1; transition: transform .18s ease, color .18s ease; }
+.card-wish.is-on { color: #c50405; }
+.card-wish.is-pressed { transform: scale(.86); }
+/* 主卡右上角固定快捷操作：心形（心愿袋）+ 靶心（标记已有）。
+   ⚠ 放在 flip-card 直属层（不在任何一面里），翻面时位置不动、始终可见；
+   z-index 8 必须 > 整卡点击层 .flip-card__hit(6)，否则点击会被翻面截走 */
+.hero-quick { position: absolute; z-index: 8; top: 22rpx; right: 22rpx; display: flex; gap: 14rpx; }
+.hero-quick__btn { width: 60rpx; height: 60rpx; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: rgba(255,255,255,.88); transition: transform .18s ease; }
+.hero-quick__btn.is-pressed { transform: scale(.88); }
+.hero-quick__icon { width: 32rpx; height: 32rpx; }
+/* 主卡背面的操作区：加入心愿袋（描边）+ 标记已有（黑色实心）。
+   ⚠ 必须 position + z-index 7 高于整卡点击层 .flip-card__hit(6)，否则点击会被翻面截走 */
+.back-actions { position: relative; z-index: 7; display: flex; gap: 16rpx; margin-top: 24rpx; }
+.back-action { flex: 1 1 0; display: flex; align-items: center; justify-content: center; gap: 10rpx; height: 84rpx; margin: 0; padding: 0; border: 2rpx solid rgba(20,20,20,.18); border-radius: 42rpx; background: transparent; color: #141414; font-size: var(--wc-font-footnote); font-weight: 650; line-height: 1; }
+/* 按钮内小图标：心形（空心/实心红随心愿状态切换）、白色对勾 */
+.back-action__icon { flex: 0 0 30rpx; width: 30rpx; height: 30rpx; }
+.back-action.is-on { border-color: #c50405; color: #c50405; }
+.back-action--primary { border: 0; background: #141414; color: #ffffff; }
+/* 标记半窗已抽为共享组件 components/mark-sheet（含 mark-hint / detail-artwork 样式） */
+</style>
+
+<style>
+/* ⚠️ 标记已有半窗的壳层与表单样式全在 styles/edit-form.css（与全部收藏页编辑半窗共用）。
+   本页 scoped 样式里没有这些类 —— 少了这个引入半窗会裸奔（无底 sheet、无遮罩、表单无版式），
+   这就是「点击标记已有 UI 不对」的根因。必须非 scoped 引入，与 library/index.vue 同款。 */
+@import '../../styles/edit-form.css';
 </style>

@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import { onLoad } from '@dcloudio/uni-app';
-import type { Shelf, UploadPolicy } from '../../../types';
+import type { Collectible, Shelf, UploadPolicy } from '../../../types';
 import { api, authorizedHeaders } from '../../../services/http';
+import { USE_MOCK } from '../../../services/mock-data';
 import { dataService } from '../../../services/data';
 
 const systemInfo = uni.getSystemInfoSync();
@@ -98,6 +99,15 @@ async function uploadSource(path: string, policy: UploadPolicy) {
   });
 }
 
+/* 下一跳：规范化已完成（AWAITING_CROP/READY）时直接进编辑页 ——
+   连续两次 redirectTo 会让页面栈底层的首页闪现（「先回首页再开编辑页」的根因），
+   只在确实需要等后端处理时才落处理页 */
+function nextStepUrl(collectible: Collectible) {
+  return collectible.processingStatus === 'AWAITING_CROP' || collectible.processingStatus === 'READY'
+    ? `/package-editor/pages/metadata/index?id=${collectible.id}`
+    : `/package-editor/pages/processing/index?id=${collectible.id}&stage=normalize`;
+}
+
 async function submit(sourcePath: string) {
   if (uploading.value) return;
   const sourceSize = await fileSize(sourcePath);
@@ -113,6 +123,13 @@ async function submit(sourcePath: string) {
   try {
     const path = await prepareUpload(sourcePath);
     compressing.value = false;
+    /* Mock 模式没有存储后端（policy.uploadUrl 为空，uploadFile 必失败）：
+       跳过 policy / upload / complete 三步，直接用本地临时图充当缩略图与展示图 */
+    if (USE_MOCK) {
+      const collectible = await dataService.createCollectible({ name: '未命名纸袋', shelfId: await targetShelfId(), thumbnailUrl: path, displayImageUrl: path });
+      uni.redirectTo({ url: nextStepUrl(collectible) });
+      return;
+    }
     const size = await fileSize(path);
     const collectible = await dataService.createCollectible({ name: '未命名纸袋', shelfId: await targetShelfId() });
     const sourceName = path.split('/').pop() || `paper-bag-${Date.now()}.jpg`;
@@ -130,7 +147,7 @@ async function submit(sourcePath: string) {
       method: 'POST',
       data: { assetId: policy.assetId, collectibleId: collectible.id, key: policy.key }
     });
-    uni.redirectTo({ url: `/package-editor/pages/processing/index?id=${collectible.id}&stage=normalize` });
+    uni.redirectTo({ url: nextStepUrl(collectible) });
   } catch (error) {
     compressing.value = false;
     errorMessage.value = error instanceof Error ? error.message : '照片处理失败';
@@ -254,7 +271,7 @@ onLoad(() => {
    多一层 .camera-nav（高度正好 = 胶囊行）之后，两者的参照系才一致。 */
 .camera-header { position: relative; flex: 0 0 auto; box-sizing: border-box; }
 .camera-nav { position: relative; height: 100%; display: flex; align-items: center; justify-content: center; }
-.camera-title { font-size: 32rpx; font-weight: 500; line-height: 48rpx; }
+.camera-title { font-size: 36rpx; font-weight: 500; line-height: 48rpx; }
 /* top: 50% 相对 .camera-nav（只含导航行、不含状态栏）算，才是与标题同轴的中点 */
 .back-button { position: absolute; left: 36rpx; top: 50%; transform: translateY(-50%); width: 56rpx; height: 56rpx; margin: 0; padding: 0; display: grid; place-items: center; background: transparent; }
 .back-icon { width: 22rpx; height: 38rpx; }

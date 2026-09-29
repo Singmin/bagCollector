@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, getCurrentInstance, nextTick, ref, watch } from 'vue';
-import { onHide, onShow } from '@dcloudio/uni-app';
+import { onHide, onShow, onShareAppMessage, onShareTimeline } from '@dcloudio/uni-app';
 import type { Collectible, CollectibleSummary, Shelf } from '../../types';
 import { dataService } from '../../services/data';
 import { collectionRevision, shouldRefreshCollection, markCollectionDataStale } from '../../services/collection-state';
@@ -26,9 +26,16 @@ const displayMode = ref<'shelf' | 'grid'>('shelf');
 /* 自定义导航：标题区顶部与右上角微信胶囊按钮顶部对齐 —— 用胶囊矩形取 Y。
    getMenuButtonBoundingClientRect 仅微信小程序可用，其他端回落 0。 */
 const headerTop = ref(0);
+/* 设置钮固定在微信胶囊左侧：right = 屏宽 − 胶囊左缘 + 8px 间隙，尺寸 = 胶囊高度 */
+const settingsRight = ref(10);
+const settingsSize = ref(32);
 // #ifdef MP-WEIXIN
 try {
-  headerTop.value = uni.getMenuButtonBoundingClientRect().top;
+  const capsule = uni.getMenuButtonBoundingClientRect();
+  const win = uni.getSystemInfoSync();
+  headerTop.value = capsule.top;
+  settingsRight.value = win.windowWidth - capsule.left + 8;
+  settingsSize.value = capsule.height;
 } catch {
   headerTop.value = 0;
 }
@@ -172,6 +179,31 @@ function hydrateThumbnails(nextItems: CollectibleSummary[]) {
   }
 }
 
+/* ── 收藏架分段：我的 / 心愿袋 ──
+   心愿袋里是「官方精选」里标记喜欢的别人的纸袋；只支持移出（不做编辑/删除） */
+const segment = ref<'mine' | 'wish'>('mine');
+const wishlistItems = ref<Collectible[]>([]);
+
+function removeWish(item: Collectible) {
+  uni.showModal({
+    title: '取消心愿',
+    content: `把「${item.name}」移出心愿袋？`,
+    confirmText: '移出',
+    success: async (result) => {
+      if (!result.confirm) return;
+      try {
+        await dataService.removeWishlist(item.id);
+        wishlistItems.value = wishlistItems.value.filter((current) => current.id !== item.id);
+        uni.showToast({ title: '已移出心愿袋', icon: 'none' });
+      } catch (error) {
+        uni.showToast({ title: error instanceof Error ? error.message : '操作失败', icon: 'none' });
+      }
+    }
+  });
+}
+
+function goDiscover() { uni.switchTab({ url: '/pages/showcase/index' }); }
+
 function load(force = false) {
   if (refreshPromise) return refreshPromise;
   if (!force && initialized.value && !shouldRefreshCollection(loadedAt, loadedRevision)) return Promise.resolve();
@@ -181,7 +213,8 @@ function load(force = false) {
   loadError.value = '';
   refreshPromise = (async () => {
     try {
-      const [page, nextShelves] = await Promise.all([dataService.collectibles(query()), dataService.shelves()]);
+      const [page, nextShelves, wish] = await Promise.all([dataService.collectibles(query()), dataService.shelves(), dataService.wishlist()]);
+      wishlistItems.value = wish;
       assertRenderable(page.items, nextShelves);
       items.value = page.items;
       shelves.value = nextShelves;
@@ -400,11 +433,14 @@ const detailNote = computed(() => detailData.value?.notes?.trim() ?? '');
 const detailFacts = computed(() => {
   const item = detailItem.value;
   if (!item) return [];
+  /* 心愿条目：addedAt 是官方上架时间，「收藏日期/入库时长」不适用，换成上架口径；
+     品牌取 ownerName（feed 条目没有 shelfName）；心愿无编号（编号只在自有收藏里倒推） */
+  const wish = isWishDetail.value;
   return [
-    { label: '品牌 / 店铺', value: item.shelfName },
-    { label: '收藏日期', value: formattedDate(item.addedAt, '-') },
-    { label: '入库时长', value: daysAgoText(item.addedAt) },
-    { label: '编号', value: detailNo.value }
+    { label: '品牌 / 店铺', value: wish ? (item.ownerName ?? '官方精选') : item.shelfName },
+    { label: wish ? '上架日期' : '收藏日期', value: formattedDate(item.addedAt, '-') },
+    { label: wish ? '上架天数' : '入库时长', value: daysAgoText(item.addedAt) },
+    { label: '编号', value: wish ? '' : detailNo.value }
   ].filter((row) => row.value);
 });
 
@@ -446,12 +482,74 @@ async function loadDetail(item: CollectibleSummary) {
   }
 }
 
+/* 详情对象是否来自心愿袋：心愿条目只读，详情卡里不提供编辑入口 */
+const isWishDetail = computed(() => wishlistItems.value.some((w) => w.id === detailItem.value?.id));
+
+/* 详情卡右上角快捷钮（同首页大卡）：♥ 红实心=已在心愿袋；靶心 红环=已拥有 / 黑◎=未拥有可标记。
+   已拥有（「我的」条目）不显示 ♥ —— 心愿袋语义是「想要的别人的纸袋」，自己的藏品不适用 */
+const justMarkedMap = ref<Map<string, string>>(new Map());
+const isOwnedDetail = computed(() => !isWishDetail.value || justMarkedMap.value.has(detailItem.value?.id ?? ''));
+
+function detailSource(): Collectible | null {
+  const item = detailItem.value;
+  if (!item) return null;
+  return detailData.value && detailData.value.id === item.id ? detailData.value : (item as Collectible);
+}
+
+async function toggleDetailWish() {
+  const item = detailItem.value; if (!item) return;
+  if (isWishDetail.value) return void removeWish(item);
+  const source = detailSource(); if (!source) return;
+  try {
+    await dataService.addWishlist(source.id);
+    wishlistItems.value = [source, ...wishlistItems.value];
+    uni.showToast({ title: '已加入心愿袋', icon: 'none' });
+  } catch (error) {
+    uni.showToast({ title: error instanceof Error ? error.message : '操作失败', icon: 'none' });
+  }
+}
+
+/* 标记已有：与其他页面统一 —— 拉起共享 mark-sheet 编辑半窗（先核对后入库） */
+const markShow = ref(false);
+const markItem = ref<Collectible | null>(null);
+function markFromDetail() {
+  const item = detailItem.value; if (!item) return;
+  /* 已标记 → 弹删除确认，可撤回标记 */
+  const createdId = justMarkedMap.value.get(item.id);
+  if (createdId) {
+    return void uni.showModal({
+      title: '删除这条收藏？',
+      content: `将从收藏架删除「${item.name}」的记录。`,
+      confirmText: '删除',
+      confirmColor: '#9d3d36',
+      success: async (result) => {
+        if (!result.confirm) return;
+        try {
+          await dataService.removeCollectible(createdId);
+          justMarkedMap.value.delete(item.id);
+          uni.showToast({ title: '已从收藏架移除', icon: 'none' });
+        } catch (error) {
+          uni.showToast({ title: error instanceof Error ? error.message : '移除失败', icon: 'none' });
+        }
+      }
+    });
+  }
+  markItem.value = item as Collectible;
+  markShow.value = true;
+}
+function onMarkSaved(source: Collectible, created: Collectible) {
+  /* 组件已落库并自动移出心愿袋；这里同步本地心愿列表与已拥有标记 */
+  justMarkedMap.value.set(source.id, created.id);
+  wishlistItems.value = wishlistItems.value.filter((current) => current.id !== source.id);
+}
+
 function open(item: CollectibleSummary) {
   const cached = detailCache.get(`${item.id}:${item.updatedAt}`);
   detailItem.value = item;
   detailData.value = cached ?? null;
-  /* 大图先用列表已下好的缩略图顶着（秒出），详情回来再换 displayImageUrl */
-  detailArtwork.value = thumbnailUrls.value[item.id] ?? '';
+  /* 大图先用列表已下好的缩略图顶着（秒出），详情回来再换 displayImageUrl；
+     心愿条目不在 thumbnailUrls 里，回退用条目自带图 */
+  detailArtwork.value = thumbnailUrls.value[item.id] ?? item.thumbnailUrl ?? item.displayImageUrl ?? '';
   detailLoading.value = !cached;
   editing.value = false;
   detailAtEnd.value = false;
@@ -715,13 +813,31 @@ function shelfToneClass(shelfName: string, index: number) {
   return `acrylic-shelf--${shelfName.includes('瑞幸') ? 'ROSE' : SHELF_CYCLE[index % SHELF_CYCLE.length]}`;
 }
 
-/* 生效搜索词并重取第一页。keyword 没变就直接返回 ——
+/* 生效搜索词。「我的」分段 = 重取第一页（服务端搜索）；「心愿袋」分段 = 本地过滤
+   （心愿条目全量在内存里，不值得为一两个词打接口）。keyword 没变就直接返回 ——
    否则输入框「打完最后一个字」和「回车」会各触发一次同样的请求。 */
 function applySearch(value: string) {
   const next = value.trim();
   if (next === keyword.value) return;
   keyword.value = next;
-  void load(true);
+  if (segment.value === 'mine') void load(true);
+}
+
+/* 心愿袋本地过滤：名称 / 品牌（ownerName）/ 标签任一命中即保留 */
+const visibleWishlist = computed(() => {
+  const kw = keyword.value.trim().toLowerCase();
+  if (!kw) return wishlistItems.value;
+  return wishlistItems.value.filter((item) =>
+    item.name.toLowerCase().includes(kw) ||
+    (item.ownerName ?? '').toLowerCase().includes(kw) ||
+    item.tags.some((tag) => tag.toLowerCase().includes(kw)));
+});
+
+/* 切分段时清掉上一段的搜索词：两段共用一个输入框，残留关键词语义会串 */
+function switchSegment(next: 'mine' | 'wish') {
+  if (segment.value === next) return;
+  segment.value = next;
+  clearSearch();
 }
 
 /* 事件按原生 Event 收参：vue-tsc 拿的是 HTML <input> 的类型，
@@ -748,7 +864,22 @@ onShow(() => {
   if (!initialized.value || shouldRefreshCollection(loadedAt, loadedRevision)) void load();
 });
 /* 页面被切走（跳编辑页、切 tab）时收起浮层，回来不会还压着一层 */
-onHide(() => closeDetail());
+onHide(() => { closeDetail(); closeSettings(); if (markShow.value) markShow.value = false; });
+/* 分享：转发给朋友 / 分享到朋友圈 */
+onShareAppMessage(() => ({
+  title: '袋袋集 · 我的纸袋收藏架',
+  path: '/pages/library/index',
+  imageUrl: '/static/figma/bags/bag-01.png'
+}));
+onShareTimeline(() => ({
+  title: '袋袋集 · 我的纸袋收藏架',
+  query: '',
+  imageUrl: '/static/figma/bags/bag-01.png'
+}));
+/* 设置半窗（自首页迁入）：上滑进入、下滑收起；底栏是框架层压不住，打开期间整条隐藏 */
+const settingsShow = ref(false);
+function openSettings() { settingsShow.value = true; setTabBarHidden(true); }
+function closeSettings() { settingsShow.value = false; setTabBarHidden(false); }
 /* 顶部标题区固定后，触底加载与下拉刷新都迁移到内容区的 scroll-view 上 */
 const refresherTriggered = ref(false);
 async function onRefresherRefresh() {
@@ -767,12 +898,26 @@ function onScrollToLower() { void loadMore(); }
          头部恒显（对齐原型：零数据时不切换成别的头，计数显示 0 即可）。 -->
     <view v-if="!loadError" class="library-header" :style="{ paddingTop: `${headerTop}px` }">
       <view class="library-copy">
-        <text class="library-title">全部收藏</text>
+        <!-- 顶部大字标题换成两个页内 Tab：我的 ｜ 心愿袋（下划线指示当前段） -->
+        <view class="library-tabs">
+          <button class="library-tab" :class="{ 'is-on': segment === 'mine' }" @tap="switchSegment('mine')">我的</button>
+          <button class="library-tab" :class="{ 'is-on': segment === 'wish' }" @tap="switchSegment('wish')">心愿袋</button>
+        </view>
         <!-- 计数要等接口，首屏先不写「0 件收藏」——那一行的高度由 .library-copy 的
              min-height 占着，数字回来时下面的搜索框不会往上跳。 -->
-        <text v-if="initialized" class="library-summary">{{ totalCount }} 件收藏 · {{ groups.length }} 个展示架</text>
+        <text v-if="initialized && segment === 'mine'" class="library-summary">{{ totalCount }} 件收藏 · {{ groups.length }} 个展示架</text>
+        <text v-else-if="initialized && segment === 'wish'" class="library-summary">心愿袋 · {{ wishlistItems.length }} 件</text>
       </view>
     </view>
+    <!-- 设置钮：固定贴在微信胶囊左侧（top/right/尺寸由胶囊矩形注入，任何机型与胶囊严格同轴） -->
+    <button
+      class="header-settings"
+      aria-label="打开设置"
+      :style="{ top: `${headerTop}px`, right: `${settingsRight}px`, width: `${settingsSize}px`, height: `${settingsSize}px` }"
+      @tap="openSettings"
+    >
+      <image class="header-settings__icon" :style="{ width: `${Math.round(settingsSize * 0.7)}px`, height: `${Math.round(settingsSize * 0.7)}px` }" src="/static/figma/settings-nut.svg" mode="aspectFit" />
+    </button>
 
     <!-- 内容区独立滚动：顶部标题区固定不滚（搜索栏随内容一起滚动） -->
     <scroll-view
@@ -785,7 +930,7 @@ function onScrollToLower() { void loadMore(); }
       @scrolltolower="onScrollToLower"
     >
       <view class="library-body">
-    <!-- 搜索栏一行：输入框 + 右侧「宫格 / 展架」切换钮（随内容滚动，不固定） -->
+    <!-- 搜索栏一行：两段共用（心愿袋分段本地过滤）；右侧「宫格 / 展架」切换钮仅「我的」显示 -->
     <view v-if="initialized && !loadError" class="search-row">
       <view class="search-box">
         <image class="search-icon" src="/static/figma/search.svg" mode="aspectFit" />
@@ -794,18 +939,20 @@ function onScrollToLower() { void loadMore(); }
           :value="searchText"
           type="text"
           confirm-type="search"
-          placeholder="搜索名称 / 品牌 / 标签"
+          :placeholder="segment === 'wish' ? '搜索心愿袋' : '搜索名称 / 品牌 / 标签'"
           placeholder-class="search-placeholder"
           @input="onSearchInput"
           @confirm="applySearch(searchText)"
         />
         <text v-if="searchText" class="search-clear" @tap="clearSearch">×</text>
       </view>
-      <button class="mode-button" hover-class="is-pressed" :hover-stay-time="80" :aria-label="displayMode === 'shelf' ? '切换为宫格展示' : '切换为展架展示'" @tap="toggleMode">
+      <button v-if="segment === 'mine'" class="mode-button" hover-class="is-pressed" :hover-stay-time="80" :aria-label="displayMode === 'shelf' ? '切换为宫格展示' : '切换为展架展示'" @tap="toggleMode">
         <image :src="displayMode === 'shelf' ? '/static/figma/grid.svg' : '/static/figma/shelf.svg'" mode="aspectFit" />
         <text>{{ displayMode === 'shelf' ? '宫格' : '展架' }}</text>
       </button>
     </view>
+    <!-- 「我的」分段：展架/宫格、详情、长按删除（心愿袋分段没有这些操作） -->
+    <template v-if="segment === 'mine'">
     <view v-if="loading && !initialized" class="shelf-list skeleton-list">
       <view v-for="index in 2" :key="index" class="skeleton-shelf">
         <view class="skeleton-text skeleton-text--shelf" />
@@ -949,6 +1096,55 @@ function onScrollToLower() { void loadMore(); }
     </scroll-view>
 
     <text v-if="loadingMore" class="page-loading">正在加载更多…</text>
+    </template>
+
+    <!-- 「心愿袋」分段：与「我的」宫格同款横滑网格（同尺寸/同捏合缩放），
+         卡片用虚线边框 + 素底标识「未收入」；长按 = 移出心愿袋（对应「我的」的长按删除） -->
+    <template v-else>
+      <view v-if="!initialized" class="skeleton-list"><view class="skeleton-shelf"><view class="skeleton-text skeleton-text--shelf" /></view></view>
+      <view v-else-if="!wishlistItems.length" class="wish-empty">
+        <image class="wish-empty__art" src="/static/figma/empty-state.png" mode="aspectFit" />
+        <text class="wish-empty__title">心愿袋空空的</text>
+        <text class="wish-empty__sub">去发现页逛逛，把喜欢的纸袋收进来</text>
+        <button class="wish-empty__cta" @tap="goDiscover">去发现页</button>
+      </view>
+      <scroll-view v-else class="grid-window" scroll-x :show-scrollbar="false"
+        @touchstart="gridTouchStart"
+        @touchmove.stop="gridTouchMove"
+        @touchend="gridTouchEnd"
+        @touchcancel="gridTouchEnd"
+      >
+        <view class="grid-stage">
+          <view
+            class="collection-grid"
+            :style="{ gridTemplateColumns: `repeat(${gridCols}, ${gridW}rpx)`, gap: `${gridGap}rpx`, padding: `0 ${gridPadX}rpx` }"
+          >
+            <button
+              v-for="item in visibleWishlist.slice(0, MAX_GRID_RENDER)"
+              :key="item.id"
+              class="grid-item grid-item--wish"
+              :style="{ width: `${gridW}rpx`, height: `${gridCardH}rpx`, borderRadius: `${gridRadius}rpx` }"
+              @tap="open(item)"
+              @longpress="removeWish(item)"
+            >
+              <image
+                v-if="item.displayImageUrl || item.thumbnailUrl"
+                :src="item.displayImageUrl || item.thumbnailUrl"
+                mode="aspectFit"
+                lazy-load
+                :style="{ width: `${gridW - gridArtPad * 2}rpx`, height: `${gridArtH}rpx` }"
+              />
+              <view v-else class="grid-image-placeholder" />
+            </button>
+          </view>
+          <text v-if="visibleWishlist.length > MAX_GRID_RENDER" class="grid-overflow-note" :style="{ padding: `0 ${gridPadX}rpx` }">仅显示前 {{ MAX_GRID_RENDER }} 件</text>
+        </view>
+      </scroll-view>
+      <view v-if="initialized && wishlistItems.length && !visibleWishlist.length" class="wish-empty wish-empty--narrow">
+        <text class="wish-empty__title">没有匹配的心愿</text>
+        <text class="wish-empty__sub">换个关键词试试，或清空搜索查看全部</text>
+      </view>
+    </template>
       </view>
     </scroll-view>
 
@@ -959,6 +1155,16 @@ function onScrollToLower() { void loadMore(); }
       <view class="detail-backdrop" @tap="closeDetail" @touchmove.stop.prevent="blockScroll" />
       <!-- 编辑半窗拉起时卡片让位关闭（半窗 + 遮罩独占屏幕） -->
       <view v-show="!editing" class="detail-card">
+        <!-- 右上角快捷操作（同首页大卡）：♥ 红实心=已在心愿袋 / 空心=未加入；
+             靶心 红环=已拥有 / 黑◎=未拥有（点按选展架直接收进） -->
+        <view class="detail-quick">
+          <view v-if="isWishDetail" class="detail-quick__btn" hover-class="is-pressed" :hover-stay-time="80" @tap.stop="toggleDetailWish">
+            <image class="detail-quick__icon" src="/static/figma/heart-active.svg" mode="aspectFit" />
+          </view>
+          <view class="detail-quick__btn" hover-class="is-pressed" :hover-stay-time="80" @tap.stop="markFromDetail">
+            <image class="detail-quick__icon" :src="isOwnedDetail ? '/static/figma/target-marked.svg' : '/static/figma/target.svg'" mode="aspectFit" />
+          </view>
+        </view>
         <view class="detail-glass">
           <view class="detail-glow" />
           <view class="detail-noise" />
@@ -987,7 +1193,7 @@ function onScrollToLower() { void loadMore(); }
           <view>
             <text v-if="detailNo" class="detail-eyebrow">{{ detailNo }}</text>
             <text class="detail-name">{{ detailItem.name }}</text>
-            <text class="detail-brand">{{ detailItem.shelfName }}</text>
+            <text class="detail-brand">{{ isWishDetail ? (detailItem.ownerName ?? '官方精选') : detailItem.shelfName }}</text>
             <view class="detail-divider" />
             <view class="detail-facts">
               <view v-for="row in detailFacts" :key="row.label" class="detail-facts__row">
@@ -1003,13 +1209,19 @@ function onScrollToLower() { void loadMore(); }
           </view>
         </scroll-view>
 
-        <!-- 底部动作区：详情态 [编辑][完成]；编辑表单移入下方 edit-sheet 半窗 -->
+        <!-- 底部动作区：详情态 [编辑][完成]；心愿条目只读，仅 [完成] -->
         <view class="detail-actions">
-          <button class="detail-edit" @tap="startEdit()">编辑</button>
+          <button v-if="!isWishDetail" class="detail-edit" @tap="startEdit()">编辑</button>
           <button class="detail-done" @tap="closeDetail()">完成</button>
         </view>
       </view>
     </view>
+
+    <!-- 设置半窗（自首页迁入）：蒙层 + 上滑进入/下滑收起（fixed 定位，放在滚动区外） -->
+    <settings-sheet :show="settingsShow" @close="closeSettings" />
+
+    <!-- 标记已有半窗：共享组件（与首页统一交互）；心愿条目标记成功后自动移出心愿袋 -->
+    <mark-sheet :show="markShow" :item="markItem" :wished="true" @close="markShow = false" @saved="onMarkSaved" />
 
     <!-- 编辑半窗（H5 .bottom-sheet 几何：圆角 32px 32px 0 0 / .38s 上滑）。
          表单 UI 与交互不变：下划线纸感版式、品牌/标签候选、保存/取消口径全保留；
@@ -1200,8 +1412,32 @@ function onScrollToLower() { void loadMore(); }
 .library-scroll { flex: 1 1 auto; min-height: 0; }
 .library-body { padding-bottom: 186rpx; }
 
+/* ── 顶部大字 Tab：我的 ｜ 心愿袋（替代原标题「收藏架」）──
+   衬线大字与旧标题同规格；未选中暖灰、选中墨黑 + 品牌红下划线（2026-09-29 应用户要求恢复）；
+   心愿袋带计数角标 */
+.library-tabs { display: flex; align-items: flex-end; gap: 20rpx; }
+.library-tab { position: relative; min-height: 0; margin: 0; padding: 0 4rpx 14rpx; border: 0; background: transparent; color: #b3afa8; font-family: Iowan Old Style, Baskerville, "Times New Roman", "Songti SC", serif; font-size: 48rpx; font-weight: 700; line-height: 1; }
+.library-tab.is-on { color: #141414; }
+.library-tab.is-on::after { content: ""; position: absolute; left: 50%; top: auto; bottom: 0; transform: none; width: 40rpx; height: 6rpx; margin-left: -20rpx; border: 0; border-radius: 3rpx; background: #C50405; }
+/* 设置钮：绝对定位贴胶囊左侧（top/right/宽高由脚本按胶囊矩形注入），
+   只留图标、尺寸与胶囊对齐；玻璃托底材质保留 */
+.header-settings { position: absolute; z-index: 20; display: flex; align-items: center; justify-content: center; margin: 0; padding: 0; border: 2rpx solid rgba(255,255,255,.75); border-radius: 14px; background: rgba(255,255,255,.6); box-shadow: 0 11rpx 25rpx rgba(52,66,92,.08), inset 0 2rpx 0 rgba(255,255,255,.8); }
+.header-settings__icon { display: block; }
+
+/* ── 心愿袋分段 ── */
+.wish-empty { display: flex; flex-direction: column; align-items: center; padding: 110rpx 60rpx 60rpx; }
+/* 搜索无结果态：复用空态排版，收窄留白、不放插画 */
+.wish-empty--narrow { padding: 90rpx 60rpx 40rpx; }
+.wish-empty--narrow .wish-empty__title { margin-top: 0; }
+.wish-empty__art { width: 300rpx; height: 300rpx; opacity: .92; }
+.wish-empty__title { margin-top: 20rpx; color: #141414; font-family: Iowan Old Style, Baskerville, "Times New Roman", "Songti SC", serif; font-size: 34rpx; font-weight: 700; }
+.wish-empty__sub { margin-top: 12rpx; color: #77736d; font-size: 24rpx; }
+.wish-empty__cta { min-height: 0; margin: 40rpx 0 0; padding: 20rpx 56rpx; display: flex; align-items: center; border: 0; border-radius: 44rpx; background: #141414; color: #ffffff; font-size: 26rpx; font-weight: 650; line-height: 1; }
+/* 旧 wish-grid 双列卡片已废弃：心愿袋改用与「我的」宫格同款的 grid-item--wish（2026-09-29） */
+
 /* ── 头部：大标题 + 副文案（切换钮已移到搜索行）。
    padding-top 由脚本按胶囊按钮矩形注入（inline style），标题顶=胶囊顶；整体上移。 ── */
+/* 头部：标题块靠左；设置钮已改为绝对定位贴胶囊左侧（不占文档流） */
 .library-header { display: flex; align-items: center; gap: 16rpx; padding: 0 36rpx 20rpx; }
 /* min-height = 标题(69rpx，行高 1) + 副文案上边距 11rpx + 副文案(28rpx × 1.4)
    ≈ 119rpx：首屏还没有计数、副文案不渲染时，靠它把这一块的高度撑住，
@@ -1329,6 +1565,8 @@ function onScrollToLower() { void loadMore(); }
 /* 2026-09-26 用户要求：袋子图片在卡内居中显示（水平 + 垂直） */
 .grid-item { position: relative; margin: 0; padding: 0; display: flex; align-items: center; justify-content: center; border: 0; background: linear-gradient(160deg, #fbfbfd, #eef0f4); box-shadow: inset 0 0 0 2rpx rgba(255,255,255,.9); overflow: hidden; }
 .grid-item image, .grid-image-placeholder { position: relative; z-index: 1; }
+/* 心愿袋网格卡：与「我的」宫格同尺寸同滚动，仅边框改虚线 + 素底 —— 标识「还未收入」 */
+.grid-item--wish { border: 2rpx dashed rgba(20,20,20,.28); background: rgba(255,255,255,.55); box-shadow: inset 0 0 0 2rpx rgba(255,255,255,.9); }
 .grid-item image { filter: drop-shadow(0 4px 10px rgba(0,0,0,.18)); }
 .grid-image-placeholder { width: 100rpx; height: 168rpx; border-radius: 20rpx; background: rgba(255,255,255,.62); }
 /* 渲染量封顶提示（H5 .grid-overflow-note） */
@@ -1362,30 +1600,14 @@ function onScrollToLower() { void loadMore(); }
    那两块由 services/overlay.ts 的 maskPageChrome() 一起蒙。 */
 .detail-layer { position: fixed; z-index: 950; top: 0; left: 0; right: 0; bottom: 0; }
 
-/* ═══ 编辑半窗（H5 .bottom-sheet）：盖在详情卡之上（960 > 950），
-   卡面用详情卡同款白渐变 —— 表单的「下划线 · 纸感」版式原样平移过来。 ═══ */
-.edit-layer { position: fixed; z-index: 960; top: 0; left: 0; right: 0; bottom: 0; }
-.edit-sheet { position: absolute; left: 0; right: 0; bottom: 0; display: flex; flex-direction: column; max-height: calc(100vh - 90rpx); padding-bottom: env(safe-area-inset-bottom); border-radius: 58rpx 58rpx 0 0; background: #ffffff; box-shadow: 0 -36rpx 127rpx rgba(0,0,0,.24); overflow: hidden; animation: sheet-up .38s cubic-bezier(.2,.75,.22,1) both; }
-@keyframes sheet-up { from { transform: translateY(105%); } to { transform: translateY(0); } }
-/* 顶部拖拽指示条（H5 .sheet-handle：38×4px 圆角） */
-.sheet-handle { flex: 0 0 auto; width: 69rpx; height: 7rpx; margin: 18rpx auto 4rpx; border-radius: 4rpx; background: #c4beb4; }
-/* 高度交给内容，只留一条上限：H5 的 .bottom-sheet 也是「max-height + 内容撑高」。
-   这里原写死 height: calc(100vh - 480rpx)，半窗永远撑到接近整屏，表单填不满时
-   底部空出一大块白（用户 2026-09-28 截图指出）。改成 flex: 0 1 auto 之后：
-   内容少 → 半窗就矮（露出后面的列表），内容多 → 撞上 .edit-sheet 的 max-height
-   被压缩，scroll-view 照旧能滚。min-height: 0 是给 flex 子项解绑默认下限。 */
-.edit-scroll { flex: 0 1 auto; min-height: 0; box-sizing: border-box; padding: 18rpx 44rpx 40rpx; }
-.edit-scroll::-webkit-scrollbar, .edit-scroll ::-webkit-scrollbar { width: 0; height: 0; display: none; }
+/* ═══ 编辑半窗壳层样式已抽到 styles/edit-form.css（标记已有半窗共用）═══ */
 /* 底栏护垫：把「穿透下来的点击」接住（见模板里的注释）。
    z-index 899 是算好的：高于页面内容（宫格 / 展架板体最高 z-index 3），
    低于自定义底栏（900，本来是框架层、页面 z-index 压不过它，所以护垫不会挡住底栏自己的点击），
    也低于详情浮层（950）—— 卡片开着时点这一带要能关卡片，不能被护垫吃掉。 */
 .tab-shield { position: fixed; z-index: 899; left: 0; right: 0; bottom: 0; height: 150rpx; }
-/* 遮罩：对齐 H5 的 .sheet-backdrop —— rgba(17,15,12,.36) + blur(3px)。
-   模糊是用户 2026-09-24 明确要的：不支持 backdrop-filter 的环境会退化成纯压暗，
-   所以底色本身也要够（不要把透明度调低）。
-   底栏与原生导航栏不在这层覆盖范围内（框架层），见 services/overlay.ts。 */
-.detail-backdrop { position: absolute; z-index: 0; top: 0; left: 0; right: 0; bottom: 0; background: rgba(17,15,12,.36); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); animation: detail-fade .3s ease both; }
+/* 遮罩样式已抽到 styles/edit-form.css（与标记已有半窗共用） */
+
 /* 浮层本体：定宽定高 + inset 0 + margin auto 居中（H5 也是这么做的，
    用 left/top + translate 会和 scale 入场动效抢 transform）。 */
 .detail-card { position: absolute; z-index: 1; top: 0; right: 0; bottom: 0; left: 0; width: 633rpx; height: 1019rpx; max-height: calc(100vh - 175rpx); margin: auto; overflow: hidden; border: 2rpx solid rgba(255,255,255,.62); border-radius: 55rpx; background: linear-gradient(160deg, #ffffff 0%, #fafbfd 56%, #f2f4f8 100%); box-shadow: inset 0 2rpx 0 rgba(255,255,255,1), inset 0 -2rpx 0 rgba(255,255,255,.34), inset 0 0 0 2rpx rgba(255,255,255,.9), 0 29rpx 65rpx rgba(52,66,92,.16), 0 5rpx 18rpx rgba(52,66,92,.07), 0 55rpx 145rpx rgba(0,0,0,.26); animation: detail-in .3s cubic-bezier(.2,.78,.22,1) both; }
@@ -1422,6 +1644,8 @@ function onScrollToLower() { void loadMore(); }
    自选与后代两种写法都写上，覆盖不同基础库的实现。 */
 .detail-scroll::-webkit-scrollbar, .detail-scroll ::-webkit-scrollbar { width: 0; height: 0; display: none; }
 
+/* 底部动作区样式已抽到 styles/edit-form.css（标记已有半窗共用） */
+
 /* 顶部大图：H5 .detail-artwork（高 168px、下方 18px、内边距 10px、圆角 20px）。
    H5 这里不铺底色 —— 袋子自带透明通道与下落投影，铺底会把它框成一张「图卡」。 */
 .detail-artwork { display: flex; align-items: center; justify-content: center; height: 306rpx; margin: 0 0 33rpx; padding: 18rpx; box-sizing: border-box; overflow: hidden; border-radius: 36rpx; }
@@ -1450,6 +1674,11 @@ function onScrollToLower() { void loadMore(); }
 .detail-note { display: block; margin-top: 27rpx; padding: 20rpx 24rpx; border-left: 4rpx solid rgba(20,20,20,.14); border-radius: 0 20rpx 20rpx 0; background: rgba(20,20,20,.035); color: #5f5b53; font-size: var(--wc-font-description); line-height: 1.6; white-space: pre-wrap; }
 .detail-loading { display: block; margin-top: 27rpx; color: #77736d; font-size: var(--wc-font-footnote); line-height: 1.4; }
 
+/* 详情卡右上角快捷钮：与首页大卡 hero-quick 同款玻璃圆钮（无投影） */
+.detail-quick { position: absolute; z-index: 9; top: 22rpx; right: 22rpx; display: flex; gap: 14rpx; }
+.detail-quick__btn { width: 60rpx; height: 60rpx; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: rgba(255,255,255,.88); transition: transform .18s ease; }
+.detail-quick__btn.is-pressed { transform: scale(.88); }
+.detail-quick__icon { width: 32rpx; height: 32rpx; }
 /* 底部动作区（H5 .detail-actions：12px 24px 20px、gap 10px；按钮高 48px、圆角 24px）。
    编辑是次要按钮（描边、固定 96px 宽），完成是主按钮（实色、占满剩余宽度）。 */
 .detail-actions { position: relative; z-index: 4; display: flex; gap: 18rpx; margin: 22rpx 44rpx 36rpx; }
@@ -1485,46 +1714,10 @@ function onScrollToLower() { void loadMore(); }
 .ef-readout__v { display: block; margin: 0 0 9rpx; color: #3a3630; font-size: var(--wc-font-description); font-weight: 600; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ef-readout__k { display: block; color: #a8a49d; font-size: var(--wc-font-footnote); font-weight: 700; line-height: 1.2; letter-spacing: .8rpx; white-space: nowrap; }
 
-/* ── ② 可编辑行：左标签 + 右值，值下方一条底线 ── */
-.ef-row { display: flex; align-items: flex-end; gap: 22rpx; padding-top: 25rpx; }
-.ef-key { flex: 0 0 135rpx; padding-bottom: 16rpx; color: #77736d; font-size: var(--wc-font-footnote); font-weight: 700; line-height: 1.2; letter-spacing: .8rpx; white-space: nowrap; }
-.ef-val { flex: 1 1 auto; min-width: 0; }
-.ef-input { box-sizing: border-box; display: block; width: 100%; height: 64rpx; padding: 0 0 16rpx; border-bottom: 2rpx solid rgba(20,20,20,.13); color: #141414; font-size: var(--wc-font-description); line-height: 48rpx; transition: border-color .18s ease; }
-/* 聚焦下划线用 H5 的 --focus（品牌红）。⚠ 小程序端 input / textarea 的 :focus
-   不可靠，所以这里是靠 focus/blur 切的 is-focus 类，不是伪类。 */
-.ef-input.is-focus { border-bottom-color: #C50405; }
-/* ── 候选下拉（对齐 H5 .ef-suggest：白底圆角卡 + 命中红字 + 「已有 N 件」+ 靛蓝新建行）──
-   面板做流内块而非绝对定位浮层：scroll-view 会裁掉浮层，流内块永远完整可见。 */
-.ef-suggest { margin: 13rpx 0 0; padding: 9rpx; border: 1rpx solid rgba(20,20,20,.09); border-radius: 22rpx; background: #ffffff; box-shadow: 0 15rpx 36rpx rgba(52,66,92,.10); }
-.ef-suggest__hint { display: block; padding: 5rpx 13rpx 9rpx; color: #b0aca5; font-size: 16rpx; font-weight: 700; letter-spacing: .9rpx; }
-.ef-suggest__item { display: flex; align-items: center; gap: 13rpx; padding: 15rpx; border-radius: 15rpx; color: #45413a; font-size: 23rpx; line-height: 1.4; }
-.ef-suggest__item.is-hover { background: rgba(197,4,5,.08); }
-/* 命中高亮：只有真正命中的那几个字染红加粗（#C50405 = H5 的 --focus） */
-.ef-suggest__label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.is-hit { color: #C50405; font-weight: 700; }
-.ef-suggest__count { flex: 0 0 auto; color: #b0aca5; font-size: 18rpx; }
-.ef-suggest__new { color: #2A4DA6; }
-
-/* ── 标签：已选是一排带 × 的胶囊，后面跟输入框（H5 的方案 A） ── */
-.ef-row--tags { align-items: flex-start; }
-.ef-row--tags .ef-key { padding-top: 9rpx; padding-bottom: 0; }
-.ef-tagbox { display: flex; flex-wrap: wrap; align-items: center; gap: 11rpx; padding: 0 0 16rpx; border-bottom: 2rpx solid rgba(20,20,20,.13); transition: border-color .18s ease; }
-.ef-tagbox.is-focus { border-bottom-color: #C50405; }
-.ef-chip { display: flex; align-items: center; gap: 9rpx; padding: 9rpx 16rpx 9rpx 20rpx; border-radius: 20rpx; background: rgba(20,20,20,.07); color: #45413a; font-size: var(--wc-font-footnote); font-weight: 600; line-height: 1.2; white-space: nowrap; }
-/* 胶囊里的 × 是「一块 26rpx 的圆 + 居中白字」，不是字符本身 —— 直接写 × 会大小不一 */
-.ef-chip__x { flex: 0 0 26rpx; width: 26rpx; height: 26rpx; border-radius: 50%; background: rgba(20,20,20,.17); color: #ffffff; font-size: 20rpx; line-height: 26rpx; text-align: center; }
-.ef-tagbox__input { flex: 1 1 120rpx; min-width: 120rpx; height: 52rpx; padding: 0; color: #141414; font-size: var(--wc-font-footnote); line-height: 52rpx; }
-
-/* ── ③ 备注：末行不加横线，改成左侧竖线 + 极浅底 ── */
-.ef-row--note { align-items: flex-start; }
-.ef-row--note .ef-key { padding-top: 11rpx; padding-bottom: 0; }
-.ef-area { box-sizing: border-box; display: block; width: 100%; height: 120rpx; padding: 15rpx 0 15rpx 20rpx; border-left: 4rpx solid rgba(20,20,20,.16); border-radius: 0 16rpx 16rpx 0; background: rgba(20,20,20,.032); color: #141414; font-size: var(--wc-font-footnote); line-height: 1.6; transition: border-color .18s ease; }
-.ef-area.is-focus { border-left-color: #C50405; }
+/* ── ② 可编辑行 / 候选下拉 / 半窗壳层样式已抽到 styles/edit-form.css
+   （编辑半窗与拍照后填写页、标记已有半窗共享），此处不再重复 ── */
 </style>
 
-<!-- 占位文字的颜色必须走「不带 scoped 的块」：placeholder-class 命中的是原生控件
-     内部渲染出来的占位节点，它身上没有本组件的 data-v 标记，
-     写在 <style scoped> 里的 .ef-placeholder 会带属性选择器，匹配不上。 -->
 <style>
-.ef-placeholder { color: #b3afa8; }
+@import '../../styles/edit-form.css';
 </style>

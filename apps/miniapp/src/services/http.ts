@@ -96,6 +96,36 @@ export async function authorizedHeaders() {
   return { Authorization: `Bearer ${tokens.accessToken}` };
 }
 
+/* ══════════════════════════════════════════════════════════════════
+   ⚠️ 后端尚未实现（2026-09-29）：所有接口由 mock-data.ts 内存模拟。
+   前端联调/演示一律用 Mock 构建：pnpm build:miniapp:mock
+   （VITE_USE_MOCK=1 时 api() 直接走 mockRequest，不触网）。
+   不要跑全仓 pnpm build —— 会先构建 apps/api、apps/worker 等后端包而失败。
+
+   后端同事需实现的接口清单（路径与响应结构以 contracts 包 + mock-data.ts 为准）：
+   · POST   /auth/wechat/login        微信 code 登录
+   · POST   /auth/refresh             刷新 token
+   · POST   /auth/logout              登出
+   · GET    /account                  账户概览（藏品数/展架数/存储用量）
+   · GET    /shelves                  展架列表
+   · POST   /shelves                  新建展架
+   · PUT    /shelves/:id              改展架
+   · DELETE /shelves/:id              删展架
+   · PUT    /shelves/reorder          展架排序
+   · GET    /feed                     官方精选纸袋上新（发现页）
+   · GET    /collectibles             我的收藏列表
+   · POST   /collectibles             新建收藏
+   · GET    /collectibles/:id         收藏详情
+   · PUT    /collectibles/:id         更新收藏
+   · DELETE /collectibles/:id         删除收藏
+   · PUT    /collectibles/:id/crop    更新抠图裁剪
+   · GET    /wishlist                 心愿袋列表
+   · POST   /wishlist/:id             加入心愿袋
+   · DELETE /wishlist/:id             移出心愿袋
+   · POST   /uploads/policy           取上传凭证
+   · POST   /uploads/complete         完成上传
+   后端就绪后：前端代码零改动，去掉 mock 构建开关即切真实接口。
+   ══════════════════════════════════════════════════════════════════ */
 export async function api<T>(path: string, options: ApiRequestOptions = {}, didRetry = false): Promise<T> {
   /* Mock 模式：全部请求走内存假数据，不触网 */
   if (USE_MOCK) return mockRequest<T>(path, options);

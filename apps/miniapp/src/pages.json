@@ -10,7 +10,7 @@
         { "path": "pages/add/index", "style": { "navigationStyle": "custom", "disableScroll": true } },
         { "path": "pages/crop/index", "style": { "disableScroll": true } },
         { "path": "pages/processing/index", "style": { "navigationBarTitleText": "自动抠图" } },
-        { "path": "pages/metadata/index", "style": { "navigationBarTitleText": "完善纸袋信息" } }
+        { "path": "pages/metadata/index", "style": { "navigationStyle": "custom" } }
       ]
     },
     {
