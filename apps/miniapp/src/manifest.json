@@ -13,11 +13,6 @@
       "minified": true,
       "postcss": true
     },
-    "permission": {
-      "scope.camera": {
-        "desc": "用于拍摄需要整理到私人展示架中的收藏品"
-      }
-    },
     "usingComponents": true
   },
   "vueVersion": "3"
