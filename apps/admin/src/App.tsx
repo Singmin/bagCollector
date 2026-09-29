@@ -5,7 +5,9 @@ import {
   Button,
   Card,
   Col,
+  Drawer,
   Form,
+  Grid,
   Image,
   Input,
   InputNumber,
@@ -28,6 +30,7 @@ import {
   DashboardOutlined,
   FileImageOutlined,
   LogoutOutlined,
+  MenuFoldOutlined,
   PlusOutlined,
   ReloadOutlined,
   ShoppingOutlined,
@@ -86,6 +89,12 @@ interface Brand {
 }
 
 const TOKEN_KEY = 'bagcollect:admin-token';
+
+/** 是否为手机端（< 768px），用于切换导航形态与控件宽度。 */
+function useIsMobile() {
+  const screens = Grid.useBreakpoint();
+  return !screens.md;
+}
 
 async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = sessionStorage.getItem(TOKEN_KEY);
@@ -159,6 +168,7 @@ interface BrandFormValues {
 
 export function App() {
   const { message, modal } = AntdApp.useApp();
+  const isMobile = useIsMobile();
   const [token, setToken] = useState(() => sessionStorage.getItem(TOKEN_KEY));
   const [overview, setOverview] = useState<Overview | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -170,6 +180,7 @@ export function App() {
   const [search, setSearch] = useState('');
   const [editing, setEditing] = useState<OfficialBag | 'new' | null>(null);
   const [collapsed, setCollapsed] = useState(false);
+  const [navOpen, setNavOpen] = useState(false);
   const [brands, setBrands] = useState<Brand[]>([]);
   const [editingBrand, setEditingBrand] = useState<Brand | 'new' | null>(null);
 
@@ -303,7 +314,7 @@ export function App() {
   if (!token) {
     return (
       <div className="login-shell">
-        <Card className="login-card" title="BagCollect 管理后台" style={{ width: 360 }}>
+        <Card className="login-card" title="BagCollect 管理后台">
           <Typography.Paragraph type="secondary">管理官方袋子库、云端收藏与图片处理任务。</Typography.Paragraph>
           {error && <Alert type="error" showIcon message={error} style={{ marginBottom: 16 }} />}
           <Form<{ username: string; password: string }> layout="vertical" onFinish={(values) => void login(values)}>
@@ -342,38 +353,73 @@ export function App() {
     bags: '官方袋子库'
   };
 
+  const navMenu = (
+    <Menu
+      mode="inline"
+      selectedKeys={[page]}
+      items={menuItems}
+      onClick={({ key }) => {
+        setPage(key as PageKey);
+        setNavOpen(false);
+      }}
+    />
+  );
+
+  const refresh = () => {
+    if (page === 'overview') void load();
+    else if (page === 'brands') void loadBrands();
+    else void loadBags();
+  };
+
   return (
     <Layout style={{ minHeight: '100vh' }}>
-      <Layout.Sider collapsible collapsed={collapsed} onCollapse={setCollapsed} theme="light">
-        <div className="sider-brand">
-          <FileImageOutlined />
-          {!collapsed && <span>BagCollect</span>}
-        </div>
-        <Menu
-          mode="inline"
-          selectedKeys={[page]}
-          items={menuItems}
-          onClick={({ key }) => setPage(key as PageKey)}
-        />
-      </Layout.Sider>
+      {isMobile ? (
+        <Drawer
+          placement="left"
+          open={navOpen}
+          onClose={() => setNavOpen(false)}
+          width={220}
+          styles={{ body: { padding: 0 } }}
+          title={
+            <span className="sider-brand" style={{ paddingLeft: 0 }}>
+              <FileImageOutlined />
+              <span>BagCollect</span>
+            </span>
+          }
+        >
+          {navMenu}
+        </Drawer>
+      ) : (
+        <Layout.Sider collapsible collapsed={collapsed} onCollapse={setCollapsed} theme="light">
+          <div className="sider-brand">
+            <FileImageOutlined />
+            {!collapsed && <span>BagCollect</span>}
+          </div>
+          {navMenu}
+        </Layout.Sider>
+      )}
       <Layout>
         <Layout.Header className="app-header">
-          <Typography.Title level={4} style={{ margin: 0 }}>
+          {isMobile && (
+            <Button
+              type="text"
+              icon={<MenuFoldOutlined />}
+              onClick={() => setNavOpen(true)}
+              aria-label="打开导航"
+            />
+          )}
+          <Typography.Title level={4} style={{ margin: 0 }} ellipsis>
             {pageTitles[page]}
           </Typography.Title>
           <Space>
             <Button
               icon={<ReloadOutlined />}
               loading={loading}
-              onClick={() => {
-                if (page === 'overview') void load();
-                else if (page === 'brands') void loadBrands();
-                else void loadBags();
-              }}
+              onClick={refresh}
             >
-              刷新
+              {!isMobile && '刷新'}
             </Button>
-            <Button icon={<LogoutOutlined />} onClick={logout}>退出</Button>
+            <Button icon={<LogoutOutlined />} onClick={logout}>{!isMobile && '退出'}</Button>
           </Space>
         </Layout.Header>
         <Layout.Content className="app-content">
@@ -384,9 +430,9 @@ export function App() {
           ) : page === 'brands' ? (
             <>
               <Card style={{ marginBottom: 16 }}>
-                <Space wrap>
+                <Space wrap direction={isMobile ? 'vertical' : 'horizontal'} style={{ width: isMobile ? '100%' : undefined }}>
                   <Typography.Text type="secondary">共 {brands.length} 个品牌</Typography.Text>
-                  <Button type="primary" icon={<PlusOutlined />} onClick={() => setEditingBrand('new')}>
+                  <Button type="primary" icon={<PlusOutlined />} block={isMobile} onClick={() => setEditingBrand('new')}>
                     新增品牌
                   </Button>
                 </Space>
@@ -396,6 +442,7 @@ export function App() {
                   rowKey="id"
                   dataSource={brands}
                   pagination={false}
+                  scroll={{ x: 640 }}
                   columns={[
                     { title: '品牌名称', dataIndex: 'name', key: 'name', render: (name: string) => <Typography.Text strong>{name}</Typography.Text> },
                     { title: '袋子数量', dataIndex: 'bagCount', key: 'bagCount', width: 100 },
@@ -435,11 +482,11 @@ export function App() {
           ) : (
             <>
               <Card style={{ marginBottom: 16 }}>
-                <Space wrap>
+                <Space wrap direction={isMobile ? 'vertical' : 'horizontal'} style={{ width: isMobile ? '100%' : undefined }}>
                   <Select<'' | OfficialBag['status']>
                     value={statusFilter}
                     onChange={setStatusFilter}
-                    style={{ width: 140 }}
+                    style={{ width: isMobile ? '100%' : 140 }}
                     options={[
                       { value: '', label: '全部状态' },
                       { value: 'DRAFT', label: '草稿' },
@@ -450,13 +497,13 @@ export function App() {
                   <Input.Search
                     placeholder="搜索名称 / 品牌 / 标签"
                     allowClear
-                    style={{ width: 260 }}
+                    style={{ width: isMobile ? '100%' : 260 }}
                     onSearch={setSearch}
                     onChange={(event) => {
                       if (!event.target.value) setSearch('');
                     }}
                   />
-                  <Button type="primary" icon={<PlusOutlined />} onClick={() => setEditing('new')}>
+                  <Button type="primary" icon={<PlusOutlined />} block={isMobile} onClick={() => setEditing('new')}>
                     新增袋子
                   </Button>
                 </Space>
@@ -612,6 +659,7 @@ function OverviewPage({ overview, jobs, loading }: { overview: Overview | null; 
           dataSource={jobs}
           loading={loading}
           pagination={{ pageSize: 10, hideOnSinglePage: true }}
+          scroll={{ x: 640 }}
           columns={[
             {
               title: '收藏',
@@ -660,6 +708,7 @@ function BagEditor({
   onBrandsChanged: () => void;
 }) {
   const { message } = AntdApp.useApp();
+  const isMobile = useIsMobile();
   const [form] = Form.useForm<BagFormValues>();
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -749,7 +798,7 @@ function BagEditor({
       title={bag ? `编辑：${bag.name}` : '新增袋子'}
       open={open}
       onCancel={onClose}
-      width={560}
+      width={isMobile ? '100%' : 560}
       footer={null}
       destroyOnHidden
     >
@@ -873,6 +922,7 @@ function BrandEditor({
   onDone: () => void;
 }) {
   const { message } = AntdApp.useApp();
+  const isMobile = useIsMobile();
   const [saving, setSaving] = useState(false);
 
   async function save(values: BrandFormValues) {
@@ -901,6 +951,7 @@ function BrandEditor({
       title={brand ? `编辑品牌：${brand.name}` : '新增品牌'}
       open={open}
       onCancel={onClose}
+      width={isMobile ? '100%' : 520}
       footer={null}
       destroyOnHidden
     >

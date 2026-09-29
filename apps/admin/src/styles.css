@@ -9,7 +9,13 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 16px;
   background: linear-gradient(160deg, #2b2a27 0%, #4a463f 100%);
+}
+
+.login-card {
+  width: 360px;
+  max-width: 100%;
 }
 
 .sider-brand {
@@ -29,11 +35,18 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   background: #fff;
   padding: 0 24px;
   border-bottom: 1px solid #f0f0f0;
   height: 56px;
   line-height: 56px;
+}
+
+/* 标题占据剩余空间，手机端过长时省略。 */
+.app-header .ant-typography {
+  flex: 1;
+  min-width: 0;
 }
 
 .app-content {
@@ -48,4 +61,16 @@ body {
 
 .brand-tag {
   cursor: pointer;
+}
+
+/* 手机端适配：< 768px 时缩小留白，表格横向滚动。 */
+@media (max-width: 767px) {
+  .app-header {
+    padding: 0 12px;
+    gap: 8px;
+  }
+
+  .app-content {
+    padding: 12px;
+  }
 }
