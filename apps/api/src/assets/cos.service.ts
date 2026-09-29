@@ -42,6 +42,31 @@ export class CosService {
     await writeFile(path, body);
   }
 
+  /**
+   * 服务端直写对象，供管理后台的官方袋子原图上传使用（管理员不经 STS 直传 COS，
+   * 统一走 API 服务器中转，本地/COS 两种驱动行为一致）。
+   */
+  async putObject(key: string, body: Buffer, contentType: string) {
+    if (this.isLocal()) {
+      await this.putLocalObject(key, body);
+      return;
+    }
+    await new Promise<void>((resolve, reject) => {
+      this.client.putObject(
+        {
+          Bucket: this.config.COS_BUCKET,
+          Region: this.config.COS_REGION,
+          Key: key,
+          Body: body,
+          ContentType: contentType,
+          ContentLength: body.length,
+          ServerSideEncryption: 'AES256'
+        },
+        (error) => (error ? reject(error) : resolve())
+      );
+    });
+  }
+
   private localToken(key: string, expires: number) {
     const payload = Buffer.from(JSON.stringify({ key, expires })).toString('base64url');
     const signature = createHmac('sha256', this.config.JWT_SECRET).update(payload).digest('base64url');

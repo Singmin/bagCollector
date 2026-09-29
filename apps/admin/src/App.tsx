@@ -1,4 +1,39 @@
-import { FormEvent, useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import {
+  App as AntdApp,
+  Alert,
+  Button,
+  Card,
+  Col,
+  Form,
+  Image,
+  Input,
+  InputNumber,
+  Layout,
+  Menu,
+  Modal,
+  Popconfirm,
+  Row,
+  Select,
+  Space,
+  Statistic,
+  Switch,
+  Table,
+  Tag,
+  Typography,
+  Upload
+} from 'antd';
+import type { UploadFile } from 'antd';
+import {
+  DashboardOutlined,
+  FileImageOutlined,
+  LogoutOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+  ShoppingOutlined,
+  TagsOutlined,
+  UploadOutlined
+} from '@ant-design/icons';
 
 interface Overview {
   users: number;
@@ -17,6 +52,39 @@ interface Job {
   collectible: { name: string };
 }
 
+interface OfficialBag {
+  id: string;
+  name: string;
+  brandId?: string;
+  brand?: string;
+  notes: string;
+  tags: string[];
+  matting: boolean;
+  status: 'DRAFT' | 'PUBLISHED' | 'OFFLINE';
+  processStatus: 'PENDING' | 'PROCESSING' | 'READY' | 'FAILED';
+  processError?: string;
+  claimedCount: number;
+  sortOrder: number;
+  thumbnailUrl?: string;
+  displayImageUrl?: string;
+  createdAt: string;
+}
+
+interface OfficialBagPage {
+  items: OfficialBag[];
+  nextCursor: string | null;
+  totalCount: number;
+}
+
+interface Brand {
+  id: string;
+  name: string;
+  sortOrder: number;
+  bagCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 const TOKEN_KEY = 'bagcollect:admin-token';
 
 async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -24,7 +92,7 @@ async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`/api/admin${path}`, {
     ...options,
     headers: {
-      'Content-Type': 'application/json',
+      ...(options.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...options.headers
     }
@@ -40,14 +108,70 @@ function formatBytes(bytes: number) {
   return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
 }
 
+const statusLabels: Record<OfficialBag['status'], string> = {
+  DRAFT: '草稿',
+  PUBLISHED: '已发布',
+  OFFLINE: '已下架'
+};
+
+const statusColors: Record<OfficialBag['status'], string> = {
+  DRAFT: 'default',
+  PUBLISHED: 'green',
+  OFFLINE: 'volcano'
+};
+
+const processLabels: Record<OfficialBag['processStatus'], string> = {
+  PENDING: '待上传',
+  PROCESSING: '处理中',
+  READY: '图片就绪',
+  FAILED: '处理失败'
+};
+
+const processColors: Record<OfficialBag['processStatus'], string> = {
+  PENDING: 'default',
+  PROCESSING: 'processing',
+  READY: 'green',
+  FAILED: 'red'
+};
+
+const jobStatusColors: Record<string, string> = {
+  QUEUED: 'default',
+  RUNNING: 'processing',
+  SUCCEEDED: 'green',
+  FAILED: 'red'
+};
+
+type PageKey = 'overview' | 'bags' | 'brands';
+
+interface BagFormValues {
+  name: string;
+  brandId?: string | null;
+  notes?: string;
+  tags?: string;
+  matting: boolean;
+  sortOrder: number;
+}
+
+interface BrandFormValues {
+  name: string;
+  sortOrder: number;
+}
+
 export function App() {
+  const { message, modal } = AntdApp.useApp();
   const [token, setToken] = useState(() => sessionStorage.getItem(TOKEN_KEY));
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
   const [overview, setOverview] = useState<Overview | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [page, setPage] = useState<PageKey>('overview');
+  const [bags, setBags] = useState<OfficialBag[]>([]);
+  const [statusFilter, setStatusFilter] = useState<'' | OfficialBag['status']>('');
+  const [search, setSearch] = useState('');
+  const [editing, setEditing] = useState<OfficialBag | 'new' | null>(null);
+  const [collapsed, setCollapsed] = useState(false);
+  const [brands, setBrands] = useState<Brand[]>([]);
+  const [editingBrand, setEditingBrand] = useState<Brand | 'new' | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -66,20 +190,56 @@ export function App() {
     }
   }, []);
 
+  const loadBags = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const params = new URLSearchParams();
+      if (statusFilter) params.set('status', statusFilter);
+      if (search.trim()) params.set('search', search.trim());
+      params.set('limit', '100');
+      const result = await api<OfficialBagPage>(`/official-bags?${params.toString()}`);
+      setBags(result.items);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : '加载失败');
+    } finally {
+      setLoading(false);
+    }
+  }, [statusFilter, search]);
+
+  const loadBrands = useCallback(async () => {
+    try {
+      setBrands(await api<Brand[]>('/brands'));
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : '品牌加载失败');
+    }
+  }, []);
+
   useEffect(() => {
     if (!token) return;
-    const timer = window.setTimeout(() => void load(), 0);
+    const timer = window.setTimeout(() => {
+      if (page === 'overview') void load();
+      else if (page === 'bags') void loadBags();
+      else void loadBrands();
+    }, 0);
     return () => window.clearTimeout(timer);
-  }, [token, load]);
+  }, [token, page, load, loadBags, loadBrands]);
 
-  async function login(event: FormEvent) {
-    event.preventDefault();
+  // 有图片在后台处理时轮询刷新，让「处理中 → 图片就绪」自动出现。
+  useEffect(() => {
+    if (!token || page !== 'bags') return;
+    if (!bags.some((bag) => bag.processStatus === 'PROCESSING')) return;
+    const timer = window.setInterval(() => void loadBags(), 3_000);
+    return () => window.clearInterval(timer);
+  }, [token, page, bags, loadBags]);
+
+  async function login(values: { username: string; password: string }) {
     setLoading(true);
     setError('');
     try {
       const result = await api<{ accessToken: string }>('/login', {
         method: 'POST',
-        body: JSON.stringify({ username, password })
+        body: JSON.stringify(values)
       });
       sessionStorage.setItem(TOKEN_KEY, result.accessToken);
       setToken(result.accessToken);
@@ -90,56 +250,684 @@ export function App() {
     }
   }
 
+  async function setBagStatus(bag: OfficialBag, status: OfficialBag['status']) {
+    setError('');
+    try {
+      await api(`/official-bags/${bag.id}`, { method: 'PATCH', body: JSON.stringify({ status }) });
+      message.success(status === 'PUBLISHED' ? '已发布，发现页可见' : '已下架');
+      await loadBags();
+    } catch (requestError) {
+      message.error(requestError instanceof Error ? requestError.message : '操作失败');
+    }
+  }
+
+  async function removeBag(bag: OfficialBag) {
+    setError('');
+    try {
+      await api(`/official-bags/${bag.id}`, { method: 'DELETE' });
+      message.success(`已删除「${bag.name}」`);
+      await loadBags();
+    } catch (requestError) {
+      message.error(requestError instanceof Error ? requestError.message : '删除失败');
+    }
+  }
+
+  async function removeBrand(brand: Brand) {
+    setError('');
+    try {
+      await api(`/brands/${brand.id}`, { method: 'DELETE' });
+      message.success(`已删除品牌「${brand.name}」`);
+      await loadBrands();
+    } catch (requestError) {
+      message.error(requestError instanceof Error ? requestError.message : '删除失败');
+    }
+  }
+
+  /** 从品牌页跳到袋子列表并按品牌名过滤。 */
+  function viewBagsOfBrand(brand: Brand) {
+    setSearch(brand.name);
+    setStatusFilter('');
+    setPage('bags');
+  }
+
+  function logout() {
+    modal.confirm({
+      title: '退出登录？',
+      onOk() {
+        sessionStorage.removeItem(TOKEN_KEY);
+        setToken(null);
+      }
+    });
+  }
+
   if (!token) {
     return (
-      <main className="login-shell">
-        <form className="login-card" onSubmit={login}>
-          <p className="eyebrow">PRIVATE CABINET · ADMIN</p>
-          <h1>BagCollect</h1>
-          <p>管理云端收藏与图片处理任务。</p>
-          <label>管理员账号<input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" /></label>
-          <label>密码<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" /></label>
-          {error && <div className="error">{error}</div>}
-          <button disabled={loading}>{loading ? '登录中…' : '登录'}</button>
-        </form>
-      </main>
+      <div className="login-shell">
+        <Card className="login-card" title="BagCollect 管理后台" style={{ width: 360 }}>
+          <Typography.Paragraph type="secondary">管理官方袋子库、云端收藏与图片处理任务。</Typography.Paragraph>
+          {error && <Alert type="error" showIcon message={error} style={{ marginBottom: 16 }} />}
+          <Form<{ username: string; password: string }> layout="vertical" onFinish={(values) => void login(values)}>
+            <Form.Item
+              name="username"
+              label="管理员账号"
+              rules={[{ required: true, message: '请输入账号' }]}
+            >
+              <Input autoComplete="username" placeholder="admin" />
+            </Form.Item>
+            <Form.Item
+              name="password"
+              label="密码"
+              rules={[{ required: true, message: '请输入密码' }]}
+            >
+              <Input.Password autoComplete="current-password" />
+            </Form.Item>
+            <Button type="primary" htmlType="submit" block loading={loading}>
+              登录
+            </Button>
+          </Form>
+        </Card>
+      </div>
     );
   }
 
+  const menuItems = [
+    { key: 'overview', icon: <DashboardOutlined />, label: '运行概览' },
+    { key: 'brands', icon: <TagsOutlined />, label: '品牌管理' },
+    { key: 'bags', icon: <ShoppingOutlined />, label: '官方袋子库' }
+  ];
+
+  const pageTitles: Record<PageKey, string> = {
+    overview: '运行概览',
+    brands: '品牌管理',
+    bags: '官方袋子库'
+  };
+
   return (
-    <main className="dashboard">
-      <header>
-        <div><p className="eyebrow">BAGCOLLECT OPERATIONS</p><h1>运行概览</h1></div>
-        <div className="actions">
-          <button className="secondary" onClick={() => void load()} disabled={loading}>刷新</button>
-          <button className="secondary" onClick={() => { sessionStorage.removeItem(TOKEN_KEY); setToken(null); }}>退出</button>
+    <Layout style={{ minHeight: '100vh' }}>
+      <Layout.Sider collapsible collapsed={collapsed} onCollapse={setCollapsed} theme="light">
+        <div className="sider-brand">
+          <FileImageOutlined />
+          {!collapsed && <span>BagCollect</span>}
         </div>
-      </header>
-      {error && <div className="error">{error}</div>}
-      <section className="stats">
-        <article><span>用户</span><strong>{overview?.users ?? '—'}</strong></article>
-        <article><span>收藏</span><strong>{overview?.collectibles ?? '—'}</strong></article>
-        <article><span>失败任务</span><strong>{overview?.failedJobs ?? '—'}</strong></article>
-        <article><span>对象存储</span><strong>{overview ? formatBytes(overview.storageBytes) : '—'}</strong></article>
-      </section>
-      <section className="panel">
-        <div className="panel-heading"><div><p className="eyebrow">PROCESSING QUEUE</p><h2>最近图片任务</h2></div><span>{jobs.length} 条</span></div>
-        <div className="table-wrap">
-          <table>
-            <thead><tr><th>收藏</th><th>任务</th><th>状态</th><th>尝试</th><th>时间</th></tr></thead>
-            <tbody>
-              {jobs.map((job) => (
-                <tr key={job.id}>
-                  <td><strong>{job.collectible.name}</strong>{job.errorMessage && <small>{job.errorMessage}</small>}</td>
-                  <td>{job.type}</td><td><span className={`status status--${job.status.toLowerCase()}`}>{job.status}</span></td>
-                  <td>{job.attemptCount}</td><td>{new Date(job.createdAt).toLocaleString('zh-CN')}</td>
-                </tr>
-              ))}
-              {!jobs.length && <tr><td colSpan={5} className="empty">暂无任务</td></tr>}
-            </tbody>
-          </table>
-        </div>
-      </section>
-    </main>
+        <Menu
+          mode="inline"
+          selectedKeys={[page]}
+          items={menuItems}
+          onClick={({ key }) => setPage(key as PageKey)}
+        />
+      </Layout.Sider>
+      <Layout>
+        <Layout.Header className="app-header">
+          <Typography.Title level={4} style={{ margin: 0 }}>
+            {pageTitles[page]}
+          </Typography.Title>
+          <Space>
+            <Button
+              icon={<ReloadOutlined />}
+              loading={loading}
+              onClick={() => {
+                if (page === 'overview') void load();
+                else if (page === 'brands') void loadBrands();
+                else void loadBags();
+              }}
+            >
+              刷新
+            </Button>
+            <Button icon={<LogoutOutlined />} onClick={logout}>退出</Button>
+          </Space>
+        </Layout.Header>
+        <Layout.Content className="app-content">
+          {error && <Alert type="error" showIcon message={error} style={{ marginBottom: 16 }} />}
+
+          {page === 'overview' ? (
+            <OverviewPage overview={overview} jobs={jobs} loading={loading} />
+          ) : page === 'brands' ? (
+            <>
+              <Card style={{ marginBottom: 16 }}>
+                <Space wrap>
+                  <Typography.Text type="secondary">共 {brands.length} 个品牌</Typography.Text>
+                  <Button type="primary" icon={<PlusOutlined />} onClick={() => setEditingBrand('new')}>
+                    新增品牌
+                  </Button>
+                </Space>
+              </Card>
+              <Card title="品牌列表">
+                <Table<Brand>
+                  rowKey="id"
+                  dataSource={brands}
+                  pagination={false}
+                  columns={[
+                    { title: '品牌名称', dataIndex: 'name', key: 'name', render: (name: string) => <Typography.Text strong>{name}</Typography.Text> },
+                    { title: '袋子数量', dataIndex: 'bagCount', key: 'bagCount', width: 100 },
+                    { title: '排序', dataIndex: 'sortOrder', key: 'sortOrder', width: 100 },
+                    {
+                      title: '操作',
+                      key: 'actions',
+                      width: 280,
+                      render: (_, brand) => (
+                        <Space size={4} wrap>
+                          <Button size="small" onClick={() => setEditingBrand(brand)}>编辑</Button>
+                          <Button size="small" onClick={() => viewBagsOfBrand(brand)}>查看袋子</Button>
+                          <Popconfirm
+                            title={`确定删除品牌「${brand.name}」？`}
+                            description={brand.bagCount > 0 ? '该品牌下还有袋子，无法删除' : undefined}
+                            disabled={brand.bagCount > 0}
+                            onConfirm={() => void removeBrand(brand)}
+                          >
+                            <Button size="small" danger disabled={brand.bagCount > 0}>删除</Button>
+                          </Popconfirm>
+                        </Space>
+                      )
+                    }
+                  ]}
+                />
+              </Card>
+              <BrandEditor
+                brand={editingBrand === 'new' ? null : editingBrand}
+                open={editingBrand !== null}
+                onClose={() => setEditingBrand(null)}
+                onDone={() => {
+                  setEditingBrand(null);
+                  void loadBrands();
+                }}
+              />
+            </>
+          ) : (
+            <>
+              <Card style={{ marginBottom: 16 }}>
+                <Space wrap>
+                  <Select<'' | OfficialBag['status']>
+                    value={statusFilter}
+                    onChange={setStatusFilter}
+                    style={{ width: 140 }}
+                    options={[
+                      { value: '', label: '全部状态' },
+                      { value: 'DRAFT', label: '草稿' },
+                      { value: 'PUBLISHED', label: '已发布' },
+                      { value: 'OFFLINE', label: '已下架' }
+                    ]}
+                  />
+                  <Input.Search
+                    placeholder="搜索名称 / 品牌 / 标签"
+                    allowClear
+                    style={{ width: 260 }}
+                    onSearch={setSearch}
+                    onChange={(event) => {
+                      if (!event.target.value) setSearch('');
+                    }}
+                  />
+                  <Button type="primary" icon={<PlusOutlined />} onClick={() => setEditing('new')}>
+                    新增袋子
+                  </Button>
+                </Space>
+              </Card>
+
+              <Card title={`袋子列表（${bags.length} 条）`}>
+                <Table<OfficialBag>
+                  rowKey="id"
+                  dataSource={bags}
+                  loading={loading}
+                  pagination={false}
+                  scroll={{ x: 960 }}
+                  columns={[
+                    {
+                      title: '图片',
+                      key: 'image',
+                      width: 84,
+                      render: (_, bag) =>
+                        bag.thumbnailUrl ? (
+                          <Image src={bag.thumbnailUrl} alt={bag.name} width={56} height={56} style={{ objectFit: 'contain' }} />
+                        ) : (
+                          <Tag>未上传</Tag>
+                        )
+                    },
+                    {
+                      title: '名称 / 品牌',
+                      key: 'name',
+                      render: (_, bag) => (
+                        <div>
+                          <Typography.Text strong>{bag.name}</Typography.Text>
+                          {bag.brand && (
+                            <div>
+                              <Tag
+                                className="brand-tag"
+                                onClick={() => {
+                                  setSearch(bag.brand!);
+                                  setStatusFilter('');
+                                }}
+                              >
+                                {bag.brand}
+                              </Tag>
+                            </div>
+                          )}
+                          {bag.processError && (
+                            <Typography.Text type="danger" style={{ fontSize: 12 }}>{bag.processError}</Typography.Text>
+                          )}
+                        </div>
+                      )
+                    },
+                    {
+                      title: '标签',
+                      key: 'tags',
+                      render: (_, bag) =>
+                        bag.tags.length ? (
+                          <Space size={4} wrap>
+                            {bag.tags.map((tag) => <Tag key={tag}>{tag}</Tag>)}
+                          </Space>
+                        ) : (
+                          <span className="muted">—</span>
+                        )
+                    },
+                    {
+                      title: '状态',
+                      key: 'status',
+                      width: 96,
+                      render: (_, bag) => <Tag color={statusColors[bag.status]}>{statusLabels[bag.status]}</Tag>
+                    },
+                    {
+                      title: '图片处理',
+                      key: 'process',
+                      width: 130,
+                      render: (_, bag) => (
+                        <Space size={4} wrap>
+                          <Tag color={processColors[bag.processStatus]}>{processLabels[bag.processStatus]}</Tag>
+                          {bag.matting && <Tag color="purple">抠图</Tag>}
+                        </Space>
+                      )
+                    },
+                    { title: '拥有', dataIndex: 'claimedCount', key: 'claimedCount', width: 72 },
+                    { title: '排序', dataIndex: 'sortOrder', key: 'sortOrder', width: 72 },
+                    {
+                      title: '操作',
+                      key: 'actions',
+                      width: 260,
+                      render: (_, bag) => (
+                        <Space size={4} wrap>
+                          <Button size="small" onClick={() => setEditing(bag)}>编辑</Button>
+                          {bag.status !== 'PUBLISHED' && bag.processStatus === 'READY' && (
+                            <Button size="small" type="primary" ghost onClick={() => void setBagStatus(bag, 'PUBLISHED')}>
+                              发布
+                            </Button>
+                          )}
+                          {bag.status === 'PUBLISHED' && (
+                            <Button size="small" onClick={() => void setBagStatus(bag, 'OFFLINE')}>下架</Button>
+                          )}
+                          {bag.claimedCount === 0 && (
+                            <Popconfirm title={`确定删除「${bag.name}」？`} description="已删除的图片无法恢复" onConfirm={() => void removeBag(bag)}>
+                              <Button size="small" danger>删除</Button>
+                            </Popconfirm>
+                          )}
+                        </Space>
+                      )
+                    }
+                  ]}
+                />
+              </Card>
+
+              <BagEditor
+                bag={editing === 'new' ? null : editing}
+                brands={brands}
+                open={editing !== null}
+                onClose={() => setEditing(null)}
+                onDone={() => {
+                  setEditing(null);
+                  void loadBags();
+                }}
+                onBrandsChanged={() => void loadBrands()}
+              />
+            </>
+          )}
+        </Layout.Content>
+      </Layout>
+    </Layout>
+  );
+}
+
+function OverviewPage({ overview, jobs, loading }: { overview: Overview | null; jobs: Job[]; loading: boolean }) {
+  return (
+    <>
+      <Row gutter={16} style={{ marginBottom: 16 }}>
+        <Col xs={12} md={6}>
+          <Card><Statistic title="用户" value={overview?.users ?? 0} loading={loading && !overview} /></Card>
+        </Col>
+        <Col xs={12} md={6}>
+          <Card><Statistic title="收藏" value={overview?.collectibles ?? 0} loading={loading && !overview} /></Card>
+        </Col>
+        <Col xs={12} md={6}>
+          <Card><Statistic title="失败任务" value={overview?.failedJobs ?? 0} loading={loading && !overview} /></Card>
+        </Col>
+        <Col xs={12} md={6}>
+          <Card>
+            <Statistic
+              title="对象存储"
+              value={overview ? formatBytes(overview.storageBytes) : '—'}
+              loading={loading && !overview}
+            />
+          </Card>
+        </Col>
+      </Row>
+      <Card title={`最近图片任务（${jobs.length} 条）`}>
+        <Table<Job>
+          rowKey="id"
+          dataSource={jobs}
+          loading={loading}
+          pagination={{ pageSize: 10, hideOnSinglePage: true }}
+          columns={[
+            {
+              title: '收藏',
+              key: 'name',
+              render: (_, job) => (
+                <div>
+                  <Typography.Text strong>{job.collectible.name}</Typography.Text>
+                  {job.errorMessage && <div className="muted">{job.errorMessage}</div>}
+                </div>
+              )
+            },
+            { title: '任务', dataIndex: 'type', key: 'type', width: 140 },
+            {
+              title: '状态',
+              key: 'status',
+              width: 110,
+              render: (_, job) => <Tag color={jobStatusColors[job.status] ?? 'default'}>{job.status}</Tag>
+            },
+            { title: '尝试', dataIndex: 'attemptCount', key: 'attemptCount', width: 72 },
+            {
+              title: '时间',
+              key: 'createdAt',
+              width: 180,
+              render: (_, job) => new Date(job.createdAt).toLocaleString('zh-CN')
+            }
+          ]}
+        />
+      </Card>
+    </>
+  );
+}
+
+function BagEditor({
+  bag,
+  brands,
+  open,
+  onClose,
+  onDone,
+  onBrandsChanged
+}: {
+  bag: OfficialBag | null;
+  brands: Brand[];
+  open: boolean;
+  onClose: () => void;
+  onDone: () => void;
+  onBrandsChanged: () => void;
+}) {
+  const { message } = AntdApp.useApp();
+  const [form] = Form.useForm<BagFormValues>();
+  const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [fileList, setFileList] = useState<UploadFile[]>([]);
+  const [quickBrandOpen, setQuickBrandOpen] = useState(false);
+  const [quickBrandName, setQuickBrandName] = useState('');
+  const [quickBrandSaving, setQuickBrandSaving] = useState(false);
+
+  const selectedFile = fileList[0]?.originFileObj ?? null;
+
+  async function uploadTo(bagId: string, file: File) {
+    const data = new FormData();
+    data.append('file', file);
+    return api<{ version: number; processStatus: string }>(`/official-bags/${bagId}/image`, {
+      method: 'POST',
+      body: data
+    });
+  }
+
+  async function save(values: BagFormValues) {
+    setSaving(true);
+    try {
+      const payload = {
+        name: values.name.trim(),
+        brandId: values.brandId ?? null,
+        notes: values.notes ?? '',
+        tags: values.tags ? values.tags.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean) : [],
+        matting: values.matting,
+        ...(bag ? { sortOrder: values.sortOrder } : {})
+      };
+      if (bag) {
+        await api(`/official-bags/${bag.id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+      } else {
+        const created = await api<OfficialBag>('/official-bags', { method: 'POST', body: JSON.stringify(payload) });
+        // 新建后如果已经选了文件，直接上传图片。
+        if (selectedFile) await uploadTo(created.id, selectedFile);
+      }
+      message.success('保存成功');
+      onDone();
+    } catch (requestError) {
+      message.error(requestError instanceof Error ? requestError.message : '保存失败');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function replaceImage() {
+    if (!bag || !selectedFile) {
+      message.warning('请先选择图片文件');
+      return;
+    }
+    setUploading(true);
+    try {
+      await uploadTo(bag.id, selectedFile);
+      message.success('已上传，图片处理中');
+      onDone();
+    } catch (requestError) {
+      message.error(requestError instanceof Error ? requestError.message : '上传失败');
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function quickAddBrand() {
+    const name = quickBrandName.trim();
+    if (!name) {
+      message.warning('请输入品牌名称');
+      return;
+    }
+    setQuickBrandSaving(true);
+    try {
+      const created = await api<Brand>('/brands', { method: 'POST', body: JSON.stringify({ name }) });
+      onBrandsChanged();
+      form.setFieldValue('brandId', created.id);
+      setQuickBrandOpen(false);
+      setQuickBrandName('');
+      message.success(`已新增品牌「${created.name}」`);
+    } catch (requestError) {
+      message.error(requestError instanceof Error ? requestError.message : '新增品牌失败');
+    } finally {
+      setQuickBrandSaving(false);
+    }
+  }
+
+  return (
+    <Modal
+      title={bag ? `编辑：${bag.name}` : '新增袋子'}
+      open={open}
+      onCancel={onClose}
+      width={560}
+      footer={null}
+      destroyOnHidden
+    >
+      <Form<BagFormValues>
+        form={form}
+        layout="vertical"
+        onFinish={(values) => void save(values)}
+        initialValues={{
+          name: bag?.name ?? '',
+          brandId: bag?.brandId ?? null,
+          notes: bag?.notes ?? '',
+          tags: bag?.tags.join('，') ?? '',
+          matting: bag?.matting ?? false,
+          sortOrder: bag?.sortOrder ?? 0
+        }}
+      >
+        <Form.Item
+          name="name"
+          label="名称"
+          rules={[{ required: true, message: '名称不能为空' }, { max: 80, message: '最多 80 字' }]}
+        >
+          <Input placeholder="例如：LV Speedy 25 老花" maxLength={80} />
+        </Form.Item>
+        {bag && (
+          <Form.Item name="sortOrder" label="排序（数字越大越靠前）">
+            <InputNumber min={0} style={{ width: '100%' }} />
+          </Form.Item>
+        )}
+        <Form.Item label="品牌">
+          <Space.Compact style={{ width: '100%' }}>
+            <Form.Item name="brandId" noStyle>
+              <Select
+                placeholder="选择品牌"
+                allowClear
+                showSearch
+                optionFilterProp="label"
+                style={{ width: '100%' }}
+                options={brands.map((brand) => ({ value: brand.id, label: brand.name }))}
+              />
+            </Form.Item>
+            <Button onClick={() => setQuickBrandOpen(true)}>新增品牌</Button>
+          </Space.Compact>
+        </Form.Item>
+        <Form.Item name="tags" label="标签（用逗号分隔）">
+          <Input placeholder="手提包、老花、棕色" />
+        </Form.Item>
+        <Form.Item name="notes" label="备注" rules={[{ max: 2000 }]}>
+          <Input.TextArea rows={3} placeholder="尺寸、材质、获取地点等描述" maxLength={2000} />
+        </Form.Item>
+        <Form.Item name="matting" label="对上传图片执行抠图" valuePropName="checked">
+          <Switch />
+        </Form.Item>
+        <Typography.Paragraph type="secondary" style={{ marginTop: -8 }}>
+          走腾讯云万象，0.02 元/次；不开启则仅压缩出图。
+          {bag && ' 修改该开关只影响下一次上传的图片，已有图片需重新上传才会按新设置处理。'}
+        </Typography.Paragraph>
+
+        <Form.Item label="图片">
+          <Space direction="vertical" style={{ width: '100%' }} size={12}>
+            <Upload
+              accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
+              maxCount={1}
+              fileList={fileList}
+              beforeUpload={() => false}
+              onChange={({ fileList: next }) => setFileList(next)}
+            >
+              <Button icon={<UploadOutlined />}>选择图片</Button>
+            </Upload>
+            {bag?.thumbnailUrl && <Image src={bag.thumbnailUrl} alt={bag.name} width={96} style={{ objectFit: 'contain' }} />}
+            {bag && (
+              <Button
+                onClick={() => void replaceImage()}
+                loading={uploading}
+                disabled={bag.claimedCount > 0 || !selectedFile}
+              >
+                {bag.claimedCount > 0 ? '已被拥有，不能换图' : '上传 / 替换图片'}
+              </Button>
+            )}
+            {!bag && <Typography.Text type="secondary">新建保存后，如已选择图片将自动上传并开始处理。</Typography.Text>}
+          </Space>
+        </Form.Item>
+
+        <Form.Item style={{ marginBottom: 0 }}>
+          <Space style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <Button onClick={onClose}>取消</Button>
+            <Button type="primary" htmlType="submit" loading={saving || uploading}>保存</Button>
+          </Space>
+        </Form.Item>
+      </Form>
+
+      <Modal
+        title="快速新增品牌"
+        open={quickBrandOpen}
+        onCancel={() => setQuickBrandOpen(false)}
+        onOk={() => void quickAddBrand()}
+        confirmLoading={quickBrandSaving}
+        okText="新增"
+        destroyOnHidden
+      >
+        <Input
+          placeholder="品牌名称，例如：Louis Vuitton"
+          value={quickBrandName}
+          maxLength={80}
+          onChange={(event) => setQuickBrandName(event.target.value)}
+          onPressEnter={() => void quickAddBrand()}
+        />
+      </Modal>
+    </Modal>
+  );
+}
+
+function BrandEditor({
+  brand,
+  open,
+  onClose,
+  onDone
+}: {
+  brand: Brand | null;
+  open: boolean;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const { message } = AntdApp.useApp();
+  const [saving, setSaving] = useState(false);
+
+  async function save(values: BrandFormValues) {
+    setSaving(true);
+    try {
+      const payload = {
+        name: values.name.trim(),
+        ...(brand ? { sortOrder: values.sortOrder } : {})
+      };
+      if (brand) {
+        await api(`/brands/${brand.id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+      } else {
+        await api('/brands', { method: 'POST', body: JSON.stringify(payload) });
+      }
+      message.success('保存成功');
+      onDone();
+    } catch (requestError) {
+      message.error(requestError instanceof Error ? requestError.message : '保存失败');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal
+      title={brand ? `编辑品牌：${brand.name}` : '新增品牌'}
+      open={open}
+      onCancel={onClose}
+      footer={null}
+      destroyOnHidden
+    >
+      <Form<BrandFormValues>
+        layout="vertical"
+        onFinish={(values) => void save(values)}
+        initialValues={{ name: brand?.name ?? '', sortOrder: brand?.sortOrder ?? 0 }}
+      >
+        <Form.Item
+          name="name"
+          label="品牌名称"
+          rules={[{ required: true, message: '品牌名不能为空' }, { max: 80, message: '最多 80 字' }]}
+        >
+          <Input placeholder="例如：Louis Vuitton" maxLength={80} />
+        </Form.Item>
+        {brand && (
+          <Form.Item name="sortOrder" label="排序（数字越大越靠前）">
+            <InputNumber min={0} style={{ width: '100%' }} />
+          </Form.Item>
+        )}
+        <Form.Item style={{ marginBottom: 0 }}>
+          <Space style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <Button onClick={onClose}>取消</Button>
+            <Button type="primary" htmlType="submit" loading={saving}>保存</Button>
+          </Space>
+        </Form.Item>
+      </Form>
+    </Modal>
   );
 }

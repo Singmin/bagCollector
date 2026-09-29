@@ -8,6 +8,12 @@ import { dataService } from '../../../services/data';
 const systemInfo = uni.getSystemInfoSync();
 const statusBarHeight = systemInfo.statusBarHeight ?? 20;
 const isDevtools = systemInfo.platform === 'devtools';
+/* 标题 / 返回键与右上角胶囊按钮垂直居中：导航行高按胶囊上下留白对称推导
+   （navBarHeight = 胶囊高 + 2×胶囊顶部到状态栏底的间距），取不到时退回 44px 默认值 */
+const menuButton = uni.getMenuButtonBoundingClientRect();
+const navBarHeight = menuButton.height
+  ? menuButton.height + (menuButton.top - statusBarHeight) * 2
+  : 44;
 
 const filePath = ref('');
 const flashOn = ref(false);
@@ -195,11 +201,13 @@ onLoad(() => {
 
 <template>
   <view class="camera-page">
-    <view class="camera-header" :style="{ paddingTop: `${statusBarHeight}px` }">
-      <button class="back-button" aria-label="返回" @tap="back">
-        <image class="back-icon" src="/static/figma/back.svg" mode="aspectFit" />
-      </button>
-      <text class="camera-title">上传纸袋</text>
+    <view class="camera-header" :style="{ paddingTop: `${statusBarHeight}px`, height: `${statusBarHeight + navBarHeight}px` }">
+      <view class="camera-nav">
+        <button class="back-button" aria-label="返回" @tap="back">
+          <image class="back-icon" src="/static/figma/back.svg" mode="aspectFit" />
+        </button>
+        <text class="camera-title">上传纸袋</text>
+      </view>
     </view>
 
     <view class="capture-stage">
@@ -208,7 +216,7 @@ onLoad(() => {
         class="camera-view"
         device-position="back"
         resolution="high"
-        :flash="flashOn ? 'on' : 'off'"
+        :flash="flashOn ? 'torch' : 'off'"
         @error="cameraError"
       />
       <image v-else class="captured-image" :src="filePath" mode="aspectFit" />
@@ -229,21 +237,33 @@ onLoad(() => {
         <view class="shutter-core" />
       </button>
       <button class="round-button album-button" aria-label="从相册选择" :disabled="uploading" @tap="chooseFromAlbum">
-        <image class="control-icon" src="/static/figma/album.svg" mode="aspectFit" />
+        <image class="album-icon" src="/static/figma/album.svg" mode="aspectFit" />
       </button>
     </view>
   </view>
 </template>
 
 <style scoped>
+/* ── 按参考图 Frame 92 测量对齐（1 图px ≈ 1.5rpx）── */
 .camera-page { height: 100vh; display: flex; flex-direction: column; overflow: hidden; background: #fff; color: #000; }
-.camera-header { position: relative; flex: 0 0 auto; padding-bottom: 24rpx; display: flex; align-items: center; justify-content: center; }
+/* 头部总高 = 状态栏 + 胶囊行（inline style 注入：padding-top 撑状态栏、height 含状态栏）。
+   里面再套一层「胶囊行」.camera-nav 专供内容居中与返回键定位：
+   ⚠ 返回键原来直接挂在外层盒子上，那个盒子的 50% 是「含状态栏 padding 的 padding box」的中点，
+   而标题是内容区（去掉 padding-top）的中点 —— 两者差着半个状态栏高度，
+   表现就是返回箭头压到状态栏、与标题不同轴（用户 2026-09-28 截图）。
+   多一层 .camera-nav（高度正好 = 胶囊行）之后，两者的参照系才一致。 */
+.camera-header { position: relative; flex: 0 0 auto; box-sizing: border-box; }
+.camera-nav { position: relative; height: 100%; display: flex; align-items: center; justify-content: center; }
 .camera-title { font-size: 32rpx; font-weight: 500; line-height: 48rpx; }
-.back-button { position: absolute; left: 32rpx; width: 56rpx; height: 56rpx; margin: 0; padding: 0; display: grid; place-items: center; background: transparent; }
-.back-icon { width: 18rpx; height: 32rpx; }
-.capture-stage { position: relative; flex: 0 0 auto; height: 1000rpx; margin: 8rpx 34rpx 0; overflow: hidden; border-radius: 72rpx; background: #dbbba1; }
+/* top: 50% 相对 .camera-nav（只含导航行、不含状态栏）算，才是与标题同轴的中点 */
+.back-button { position: absolute; left: 36rpx; top: 50%; transform: translateY(-50%); width: 56rpx; height: 56rpx; margin: 0; padding: 0; display: grid; place-items: center; background: transparent; }
+.back-icon { width: 22rpx; height: 38rpx; }
+/* 取景卡：左右 40rpx（宽 670）、圆角 60rpx、浅棕 #e2c4ae；
+   高度弹性填充 + 上限 1070rpx —— 参考图卡高 ≈66% 屏高，同时小屏（667pt）不溢出 */
+.capture-stage { position: relative; flex: 1 1 0; max-height: 1130rpx; margin: 32rpx 40rpx 0; overflow: hidden; border-radius: 60rpx; background: #e2c4ae; }
 .camera-view, .captured-image { position: absolute; inset: 0; width: 100%; height: 100%; }
-.guide-frame { position: absolute; z-index: 3; left: 62rpx; top: 190rpx; width: 560rpx; height: 634rpx; box-sizing: border-box; border: 8rpx dashed rgba(255, 255, 255, .6); border-radius: 48rpx; pointer-events: none; }
+/* 虚线引导框：相对卡片内嵌 left 56 / top 200（2026-09-26 用户要求下移），560×732，描边 5rpx、圆角 36rpx */
+.guide-frame { position: absolute; z-index: 3; left: 56rpx; top: 200rpx; width: 560rpx; height: 732rpx; box-sizing: border-box; border: 5rpx dashed rgba(255, 255, 255, .65); border-radius: 36rpx; pointer-events: none; }
 .upload-mask { position: absolute; z-index: 5; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 30rpx; background: rgba(60, 37, 20, .48); color: #fff; font-size: 28rpx; font-weight: 600; }
 .upload-spinner { width: 76rpx; height: 76rpx; border: 7rpx solid rgba(255, 255, 255, .35); border-top-color: #fff; border-radius: 50%; animation: spin .9s linear infinite; }
 .camera-error { flex: 0 0 auto; margin: 16rpx 34rpx 0; color: #a12e2e; font-size: 24rpx; text-align: center; }
@@ -251,10 +271,14 @@ onLoad(() => {
 .round-button { position: absolute; top: 24rpx; width: 108rpx; height: 108rpx; margin: 0; padding: 0; display: grid; place-items: center; border-radius: 50%; background: #fff; }
 .round-button[disabled] { opacity: .45; }
 .flash-button { left: 94rpx; }
-.album-button { left: 550rpx; }
+.album-button { left: 548rpx; }
 .control-icon { width: 56rpx; height: 56rpx; }
-.shutter { position: absolute; left: 298rpx; top: 0; width: 156rpx; height: 156rpx; margin: 0; padding: 6rpx; display: grid; place-items: center; box-sizing: border-box; border: 4rpx solid #c50405; border-radius: 50%; background: #fff; }
+/* 相册图形是宽扁形（28 视框内只占 73% 高），64rpx 盒子渲染高 ≈46.6rpx
+   （70rpx 等高版偏大，回调取中） */
+.album-icon { width: 64rpx; height: 64rpx; }
+/* 快门：外圈 150rpx（红描边 4rpx + 白环 6rpx）、红芯 130rpx，水平居中 */
+.shutter { position: absolute; left: 300rpx; top: 0; width: 150rpx; height: 150rpx; margin: 0; padding: 6rpx; display: grid; place-items: center; box-sizing: border-box; border: 4rpx solid #c50405; border-radius: 50%; background: #fff; }
 .shutter[disabled] { opacity: .45; }
-.shutter-core { width: 136rpx; height: 136rpx; border-radius: 50%; background: #c50405; }
+.shutter-core { width: 130rpx; height: 130rpx; border-radius: 50%; background: #c50405; }
 @keyframes spin { to { transform: rotate(360deg); } }
 </style>

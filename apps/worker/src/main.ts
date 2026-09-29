@@ -1,6 +1,15 @@
 import { Worker } from 'bullmq';
 import { Redis } from 'ioredis';
 import { config } from './config.js';
+import {
+  claimOfficialBag,
+  failOfficialClaim,
+  failOfficialProcess,
+  processOfficialImage,
+  closeOfficialProcessor,
+  type OfficialClaimJobData,
+  type OfficialProcessJobData
+} from './official-processor.js';
 import { cleanup, closeProcessor, failProcessing, matImage, normalizeImage, type ProcessingJobData } from './processor.js';
 
 const IMAGE_QUEUE = 'bagcollect-images';
@@ -11,6 +20,24 @@ const worker = new Worker(
   async (job) => {
     if (job.name === 'cleanup') {
       await cleanup((job.data as { keys: string[] }).keys);
+      return;
+    }
+    if (job.name === 'official-process') {
+      try {
+        await processOfficialImage(job.data as OfficialProcessJobData);
+      } catch (error) {
+        await failOfficialProcess(job.data as OfficialProcessJobData, error);
+        throw error;
+      }
+      return;
+    }
+    if (job.name === 'official-claim') {
+      try {
+        await claimOfficialBag(job.data as OfficialClaimJobData);
+      } catch (error) {
+        await failOfficialClaim(job.data as OfficialClaimJobData, error);
+        throw error;
+      }
       return;
     }
     const data = job.data as ProcessingJobData;
@@ -35,6 +62,7 @@ async function shutdown() {
   await worker.close();
   await connection.quit();
   await closeProcessor();
+  await closeOfficialProcessor();
 }
 
 process.on('SIGTERM', () => void shutdown());

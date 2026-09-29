@@ -1,6 +1,7 @@
 import { runtimeConfig } from '../config';
 import type { AuthTokens } from '../types';
 import { readTokens, removeTokens, writeTokens } from './auth-storage';
+import { USE_MOCK, mockRequest } from './mock-data';
 let loginPromise: Promise<void> | undefined;
 let refreshPromise: Promise<void> | undefined;
 
@@ -47,6 +48,17 @@ function systemName() {
 }
 
 export async function login() {
+  /* Mock 模式：不发真实登录请求，写入假 token 让依赖 token 的代码路径正常走 */
+  if (USE_MOCK) {
+    const now = Date.now();
+    writeTokens({
+      accessToken: `mock-access-${now}`,
+      accessTokenExpiresIn: 3600,
+      refreshToken: `mock-refresh-${now}`,
+      refreshTokenExpiresAt: new Date(now + 30 * 24 * 60 * 60 * 1000).toISOString()
+    });
+    return;
+  }
   loginPromise ??= (async () => {
     const tokens = await requestRaw<AuthTokens>('/auth/wechat/login', {
       method: 'POST',
@@ -85,13 +97,16 @@ export async function authorizedHeaders() {
 }
 
 export async function api<T>(path: string, options: ApiRequestOptions = {}, didRetry = false): Promise<T> {
+  /* Mock 模式：全部请求走内存假数据，不触网 */
+  if (USE_MOCK) return mockRequest<T>(path, options);
   await ensureLogin();
   const tokens = readTokens()!;
   try {
     return await requestRaw<T>(path, {
       ...options,
       header: {
-        ...(options.data !== undefined ? { 'content-type': 'application/json' } : {}),
+        /* 微信会默认注入 application/json，空 body 的请求会被 Fastify 以空 JSON 体拒绝（400），这里显式覆盖 */
+        'content-type': options.data !== undefined ? 'application/json' : 'text/plain',
         Authorization: `Bearer ${tokens.accessToken}`,
         ...(options.header || {})
       }
@@ -106,6 +121,7 @@ export async function api<T>(path: string, options: ApiRequestOptions = {}, didR
 }
 
 export async function logout() {
+  if (USE_MOCK) { removeTokens(); return; }
   const tokens = readTokens();
   if (tokens?.refreshToken) {
     await requestRaw('/auth/logout', { method: 'POST', data: { refreshToken: tokens.refreshToken } });

@@ -16,7 +16,8 @@ export interface ProcessingJobData {
 const prisma = new PrismaClient();
 
 // 抠图实现只在模块加载时构建一次：并发限流器必须跨任务共享，不能每次调用都重建。
-const removeBackground = createTencentCiBackgroundRemover(
+// 导出给官方袋子处理链路复用（官方库可选抠图，与用户链路使用同一实现与计费口径）。
+export const removeBackground = createTencentCiBackgroundRemover(
   {
     process: config.CI_MATTING_PROCESS,
     timeoutMs: config.CI_MATTING_TIMEOUT_MS,
@@ -69,14 +70,34 @@ async function upsertAsset(input: {
   });
 }
 
+/**
+ * 裁掉抠图结果的透明边缘，让展示图/缩略图紧贴袋子实体 —— 否则画布留白会稀释
+ * 前端按比例展示时的可见尺寸（与素材处理口径一致）。
+ * 整图透明等极端情况（trim 后尺寸非法或解码失败）回退原图，不阻断出图。
+ */
+export async function trimTransparent(source: Buffer): Promise<Buffer> {
+  try {
+    const trimmed = await sharp(source, { limitInputPixels: config.MAX_IMAGE_PIXELS })
+      .trim()
+      .png()
+      .toBuffer();
+    const meta = await sharp(trimmed, { limitInputPixels: config.MAX_IMAGE_PIXELS }).metadata();
+    if (meta.width && meta.height && meta.width > 0 && meta.height > 0) return trimmed;
+    return source;
+  } catch {
+    return source;
+  }
+}
+
 async function writeRenditions(data: ProcessingJobData, source: Buffer, baseKey: string) {
+  const trimmed = await trimTransparent(source);
   // 展示图与缩略图互不依赖，并行编码，避免白白多等一轮 CPU。
   const [display, thumbnail] = await Promise.all([
-    sharp(source, { limitInputPixels: config.MAX_IMAGE_PIXELS })
+    sharp(trimmed, { limitInputPixels: config.MAX_IMAGE_PIXELS })
       .resize({ width: 2048, height: 2048, fit: 'inside', withoutEnlargement: true })
       .png({ compressionLevel: 6 })
       .toBuffer({ resolveWithObject: true }),
-    sharp(source, { limitInputPixels: config.MAX_IMAGE_PIXELS })
+    sharp(trimmed, { limitInputPixels: config.MAX_IMAGE_PIXELS })
       .resize({ width: 512, height: 512, fit: 'inside', withoutEnlargement: true })
       .webp({ quality: 82, alphaQuality: 90 })
       .toBuffer({ resolveWithObject: true })
@@ -105,7 +126,8 @@ async function writeRenditions(data: ProcessingJobData, source: Buffer, baseKey:
   ]);
 }
 
-async function standardJpeg(source: Buffer) {
+// 导出给官方袋子处理链路复用：原图标准化为 ≤4096px 的 JPEG。
+export async function standardJpeg(source: Buffer) {
   const base = sharp(source, { limitInputPixels: config.MAX_IMAGE_PIXELS }).rotate().resize({
     width: 4096,
     height: 4096,

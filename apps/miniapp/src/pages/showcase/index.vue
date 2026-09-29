@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import { onPullDownRefresh, onShow } from '@dcloudio/uni-app';
+import { onHide, onShow } from '@dcloudio/uni-app';
 import type { Collectible, CollectibleSummary } from '../../types';
 import { dataService } from '../../services/data';
 import { daysAgoText, formattedDate } from '../../services/format';
 import { resolveCollectibleThumbnail } from '../../services/images';
-import { syncTabBar } from '../../services/tab-bar';
+import { syncTabBar, setTabBarHidden } from '../../services/tab-bar';
 
 const loading = ref(true);
 const initialized = ref(false);
@@ -15,6 +15,23 @@ const items = ref<CollectibleSummary[]>([]);
 const totalCount = ref(0);
 const thumbnailUrls = ref<Record<string, string>>({});
 const failedThumbnails = ref<Record<string, boolean>>({});
+
+/* 自定义导航（与全部收藏页同一套对齐方式）：
+   标题顶部 = 胶囊按钮顶部；设置钮（只留图标）贴在胶囊左侧，尺寸与胶囊对齐。 */
+const headerTop = ref(0);
+const settingsRight = ref(10);
+const settingsSize = ref(32);
+// #ifdef MP-WEIXIN
+try {
+  const capsule = uni.getMenuButtonBoundingClientRect();
+  const win = uni.getSystemInfoSync();
+  headerTop.value = capsule.top;
+  settingsRight.value = win.windowWidth - capsule.left + 8;
+  settingsSize.value = capsule.height;
+} catch {
+  /* 取不到胶囊矩形（非微信端）时用默认值 */
+}
+// #endif
 
 // ── 主展位：对齐 H5 的 .flip-card（轻点 3D 翻面）──
 // 卡片由「最近收集」里选中的那一张驱动，默认是最新的一张。
@@ -50,34 +67,19 @@ const heroFacts = computed(() => {
   ].filter((row) => row.value);
 });
 
-// ── 挂袋绳区（对齐 h5-prototype 的 rack-section）──
-// 卡片 220rpx 宽、相邻重叠 40rpx；绳索是 400x40 坐标系里的下垂曲线 M0,6 Q200,52 400,6，
-// 以 PNG 位图（rail-rope.png）scaleToFill 硬拉伸到整条内容宽——微信 image 对 SVG 会按
-// 内在宽高比留白渲染，两头够不到屏幕边缘，所以必须用位图。孔环夹和卡片上沿的位置按
-// 曲线逐项解算（X(t)=400t，y=6+92t(1-t)），保证夹子钉在绳上。
-const RAIL = { cardW: 220, step: 180, padX: 24, padTop: 96, ropeTop: 40, ropeH: 56, clip: 52 };
-const RAIL_TONES = ['vermillion', 'kraft', 'blue', 'black', 'green', 'pink'] as const;
+// ── 挂袋区（1:1 复刻 挂袋区_轻量调试.html：亚克力横杆 + 滑环 + 喷砂哑光夹具 + 磨砂玻璃卡框）──
+// 横杆是刚性直杆（不再下垂），卡片垂距是静态错落 0/7/14/7px（→ rpx ×1.82）；
+// 轮心 = 杆心 44.02px = 80rpx，咬口 7.5px = 14rpx，卡宽 106px = 193rpx，重叠 12px = 22rpx。
+const RACK_DY = [0, 13, 25, 13] as const;
 
-const sceneWidth = computed(() => RAIL.padX * 2 + RAIL.cardW + RAIL.step * Math.max(0, items.value.length - 1));
-const ropeWidth = computed(() => Math.max(sceneWidth.value, 750));
-
-function ropeYAt(index: number) {
-  const centerX = RAIL.padX + RAIL.step * index + RAIL.cardW / 2;
-  const t = Math.min(1, Math.max(0, centerX / ropeWidth.value));
-  return RAIL.ropeTop + ((6 + 92 * t * (1 - t)) / 40) * RAIL.ropeH;
-}
-
-function clipTop(index: number) { return Math.round(ropeYAt(index) - RAIL.padTop - RAIL.clip / 2); }
-function hangDrop(index: number) { return Math.round(ropeYAt(index) - RAIL.padTop + 20); }
-function railTone(index: number) { return RAIL_TONES[index % RAIL_TONES.length]; }
 function shortDate(value: string) { return formattedDate(value).slice(5).replace('/', '.'); }
 function isHero(item: CollectibleSummary) { return heroItem.value?.id === item.id; }
 function openLibrary() { uni.switchTab({ url: '/pages/library/index' }); }
-function openSettings() { uni.navigateTo({ url: '/package-settings/pages/settings/index' }); }
-function openHero() {
-  if (!heroItem.value) return;
-  uni.navigateTo({ url: `/package-library/pages/detail/index?id=${heroItem.value.id}` });
-}
+/* 设置改为首页内半窗浮层：上滑进入、下滑收起（不再 navigateTo）。
+   底栏是框架层、页面 z-index 压不住：半窗打开期间整条隐藏（同编辑半窗方案） */
+const settingsShow = ref(false);
+function openSettings() { settingsShow.value = true; setTabBarHidden(true); }
+function closeSettings() { settingsShow.value = false; setTabBarHidden(false); }
 let refreshPromise: Promise<void> | undefined;
 
 function assertRenderable(nextItems: CollectibleSummary[]) {
@@ -232,22 +234,51 @@ onShow(() => {
   syncTabBar(0);
   void load();
 });
-onPullDownRefresh(() => void load().finally(() => uni.stopPullDownRefresh()));
+/* 切走页面时收起设置半窗（settingsShow 是普通数据，不会随页面隐藏自动归位）。
+   半窗开着就等于底栏整条隐藏被推上去过，人回来了半窗还压着、底栏却已经复位，
+   会露一条底栏在面板底下 —— 半窗收起时会自行把底栏还原，这里关掉最省事。 */
+onHide(() => { settingsShow.value = false; });
+/* 顶部标题区固定后，下拉刷新迁移到内容区 scroll-view */
+const refresherTriggered = ref(false);
+async function onRefresherRefresh() {
+  refresherTriggered.value = true;
+  try { await load(); } finally { refresherTriggered.value = false; }
+}
 </script>
 
 <template>
   <view class="home-page">
-    <view class="bags-header">
+    <!-- 头部：与全部收藏页同一套对齐（标题顶 = 胶囊顶，padding-top 由胶囊矩形注入）。
+         设置钮改为绝对定位：贴在微信胶囊左侧，只留图标，尺寸与胶囊对齐。 -->
+    <view class="bags-header" :style="{ paddingTop: `${headerTop}px` }">
       <view class="bags-header__text">
         <text class="bags-title">袋袋集</text>
         <text class="bags-tagline">收集每一个纸袋的故事</text>
       </view>
-      <button class="header-settings" aria-label="打开设置" @tap="openSettings">
-        <image class="header-settings__icon" src="/static/figma/settings-nut.svg" mode="aspectFit" />
-        <text>设置</text>
-      </button>
     </view>
+    <button
+      class="header-settings"
+      aria-label="打开设置"
+      :style="{ top: `${headerTop}px`, right: `${settingsRight}px`, width: `${settingsSize}px`, height: `${settingsSize}px` }"
+      @tap="openSettings"
+    >
+      <image
+        class="header-settings__icon"
+        :style="{ width: `${Math.round(settingsSize * 0.7)}px`, height: `${Math.round(settingsSize * 0.7)}px` }"
+        src="/static/figma/settings-nut.svg"
+        mode="aspectFit"
+      />
+    </button>
 
+    <scroll-view
+      class="home-scroll"
+      scroll-y
+      :refresher-enabled="true"
+      :refresher-triggered="refresherTriggered"
+      refresher-default-style="black"
+      @refresherrefresh="onRefresherRefresh"
+    >
+      <view class="home-body">
     <view v-if="loadError" class="load-error">{{ loadError }}</view>
 
     <!-- 主展位：轻点卡片 3D 翻面，正面看袋子，背面看详细信息 -->
@@ -264,7 +295,7 @@ onPullDownRefresh(() => void load().finally(() => uni.stopPullDownRefresh()));
         <view class="flip-face flip-face--front">
           <image class="frame85-background" src="/static/figma/indexBg.svg" mode="scaleToFill" />
           <view class="glass-glow" />
-          <view class="light-beam" />
+          <view class="corner-glow" />
           <view class="brand-badge">最新</view>
 
           <view class="flip-face__art">
@@ -292,6 +323,7 @@ onPullDownRefresh(() => void load().finally(() => uni.stopPullDownRefresh()));
         <view class="flip-face flip-face--back">
           <image class="frame85-background" src="/static/figma/indexBg.svg" mode="scaleToFill" />
           <view class="glass-glow" />
+          <view class="corner-glow" />
           <button class="flip-back" aria-label="翻回正面" @tap.stop="flipBack">
             <text>↺</text>
           </button>
@@ -311,14 +343,13 @@ onPullDownRefresh(() => void load().finally(() => uni.stopPullDownRefresh()));
               <text v-for="tag in heroTags" :key="tag"># {{ tag }}</text>
             </view>
             <text v-if="heroNote" class="back-note">{{ heroNote }}</text>
-            <button class="back-more" @tap.stop="openHero">查看完整详情 →</button>
           </view>
         </view>
       </view>
 
       <view v-else-if="!loading && !loadError" class="flip-card empty-card" @tap="add">
         <image class="frame85-background" src="/static/figma/indexBg.svg" mode="scaleToFill" />
-        <image class="empty-illustration" src="/static/figma/empty-bag.svg" mode="aspectFit" />
+        <image class="empty-illustration" src="/static/figma/empty-state.png" mode="aspectFit" />
         <view class="front-caption empty-caption">
           <text class="front-caption__title">暂无纸袋记录</text>
           <text class="front-caption__hint">每一个纸袋都有故事，期待你的记录</text>
@@ -329,12 +360,23 @@ onPullDownRefresh(() => void load().finally(() => uni.stopPullDownRefresh()));
     <view v-if="items.length && !loadError" class="recent-section">
       <view class="recent-heading">
         <text class="recent-title">最近收集</text>
-        <button class="recent-all" @tap="openLibrary">查看全部 <text class="recent-all-arrow">→</text></button>
       </view>
-      <text class="stage-count">最近收藏 · {{ items.length }} 件</text>
+      <view class="recent-sub">
+        <text class="stage-count">最近15天 · {{ items.length }} 件</text>
+        <button class="recent-all" @tap="openLibrary">查看全部 <image class="recent-all-arrow" src="/static/figma/arrow-right.svg" mode="aspectFit" /></button>
+      </view>
       <scroll-view class="recent-scroll" scroll-x :show-scrollbar="false" @scroll="onRailScroll">
         <view class="recent-scene">
-          <image class="rail-rope" src="/static/figma/rail-rope.png" mode="scaleToFill" />
+          <!-- 亚克力展示杆：半透杆身 + 两端银钢夹块 + 外伸螺纹杆 + 朱红圆球头 -->
+          <view class="rack-cable" aria-hidden="true">
+            <view class="rack-rail" />
+            <view class="rack-stud rack-stud--l" />
+            <view class="rack-stud rack-stud--r" />
+            <view class="rack-endcap rack-endcap--l" />
+            <view class="rack-endcap rack-endcap--r" />
+            <view class="rack-knob rack-knob--l" />
+            <view class="rack-knob rack-knob--r" />
+          </view>
           <view class="recent-row">
             <button
               v-for="(item, index) in items"
@@ -352,11 +394,25 @@ onPullDownRefresh(() => void load().finally(() => uni.stopPullDownRefresh()));
                 <view
                   class="rail-swing"
                   :class="{ 'is-releasing': railReleasing }"
-                  :style="{ transform: `rotate(${railTilt}deg)` }"
+                  :style="{ transform: `rotate(${railTilt}deg)`, '--dy': `${RACK_DY[index % RACK_DY.length]}rpx` }"
                 >
-                  <view class="rail-clip" :style="{ top: `${clipTop(index)}rpx` }" />
-                  <view class="rail-frame" :style="{ marginTop: `${hangDrop(index)}rpx` }">
-                    <view class="rail-photo" :class="`tone-${railTone(index)}`">
+                  <!-- 滑环：轮心压杆心（轮心 = 旋转轴），吊线从轮心垂到夹具顶 -->
+                  <view class="rack-clip">
+                    <view class="pulley">
+                      <view class="pulley__arm pulley__arm--l" />
+                      <view class="pulley__arm pulley__arm--r" />
+                      <view class="pulley__hub" />
+                    </view>
+                  </view>
+                  <view class="rack-wire" />
+                  <view class="grip"><view class="grip__mouth" /></view>
+                  <!-- 磨砂玻璃卡框 + 四角不锈钢螺点，照片区透明底 -->
+                  <view class="rack-frame">
+                    <view class="rack-screw rack-screw--tl" />
+                    <view class="rack-screw rack-screw--tr" />
+                    <view class="rack-screw rack-screw--bl" />
+                    <view class="rack-screw rack-screw--br" />
+                    <view class="rack-photo">
                       <image
                         v-if="thumbnailUrls[item.id] && !failedThumbnails[item.id]"
                         :src="thumbnailUrls[item.id]"
@@ -379,6 +435,11 @@ onPullDownRefresh(() => void load().finally(() => uni.stopPullDownRefresh()));
       </scroll-view>
       <text class="rack-hint">↤ 左右滑动 · 轻点在上方查看 ↦</text>
     </view>
+      </view>
+    </scroll-view>
+
+    <!-- 设置半窗：蒙层 + 上滑进入/下滑收起（fixed 定位，放在滚动区外） -->
+    <settings-sheet :show="settingsShow" @close="closeSettings" />
   </view>
 </template>
 
@@ -404,10 +465,14 @@ onPullDownRefresh(() => void load().finally(() => uni.stopPullDownRefresh()));
    ══════════════════════════════════════════════════════════════ */
 /* 左右内边距交给各区块自带（H5 就是这么分段的）：
    这样挂袋区的 scroll-view 才能真正铺满整块屏幕 */
-.home-page { min-height: 100vh; padding: 0 0 206rpx; overflow: hidden; background-color: #f2f3f7; }
+/* 顶部标题区固定：页面改为 100vh 弹性列，头部不滚，内容区独立滚动（scroll-view） */
+.home-page { position: relative; height: 100vh; display: flex; flex-direction: column; overflow: hidden; background-color: #f2f3f7; }
+.home-scroll { flex: 1 1 auto; min-height: 0; }
+.home-body { padding-bottom: 176rpx; }
 
-/* ── 头部：一级标题 + 辅助文案，右侧玻璃托底「设置」入口（H5 .bags-header / .header-settings）── */
-.bags-header { display: flex; align-items: center; justify-content: space-between; gap: 16rpx; padding: 18rpx 36rpx 29rpx; }
+/* ── 头部：一级标题 + 辅助文案（设置钮已绝对定位到胶囊左侧，不占文档流）──
+   padding-top 由脚本按胶囊矩形注入，与全部收藏页同款对齐方式 */
+.bags-header { display: flex; align-items: flex-start; gap: 16rpx; padding: 0 36rpx 29rpx; }
 .bags-header__text { display: flex; flex-direction: column; min-width: 0; }
 /* 一级标题：H5 .bags-title 是 38px × 1.82 = 69rpx（900 / 字距 2px = 3.6rpx）。
    ⚠ 这一档**没有**用微信六档的 Headline(44rpx)：首页的「袋袋集」和「全部收藏」在 H5 里
@@ -416,12 +481,14 @@ onPullDownRefresh(() => void load().finally(() => uni.stopPullDownRefresh()));
 /* 字体栈照搬 H5 的 h1（袋袋集原型.html:117）：Iowan Old Style / Baskerville 都是 iOS 系统
    衬线，中文没有对应字形会回退到 "Songti SC"（宋体）—— 截图里「袋袋集」的宋体感就来自这里。
    Android 上前面几个都缺失，落到通用 serif，属于预期内的降级。 */
-.bags-title { margin-bottom: 11rpx; color: #141414; font-family: Iowan Old Style, Baskerville, "Times New Roman", "Songti SC", serif; font-size: 69rpx; font-weight: 900; line-height: 1; letter-spacing: 3.6rpx; }
+/* 2026-09-26 用户要求调小：69rpx → 60rpx（两页保持一致，「全部收藏」同步改） */
+.bags-title { margin-bottom: 11rpx; color: #141414; font-family: Iowan Old Style, Baskerville, "Times New Roman", "Songti SC", serif; font-size: 60rpx; font-weight: 900; line-height: 1; letter-spacing: 3rpx; }
 /* 辅助内容：EmDesc 14pt（与「全部收藏」的副文案同档，两页一致） */
 .bags-tagline { color: #77736d; font-size: var(--wc-font-description); line-height: 1.4; }
-/* H5 padding 9px 12px 7px、radius 16px、图标 24px；文字走注释档 Footnote 12pt */
-.header-settings { flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; gap: 5rpx; min-width: 0; margin: 0; padding: 16rpx 22rpx 13rpx; border: 2rpx solid rgba(255,255,255,.75); border-radius: 29rpx; background: rgba(255,255,255,.6); box-shadow: 0 11rpx 25rpx rgba(52,66,92,.08), inset 0 2rpx 0 rgba(255,255,255,.8); color: #77736d; font-size: var(--wc-font-footnote); font-weight: 650; line-height: 1.1; letter-spacing: 2rpx; }
-.header-settings__icon { width: 44rpx; height: 44rpx; }
+/* 设置钮：绝对定位贴胶囊左侧（top/right/宽高由脚本按胶囊矩形注入），
+   只留图标、尺寸与胶囊对齐；玻璃托底材质保留 */
+.header-settings { position: absolute; z-index: 20; display: flex; align-items: center; justify-content: center; margin: 0; padding: 0; border: 2rpx solid rgba(255,255,255,.75); border-radius: 14px; background: rgba(255,255,255,.6); box-shadow: 0 11rpx 25rpx rgba(52,66,92,.08), inset 0 2rpx 0 rgba(255,255,255,.8); }
+.header-settings__icon { display: block; }
 
 .load-error { margin: 28rpx 36rpx; padding: 24rpx; border-radius: 20rpx; background: #fae2de; color: #943d37; font-size: var(--wc-font-description); text-align: center; }
 
@@ -430,8 +497,9 @@ onPullDownRefresh(() => void load().finally(() => uni.stopPullDownRefresh()));
 .stage-section { margin: 0 33rpx 47rpx; perspective: 1400px; }
 /* 卡片宽度：H5 是 308/412（左右各留 52px），按需求把左右间隔收到 47rpx（≈26px），
    于是 750 − 47×2 = 656rpx。高度按放大后的字号抬到 660rpx（两面都装得下）。
+   2026-09-26 用户指定卡片尺寸 300×318（px 口径 → 600×636rpx）；高度随后又按要求再矮 12px → 612rpx。
    rotateY(-180deg) 是「把卡片向右翻过去」的方向。 */
-.flip-card { position: relative; width: 656rpx; height: 660rpx; margin: 0 auto; border: 2rpx solid rgba(255,255,255,.62); border-radius: 47rpx; transform-style: preserve-3d; transition: transform .78s cubic-bezier(.2,.78,.22,1); box-shadow: inset 0 2rpx 0 rgba(255,255,255,.9), 0 29rpx 65rpx rgba(52,66,92,.16), 0 5rpx 18rpx rgba(52,66,92,.07); }
+.flip-card { position: relative; width: 600rpx; height: 612rpx; margin: 0 auto; border: 2rpx solid rgba(255,255,255,.62); border-radius: 47rpx; transform-style: preserve-3d; transition: transform .78s cubic-bezier(.2,.78,.22,1); box-shadow: inset 0 2rpx 0 rgba(255,255,255,.9); }
 .flip-card.is-flipped { transform: rotateY(-180deg); }
 /* 点击遮罩：铺满整卡，翻到背面后依然可点（整块卡片都能翻回正面）；
    背面的「翻回去」「查看完整详情」层级更高，压在它之上 */
@@ -443,7 +511,8 @@ onPullDownRefresh(() => void load().finally(() => uni.stopPullDownRefresh()));
 .flip-face { position: absolute; top: 0; left: 0; right: 0; bottom: 0; overflow: hidden; border-radius: 47rpx; }
 /* 下内边距 46rpx（H5 是 33rpx）：字号提到 12pt 后底部提示语变高，
    还按 33rpx 会顶到上面那两行文字 */
-.flip-face--front { z-index: 1; display: flex; flex-direction: column; align-items: center; padding: 33rpx 36rpx 46rpx; }
+/* 2026-09-26 多轮调整：内容整体上移一点，给底部「轻点翻面」提示留出上方间距 */
+.flip-face--front { z-index: 1; display: flex; flex-direction: column; align-items: center; padding: 60rpx 36rpx 40rpx; }
 .flip-face--back { z-index: 2; transform: rotateY(-180deg); opacity: 0; }
 .flip-card.is-flipped .flip-face--front { opacity: 0; transition: opacity .06s linear 0s; }
 .flip-card.is-flipped .flip-face--back { opacity: 1; transition: opacity .1s linear .11s; }
@@ -456,47 +525,51 @@ onPullDownRefresh(() => void load().finally(() => uni.stopPullDownRefresh()));
 /* 左上角冷白高光 + 1px 内白边（H5 .glass-glow / .flip-face--front）。
    内白边必须画在这一层而不是卡片底图上：底图是替换元素，会整块盖住自身的 inset 阴影。 */
 .glass-glow { position: absolute; z-index: 1; top: 0; left: 0; right: 0; bottom: 0; border-radius: 47rpx; box-shadow: inset 0 0 0 2rpx rgba(255,255,255,.9); pointer-events: none; background: radial-gradient(120% 78% at 16% -12%, rgba(255,255,255,.95) 0%, rgba(255,255,255,0) 58%), linear-gradient(128deg, rgba(255,255,255,.5) 0%, rgba(255,255,255,0) 34%, rgba(255,255,255,0) 66%, rgba(255,255,255,.34) 100%); }
-/* 卡面顶沿一道细亮线：射灯打在玻璃上沿的反光（H5 .light-beam::before） */
-.light-beam { position: absolute; z-index: 2; top: 22rpx; right: 11rpx; left: 34%; height: 3rpx; border-radius: 4rpx; pointer-events: none; background: linear-gradient(90deg, rgba(255,236,190,0) 0%, rgba(255,246,220,.9) 58%, rgba(255,236,190,0) 100%); }
+/* 右上角黄色光晕：radial 渐变锚定在卡片右上角（中心 = 100% 0%），
+   天然柔和无线条 —— 替代 indexBg.svg 的光带（微信 <image> 不支持 SVG 滤镜，
+   30px 高斯模糊不生效，光带硬边渲染成两条细线）。右上圆角随卡片裁形 */
+.corner-glow { position: absolute; z-index: 1; top: 0; right: 0; width: 260rpx; height: 260rpx; border-radius: 0 47rpx 0 0; pointer-events: none; background: radial-gradient(circle at 100% 0%, rgba(240,224,117,.62) 0%, rgba(240,224,117,.34) 32%, rgba(240,224,117,0) 70%); }
 
-/* 右上角「最新」徽标（H5 .brand-badge：top/right 12px、padding 4px 10px、radius 12px）
-   文字走注释档 Footnote */
-.brand-badge { position: absolute; z-index: 4; top: 22rpx; right: 22rpx; padding: 7rpx 18rpx; border-radius: 22rpx; background: rgba(255,255,255,.58); box-shadow: inset 0 2rpx 0 rgba(255,255,255,.9), 0 6rpx 18rpx rgba(40,34,24,.09); color: #96703a; font-size: var(--wc-font-footnote); font-weight: 700; line-height: 1.1; letter-spacing: 1rpx; }
+/* 右上角「最新」徽标（H5 .brand-badge：top/right 12px、padding 4px 10px、radius 12px、9.5px 字） */
+.brand-badge { position: absolute; z-index: 4; top: 22rpx; right: 22rpx; padding: 7rpx 18rpx; border-radius: 22rpx; background: rgba(255,255,255,.58); box-shadow: inset 0 2rpx 0 rgba(255,255,255,.9), 0 6rpx 18rpx rgba(40,34,24,.09); color: #96703a; font-size: 24rpx; font-weight: 700; line-height: 1.1; letter-spacing: 1rpx; }
 
-/* 袋子区：H5 固定 248px 高、宽度按图片自身比例（这里交给 aspectFit 在定高框内等比居中） */
-.flip-face__art { position: relative; z-index: 3; flex: 0 0 auto; width: 100%; height: 451rpx; }
-.flip-face__art image { width: 100%; height: 451rpx; filter: drop-shadow(0 7rpx 18rpx rgba(0,0,0,.18)); }
+/* 袋子区：H5 固定 248px 高、宽度按图片自身比例（这里交给 aspectFit 在定高框内等比居中）。
+   2026-09-26 用户两轮要求收小：451 → 436 → 400rpx */
+.flip-face__art { position: relative; z-index: 3; flex: 0 0 auto; width: 100%; height: 400rpx; }
+.flip-face__art image { width: 100%; height: 400rpx; filter: drop-shadow(0 7rpx 18rpx rgba(0,0,0,.18)); }
 .art-placeholder { position: absolute; left: 50%; top: 50%; width: 258rpx; height: 340rpx; margin: -170rpx 0 0 -129rpx; border-radius: 28rpx; background: rgba(255,255,255,.46); }
 
-/* 袋子下方两行：名字（二级标题 EmTitle 17pt）+「品牌 · 日期」（EmDesc 14pt） */
+/* 袋子下方两行（H5 .front-caption：margin-top 8px；title 21px；sub 10.5px、gap 7px、margin 5px）。
+   ⚠ 字号换算基准：H5 字体是固定 px，在 375 屏上不随手壳缩放，所以这里按 1px=2rpx
+   （375 屏基准）而非 1.82，否则比 H5 均匀小 10% —— 用户 2026-09-26 实测反馈。 */
 .front-caption { position: relative; z-index: 3; flex: 0 0 auto; width: 100%; margin-top: 15rpx; text-align: center; }
 /* 卡片标题是另一套栈（H5 .front-caption__title / .back-name，均以 Georgia 打头） */
-.front-caption__title { display: block; color: #1a1815; font-family: Georgia, "Iowan Old Style", "Songti SC", serif; font-size: var(--wc-font-em-title); font-weight: 700; line-height: 1.2; letter-spacing: .2rpx; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.front-caption__sub { display: flex; align-items: center; justify-content: center; gap: 13rpx; margin-top: 9rpx; color: #8d877c; font-size: var(--wc-font-description); line-height: 1.4; letter-spacing: .4rpx; }
+.front-caption__title { display: block; color: #1a1815; font-family: Georgia, "Iowan Old Style", "Songti SC", serif; font-size: 42rpx; font-weight: 700; line-height: 1.2; letter-spacing: .2rpx; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.front-caption__sub { display: flex; align-items: center; justify-content: center; gap: 13rpx; margin-top: 9rpx; color: #8d877c; font-size: 24rpx; line-height: 1.4; letter-spacing: .4rpx; }
 .front-caption__part { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .front-caption__part--fixed { flex: 0 0 auto; }
 .front-caption__dot { flex: 0 0 auto; width: 6rpx; height: 6rpx; border-radius: 50%; background: currentColor; opacity: .55; }
 
-/* 轻点提示：贴卡片底部通栏居中，走注释档 Footnote */
-.flip-hint { position: absolute; z-index: 4; bottom: 11rpx; left: 0; right: 0; color: #c0bab1; font-size: var(--wc-font-footnote); line-height: 1.2; text-align: center; pointer-events: none; }
+/* 轻点提示：贴卡片底部通栏居中（H5 .flip-hint：bottom 6px、8.5px 字、字距 .3px） */
+.flip-hint { position: absolute; z-index: 4; bottom: 11rpx; left: 0; right: 0; color: #c0bab1; font-size: 20rpx; line-height: 1.2; letter-spacing: .5rpx; text-align: center; pointer-events: none; }
 
-/* ── 背面：详细信息（H5 .back-inner 起）── */
+/* ── 背面：详细信息（H5 .back-inner：padding 16px 18px 14px；eyebrow 8.5px；
+   name 19px；brand 11px；divider 11px；facts gap 6px、dt 9.5px、dd 10.5px；
+   tags gap 5px、9.5px、padding 4px 9px；note 10px、padding 8px 10px。
+   字号按 1px=2rpx（375 屏基准，见正面说明）── */
 .back-inner { position: relative; z-index: 3; height: 100%; display: flex; flex-direction: column; padding: 29rpx 33rpx 25rpx; overflow: hidden; }
-.back-eyebrow { color: #77736d; font-size: var(--wc-font-footnote); font-weight: 700; line-height: 1.2; letter-spacing: 3rpx; }
-.back-name { margin-top: 7rpx; color: #1d1a15; font-family: Georgia, "Iowan Old Style", "Songti SC", serif; font-size: var(--wc-font-em-title); font-weight: 600; line-height: 1.2; }
-.back-brand { margin-top: 9rpx; color: #6f6a62; font-size: var(--wc-font-description); line-height: 1.4; }
+.back-eyebrow { color: #77736d; font-size: 20rpx; font-weight: 700; line-height: 1.2; letter-spacing: 3rpx; }
+.back-name { margin-top: 7rpx; color: #1d1a15; font-family: Georgia, "Iowan Old Style", "Songti SC", serif; font-size: 38rpx; font-weight: 600; line-height: 1.2; }
+.back-brand { margin-top: 9rpx; color: #6f6a62; font-size: 22rpx; line-height: 1.4; }
 .back-divider { height: 1rpx; margin: 20rpx 0; background: linear-gradient(90deg, rgba(20,20,20,.12), rgba(20,20,20,.04) 70%, transparent); }
-.back-facts { display: flex; flex-direction: column; gap: 10rpx; }
+.back-facts { display: flex; flex-direction: column; gap: 11rpx; }
 .back-facts__row { display: flex; align-items: baseline; justify-content: space-between; gap: 18rpx; }
-.back-facts__key { flex: 0 0 auto; color: #77736d; font-size: var(--wc-font-description); line-height: 1.4; letter-spacing: .6rpx; }
-.back-facts__value { flex: 0 1 auto; min-width: 0; color: #2b2720; font-size: var(--wc-font-description); font-weight: 600; line-height: 1.4; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.back-tags { display: flex; flex-wrap: wrap; gap: 9rpx; margin-top: 20rpx; }
-.back-tags text { padding: 7rpx 16rpx; border-radius: 18rpx; background: rgba(20,20,20,.055); color: #5d594f; font-size: var(--wc-font-footnote); line-height: 1.2; }
-/* 备注：引用式文字，走辅助档 EmDesc。后端 notes 最长 2000 字而卡内高度固定，
-   限两行裁掉（原 H5 是不裁的，但字号从 10px 提到 14pt 后三行装不下） */
-.back-note { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; margin-top: 20rpx; padding: 15rpx 18rpx; border-left: 4rpx solid rgba(20,20,20,.14); border-radius: 0 16rpx 16rpx 0; background: rgba(20,20,20,.035); color: #5f5b53; font-size: var(--wc-font-description); line-height: 1.55; }
-/* 详情页入口：挂袋区点击改成「送到上方主卡位」后，进详情的入口落在这里 */
-.back-more { display: flex; align-items: center; justify-content: center; min-height: 0; margin: auto 0 0; padding: 0; border: 0; background: transparent; color: #8a8479; font-size: var(--wc-font-description); line-height: 1.4; letter-spacing: .4rpx; }
+.back-facts__key { flex: 0 0 auto; color: #77736d; font-size: 24rpx; line-height: 1.4; letter-spacing: .5rpx; }
+.back-facts__value { flex: 0 1 auto; min-width: 0; color: #2b2720; font-size: 24rpx; font-weight: 600; line-height: 1.4; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.back-tags { display: flex; flex-wrap: wrap; gap: 9rpx; margin-top: 22rpx; }
+.back-tags text { padding: 7rpx 16rpx; border-radius: 18rpx; background: rgba(20,20,20,.055); color: #5d594f; font-size: 24rpx; line-height: 1.2; }
+/* 备注：引用式文字。后端 notes 最长 2000 字而卡内高度固定，限两行裁掉 */
+.back-note { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; margin-top: 20rpx; padding: 15rpx 18rpx; border-left: 4rpx solid rgba(20,20,20,.14); border-radius: 0 16rpx 16rpx 0; background: rgba(20,20,20,.035); color: #5f5b53; font-size: 24rpx; line-height: 1.55; }
 /* 背面右上角的「翻回去」：图标按钮不受字号规范约束，z-index 必须高于
    .flip-card__hit(6) 才点得到（H5 .flip-back） */
 .flip-back { position: absolute; z-index: 8; top: 22rpx; right: 22rpx; display: flex; align-items: center; justify-content: center; width: 51rpx; height: 51rpx; min-width: 0; margin: 0; padding: 0; border: 0; border-radius: 50%; background: rgba(20,20,20,.055); color: #6d675e; font-size: 30rpx; line-height: 1; }
@@ -513,33 +586,54 @@ onPullDownRefresh(() => void load().finally(() => uni.stopPullDownRefresh()));
 .skeleton-line { width: 260rpx; height: 24rpx; margin-top: 18rpx; border-radius: 999rpx; background: rgba(255,255,255,.75); }
 .skeleton-line--wide { width: 340rpx; margin-top: 48rpx; }
 
-/* ── 最近收集（H5 .rack-section / .section-heading / .stage-count）── */
-.recent-section { margin-top: 6rpx; }
+/* ── 最近收集（H5 .rack-section / .section-heading / .stage-count）──
+   2026-09-26 用户要求去掉区块底色（原先加的米色底让玻璃卡框更显形，但用户不需要） */
+/* 负 margin 生效：与上一区块的 47rpx 下边距折叠后为 47−14=33rpx，
+   标题整体上移（2026-09-26 用户要求上移一点） */
+.recent-section { margin-top: -14rpx; }
 /* H5 .section-heading：两端对齐、基线贴底 */
 .recent-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 16rpx; padding: 0 40rpx 6rpx; }
-/* 区块标题：二级标题 EmTitle 17pt（h2 默认 bold，跟 H5 的 700） */
-.recent-title { color: #141414; font-family: Iowan Old Style, Baskerville, "Times New Roman", "Songti SC", serif; font-size: var(--wc-font-em-title); font-weight: 700; line-height: 1.05; letter-spacing: -1rpx; }
-.recent-all { min-height: 0; margin: 0 0 6rpx; padding: 0; border: 0; background: transparent; color: #77736d; font-size: var(--wc-font-description); line-height: 32rpx; }
-.recent-all-arrow { color: #141414; margin-left: 6rpx; }
-.stage-count { display: block; padding: 0 40rpx 22rpx; color: #77736d; font-size: var(--wc-font-description); line-height: 1.4; }
-/* 挂袋区通栏：scroll-view 铺满整块屏幕，绳子（width:100%）才能真正顶到左右尽头 */
+/* 区块标题：EmTitle 34rpx → 2026-09-26 用户要求调大一点 → 38rpx（仍 700 衬线） */
+.recent-title { color: #141414; font-family: Iowan Old Style, Baskerville, "Times New Roman", "Songti SC", serif; font-size: 38rpx; font-weight: 700; line-height: 1.05; letter-spacing: -1rpx; }
+/* 标题与副行小字的间距：原为 0（贴死），2026-09-26 用户要求调大 */
+.recent-heading { padding-bottom: 16rpx; }
+/* 副行：「最近15天 · N 件」与「查看全部」垂直居中对齐（两端撑开） */
+.recent-sub { display: flex; align-items: center; justify-content: space-between; gap: 16rpx; padding: 0 40rpx 18rpx; }
+/* flex 垂直居中：图片是内联元素时按基线对齐，27rpx 的图标底边坐在文字基线上，
+   视觉上箭头比文字高一截 —— 改 flex 后图标与文字垂直居中 */
+.recent-all { min-height: 0; margin: 0; padding: 0; border: 0; background: transparent; color: #77736d; font-size: 24rpx; line-height: 32rpx; display: flex; align-items: center; }
+/* 箭头与展架标题行的同款 SVG 图标（#77736d 描边、27rpx），观感一致 */
+.recent-all-arrow { width: 27rpx; height: 27rpx; margin-left: 6rpx; }
+.stage-count { display: block; color: #77736d; font-size: 24rpx; line-height: 1.4; }
+/* 挂袋区通栏：scroll-view 铺满整块屏幕，横杆（left/right 0）才能真正顶到左右尽头 */
 .recent-scroll { position: relative; z-index: 1; width: 100%; }
-.recent-scene { position: relative; display: inline-flex; min-width: 100%; padding: 96rpx 24rpx 28rpx; }
-/* 宽度必须用 CSS 100%（相对 recent-scene 的 padding box = 整条内容宽）：
-   实测微信对 image 内联 style 里的动态 rpx 宽度不生效，元素会回落到默认 320px，
-   导致绳子两头够不到屏幕边缘 */
-.rail-rope { position: absolute; z-index: 0; left: 0; top: 40rpx; width: 100%; height: 56rpx; pointer-events: none; }
+/* ⚠ 轮心对齐的唯一真源：--rail-center（杆心离场景顶的高度）与 --hang-origin（轮心到卡顶的距离）。
+   padding-top = 两者之和 → 杆心与轮心从同一组常量推导，数学上保证重合；
+   滑环 top、吊线 top、摆动轴心全部引用这两个变量，改轮位只动这里。
+   卡宽是调参入口（原型 --rack-card-w）：106px → 96px → 2026-09-26 方案 A 再调小至 80px = 160rpx
+   （重叠同步 22 → 20rpx）；照片区高度与 meta 字号都按卡宽 calc 派生，改这一个变量整排跟着缩。 */
+.recent-scene { --rail-center: 26rpx; --hang-origin: 80rpx; --rack-card-w: 160rpx; --rack-overlap: 20rpx; position: relative; display: inline-flex; min-width: 100%;
+  /* rail-center 必须 ≥ 滑轮半径 19.5rpx + 高亮环 2rpx + 余量：否则滑轮顶超出滚动内容上缘被裁。
+     26rpx 时轮顶留 4.5rpx 余量，且轮心（卡顶 − hang-origin）天然等于杆心，勿用 padding 补 */
+  padding: calc(var(--rail-center) + var(--hang-origin)) 22rpx 22rpx; }
 .recent-row { position: relative; z-index: 1; display: inline-flex; align-items: flex-start; }
-.recent-item { width: 220rpx; flex: 0 0 220rpx; margin: 0; padding: 0; overflow: visible; background: transparent; text-align: center; transition: transform .28s cubic-bezier(.2,.8,.25,1); }
-.recent-item + .recent-item { margin-left: -40rpx; }
-.rail-hang { position: relative; transform-origin: 50% 0; }
+/* 轻叠 -12px（后压前）；--lift 给选中上提 4px=7rpx */
+.recent-item { --lift: 0rpx; width: var(--rack-card-w); flex: 0 0 var(--rack-card-w); margin: 0; padding: 0; overflow: visible; background: transparent; text-align: center; }
+.recent-item + .recent-item { margin-left: calc(-1 * var(--rack-overlap)); }
+.recent-item.is-active { --lift: 7rpx; z-index: 3; }
+.rail-hang { position: relative; transform-origin: 50% calc(-1 * var(--hang-origin)); }
 /* ── 拖动这一排时的滞后摆动层 ──
    两层变换叠加：父层（.rail-hang）跑常态轻晃 / 轻点摆动，本层跑拖动倾斜，
    分开是为了不互相覆盖 —— 同一个 transform 上，动画会压掉 inline 样式。
    倾角由脚本按滚动速度写成 inline transform；松手时切到带过冲的曲线弹回（模拟弹簧落回），
    .16s 的短过渡把脚本 80ms 一次的台阶抹平。 */
-.rail-swing { position: relative; transform-origin: 50% 0; transition: transform .16s ease-out; }
-.rail-swing.is-releasing { transition: transform .62s cubic-bezier(.34,1.42,.5,1); }
+/* ⚠ 垂距 --dy 用 swing 的 padding-top 承载（原来是卡框的 margin-top）：
+   block 容器里第一个子元素的 margin-top 会塌陷穿透到父元素，把整个 swing
+   连滑环一起往下推 —— 表现就是「只有第一张卡(dy=0)的滑环在杆心上」。
+   padding 不参与塌陷，且绝对定位的滑环/吊线/夹具参照 padding box 边缘、
+   位置不受 padding 影响 —— 这是零副作用的阻断方式（等价 H5 的 flow-root） */
+.rail-swing { position: relative; padding-top: calc(var(--dy, 0rpx) - var(--lift, 0rpx)); transform-origin: 50% calc(-1 * var(--hang-origin)); transition: transform .16s ease-out, padding-top .28s cubic-bezier(.2, .8, .25, 1); }
+.rail-swing.is-releasing { transition: transform .62s cubic-bezier(.34, 1.42, .5, 1), padding-top .28s cubic-bezier(.2, .8, .25, 1); }
 .hang-tilt-left { animation: sway-left 5.6s ease-in-out infinite alternate; }
 .hang-tilt-right { animation: sway-right 6.4s ease-in-out infinite alternate; }
 @keyframes sway-left { from { transform: rotate(-3.4deg); } to { transform: rotate(-1.6deg); } }
@@ -556,33 +650,113 @@ onPullDownRefresh(() => void load().finally(() => uni.stopPullDownRefresh()));
 .hang-tilt-left.is-kicking { animation: sway-left 5.6s ease-in-out infinite alternate, kick-left 2s linear 1; }
 @keyframes kick-right { 0% { transform: rotate(2.5deg); } 2.5% { transform: rotate(21.1deg); } 5% { transform: rotate(26.1deg); } 7.5% { transform: rotate(17.6deg); } 10% { transform: rotate(8deg); } 15% { transform: rotate(-8.4deg); } 20% { transform: rotate(-14.9deg); } 25% { transform: rotate(-10.7deg); } 30% { transform: rotate(-0.7deg); } 37.5% { transform: rotate(11.1deg); } 45% { transform: rotate(9.9deg); } 52.5% { transform: rotate(1.6deg); } 60% { transform: rotate(-2.8deg); } 70% { transform: rotate(1.4deg); } 80% { transform: rotate(5.1deg); } 90% { transform: rotate(2.8deg); } 100% { transform: rotate(2.5deg); } }
 @keyframes kick-left { 0% { transform: rotate(-2.5deg); } 2.5% { transform: rotate(16.1deg); } 5% { transform: rotate(21.1deg); } 7.5% { transform: rotate(12.6deg); } 10% { transform: rotate(3deg); } 15% { transform: rotate(-13.4deg); } 20% { transform: rotate(-19.9deg); } 25% { transform: rotate(-15.7deg); } 30% { transform: rotate(-5.7deg); } 37.5% { transform: rotate(6.1deg); } 45% { transform: rotate(4.9deg); } 52.5% { transform: rotate(-3.4deg); } 60% { transform: rotate(-7.8deg); } 70% { transform: rotate(-3.6deg); } 80% { transform: rotate(0.1deg); } 90% { transform: rotate(-2.2deg); } 100% { transform: rotate(-2.5deg); } }
-.rail-clip { position: absolute; z-index: 3; left: 50%; width: 52rpx; height: 52rpx; margin-left: -26rpx; border: 2rpx solid rgba(150,115,65,.45); border-radius: 50%; background: radial-gradient(circle at 35% 28%, #f2e2c0 0%, #e5cfa2 55%, #d4ba8a 100%); box-shadow: 0 2rpx 5rpx rgba(30,22,8,.3), inset 0 2rpx 0 rgba(255,255,255,.4); }
-/* 孔环夹子的三层（H5 .rack-clip 逐值照搬，之前那张 figma SVG 的「内圈奶油色圆盘 + 大深孔」
-   与 H5 不符 —— H5 是「暖铜垫片外圈 + 冷灰钢孔环内圈 + 很小的深色孔洞」，内圈只占 38%）。
-   尺寸：H5 按卡片宽 ×0.236 缩放 → 220rpx × 0.236 ≈ 52rpx；内圈 10/26 → 20rpx；孔洞 3.5/26 → 7rpx。
-   用 margin 而不是 translate(-50%,-50%) 居中，免得和父层变换打架。 */
-.rail-clip::before { content: ""; position: absolute; top: 50%; left: 50%; width: 20rpx; height: 20rpx; margin: -10rpx 0 0 -10rpx; border: 2rpx solid rgba(105,115,127,.65); border-radius: 50%; background: radial-gradient(circle at 35% 28%, #fdfefe 0%, #d7dde3 40%, #aeb7c0 72%, #8e99a3 100%); box-shadow: inset 0 2rpx 2rpx rgba(255,255,255,.85), 0 2rpx 4rpx rgba(40,48,58,.35); }
-.rail-clip::after { content: ""; position: absolute; top: 50%; left: 50%; width: 7rpx; height: 7rpx; margin: -3.5rpx 0 0 -3.5rpx; border-radius: 50%; background: #2b3038; }
-.rail-frame { position: relative; z-index: 1; padding: 10rpx; border: 3rpx solid #8a6f45; border-radius: 8rpx; background: rgba(255, 255, 255, .26); box-shadow: 0 6rpx 20rpx rgba(60, 45, 20, .14), inset 0 2rpx 0 rgba(255, 255, 255, .4); }
-.rail-photo { position: relative; display: flex; align-items: center; justify-content: center; height: 284rpx; border-radius: 4rpx; overflow: hidden; }
-.rail-photo image { width: 96%; height: 90%; filter: drop-shadow(0 12rpx 16rpx rgba(0, 0, 0, .28)); }
+/* ── 亚克力展示杆（原型 .rack-cable / .rack-rail / 端件，1px→1.82rpx 换算）──
+   半透芥黄杆身（原型 color-mix 已手工混成 rgba/实色）+ 背板模糊 + 四缘棱光；
+   杆体 top 8.88px→16rpx，厚 10px→18rpx；端件 9×13.5px→16×25rpx */
+.rack-cable { position: absolute; z-index: 0; top: 0; left: 0; right: 0; height: 40rpx; pointer-events: none; }
+.rack-rail { position: absolute; top: calc(var(--rail-center) - 9rpx); left: 44rpx; right: 44rpx; height: 18rpx; border-radius: 5rpx;
+  background: linear-gradient(180deg, #F8DD9D 0%, rgba(240,180,37,.68) 28%, rgba(240,180,37,.86) 64%, rgba(240,180,37,.52) 100%);
+  -webkit-backdrop-filter: blur(5rpx) saturate(1.25); backdrop-filter: blur(5rpx) saturate(1.25);
+  box-shadow: 0 4rpx 7rpx rgba(90,60,10,.14), inset 0 2rpx 0 rgba(255,255,255,.85), inset 0 -2rpx 2rpx rgba(255,255,255,.28), inset 3rpx 0 4rpx rgba(255,255,255,.42), inset -3rpx 0 4rpx rgba(255,255,255,.42); }
+.rack-rail::before { content: ""; position: absolute; left: 5%; right: 34%; top: 3rpx; height: 5rpx; border-radius: 4rpx;
+  background: linear-gradient(90deg, rgba(255,255,255,0), rgba(255,255,255,.6) 20%, rgba(255,255,255,.42) 60%, rgba(255,255,255,0)); }
+/* 端部夹块：不锈钢 conic 拉丝 + 左上高光 + 沉边（与四角螺点同材质族）。
+   ⚠ top 必须随 --rail-center 走（H5 端件中心 = 杆心 15.98px）：上一轮杆身下移
+   16rpx 时端件没跟，悬在杆上方 8px —— 就是「没对齐」的元凶 */
+/* 端件三件套 top 全部绑定 --rail-center，几何中心与杆心一致（曾试过光学上提，已回退） */
+.rack-endcap { position: absolute; top: calc(var(--rail-center) - 12rpx); width: 16rpx; height: 25rpx; border-radius: 4rpx;
+  /* 原用 conic-gradient 模拟拉丝，其最暗扇区（#97a1ab @ 50%）指向顶部，叠上高光淡出带
+     形成顶部「黑点」——改平滑纵向金属渐变，暗部落在中下并柔和过渡 */
+  background: linear-gradient(180deg, rgba(255,255,255,.55), rgba(255,255,255,0) 30%, rgba(0,0,0,.08) 100%), linear-gradient(180deg, #f8fafb 0%, #d4dae0 45%, #bcc5cd 70%, #e6eaee 100%);
+  box-shadow: 0 2rpx 4rpx rgba(0,0,0,.40), 0 2rpx 5rpx rgba(0,0,0,.18), inset 0 0 0 1rpx rgba(255,255,255,.60), inset 0 -1rpx 2rpx rgba(0,0,0,.30); }
+.rack-endcap--l { left: 31rpx; }
+.rack-endcap--r { right: 31rpx; }
+/* 外伸螺纹杆（repeating 车螺纹纹理），中心对齐杆心 */
+.rack-stud { position: absolute; top: calc(var(--rail-center) - 3rpx); width: 24rpx; height: 6rpx; border-radius: 3rpx;
+  background: linear-gradient(180deg, rgba(255,255,255,.85), rgba(122,134,146,.55)), repeating-linear-gradient(90deg, transparent 0 3rpx, rgba(96,108,120,.55) 3rpx 4rpx), #C3CCD5;
+  box-shadow: 0 2rpx 4rpx rgba(40,48,58,.30); }
+.rack-stud--l { left: 11rpx; }
+.rack-stud--r { right: 11rpx; }
+/* 朱红圆球头：光面亚克力珠（穹面渐变 + 高光点 + 次反光），8.5px→15rpx，中心对齐杆心 */
+.rack-knob { position: absolute; top: calc(var(--rail-center) - 7.5rpx); width: 15rpx; height: 15rpx; border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #FF8A70 0%, #E23C2D 55%, #A32415 100%);
+  box-shadow: 0 4rpx 6rpx rgba(120,20,10,.35), inset 0 0 0 1rpx rgba(150,25,12,.4); }
+.rack-knob::before { content: ""; position: absolute; left: 19%; top: 17%; width: 26%; height: 26%; border-radius: 50%; background: rgba(255,255,255,.95); }
+.rack-knob::after { content: ""; position: absolute; left: 60%; bottom: 20%; width: 14%; height: 14%; border-radius: 50%; background: rgba(255,255,255,.4); }
+.rack-knob--l { left: 2rpx; }
+.rack-knob--r { right: 2rpx; }
+
+/* ── 滑环（原型 SVG 滑轮的 CSS 化）：盒 21.496px→39rpx，轮心 = 盒中心 = 杆心
+   → 盒 top = -54.77px→-100rpx。小程序 image 不渲染 SVG，改纯 CSS：
+   银钢环（border + 渐变棱影）+ 两根水平银臂 + 芥黄轮毂。 */
+.rack-clip { position: absolute; top: calc(-1 * var(--hang-origin) - 19.5rpx); left: 50%; transform: translateX(-50%); z-index: 3; }
+.pulley { position: relative; box-sizing: border-box; width: 39rpx; height: 39rpx; border-radius: 50%;
+  /* 环带粗细对齐 H5（stroke 3.4px → 6rpx）：孔径 27rpx > 杆厚 18rpx，杆从孔中穿过、上下各留 ~4rpx 空隙 */
+  border: 6rpx solid #E9EEF3;
+  /* 孔必须透空：芥黄杆从孔中穿过（预期图的关键特征），背景保持透明，光影靠描边 */
+  box-shadow: 0 0 0 1rpx rgba(88,100,112,.32), 0 0 0 2rpx rgba(255,255,255,.75), inset 0 2rpx 2rpx rgba(255,255,255,.9), inset 0 -2rpx 3rpx rgba(0,0,0,.12); }
+/* 银臂：从轮毂边缘连到环内缘（原型 M7.371→4.021，即盒内 8~15rpx 一段） */
+.pulley__arm { position: absolute; top: 50%; height: 2rpx; width: 7rpx; margin-top: -1rpx; background: #9AA4AE; }
+.pulley__arm--l { left: 8rpx; }
+.pulley__arm--r { right: 8rpx; }
+/* 轮毂：芥黄（直径对齐 H5 r2.2 → 9rpx），选中变红 #c50205（原型⑯） */
+.pulley__hub { position: absolute; left: 50%; top: 50%; width: 9rpx; height: 9rpx; margin: -4.5rpx 0 0 -4.5rpx; border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #F9D86C 0%, #F0B425 55%, #C08C10 100%);
+  border: 1rpx solid #B88810; box-shadow: 0 1rpx 2rpx rgba(90,60,10,.35); }
+.pulley__hub::before { content: ""; position: absolute; left: 18%; top: 14%; width: 32%; height: 32%; border-radius: 50%; background: rgba(255,255,255,.95); }
+.recent-item.is-active .pulley__hub { background: #c50205; border-color: #8f0204; }
+/* 选中滑环：玻璃层只留一圈细亮边（0.25s 淡入，原型⑰⑱⑲）。
+   白色必须近乎不透明：背后是压暗蒙层（深色），55% 白会混成灰圈 */
+.rack-clip::after { content: ""; position: absolute; inset: -2rpx; border-radius: 50%; z-index: 2; opacity: 0; border: 2rpx solid rgba(255,255,255,.95); pointer-events: none; transition: opacity .25s ease; }
+.recent-item.is-active .rack-clip::after { opacity: 1; }
+
+/* 吊线：从轮心垂到夹具顶，上半段藏在轮体后面，选中上提时跟着缩短 */
+.rack-wire { position: absolute; top: calc(-1 * var(--hang-origin)); left: 50%; margin-left: -2rpx; width: 4rpx; height: calc(66rpx + var(--dy, 0rpx) - var(--lift, 0rpx)); border-radius: 2rpx; z-index: 2;
+  background: linear-gradient(90deg, #A9B2BB, #F2F6F9 42%, #939DA7); transition: height .28s cubic-bezier(.2,.8,.25,1); }
+
+/* ── 夹具：统一用原型卡3「喷砂哑光」款（低反差漫射），咬住卡顶 7.5px=14rpx ── */
+.grip { position: absolute; top: calc(-14rpx + var(--dy, 0rpx) - var(--lift, 0rpx)); left: 50%; margin-left: -11rpx; z-index: 6;
+  width: 21rpx; height: 27rpx; border-radius: 5rpx 5rpx 4rpx 4rpx;
+  background: linear-gradient(180deg, #F2F5F7 0%, #DFE5EA 30%, #CBD4DB 64%, #B0BAC3 100%);
+  box-shadow: 0 2rpx 5rpx rgba(46,56,66,.26), inset 0 2rpx 0 rgba(255,255,255,.7), inset -1rpx 0 0 rgba(120,132,144,.28), inset 1rpx 0 0 rgba(255,255,255,.4);
+  transition: top .28s cubic-bezier(.2,.8,.25,1); }
+.grip::before { content: ""; position: absolute; left: 3rpx; right: 3rpx; top: 10rpx; height: 2rpx; border-radius: 2rpx; background: rgba(112,124,136,.5); }
+.grip::after { content: ""; position: absolute; left: 50%; top: 4rpx; margin-left: -2.5rpx; width: 5rpx; height: 3.5rpx; border-radius: 50%;
+  background: radial-gradient(circle at 34% 30%, #FDFEFE, #AEB8C2 62%, #87919B); box-shadow: 0 1rpx 2rpx rgba(46,56,66,.5); }
+.grip__mouth { position: absolute; left: 3rpx; right: 3rpx; bottom: 6rpx; height: 4rpx; border-radius: 2rpx;
+  background: linear-gradient(180deg, rgba(120,132,144,.65), rgba(72,84,96,.85)); }
+/* ── 卡框：玻璃边框（2026-09-26 用户要求所有卡片观感统一）──
+   边框改**不透明白**、玻璃底提高不透明度、去掉 backdrop-filter ——
+   半透明 + 磨砂会透出背后内容且真机渲染不一致，导致各卡边框有色差；
+   现在所有未选中卡片渲染完全一致（选中红环不受影响）。
+   垂距已由 swing 的 padding-top 承载（含选中上提 -lift），卡框自身不再带 margin */
+.rack-frame { position: relative; z-index: 1;
+  border: 2rpx solid #ffffff; border-radius: 11rpx; padding: 9rpx;
+  background: linear-gradient(160deg, rgba(255,255,255,.80) 0%, rgba(255,255,255,.58) 48%, rgba(244,240,233,.66) 100%);
+  box-shadow: 0 7rpx 25rpx rgba(60,52,40,.16), inset 0 2rpx 0 rgba(255,255,255,.85), inset 0 -2rpx 0 rgba(255,255,255,.28); }
+/* 四角螺点：不锈钢样式（conic 拉丝环 + 左上高光 + 沉孔阴影，冷银调），4px=7rpx */
+.rack-screw { position: absolute; width: 7rpx; height: 7rpx; border-radius: 50%; z-index: 5;
+  background: radial-gradient(circle at 34% 26%, rgba(255,255,255,.95) 0 12%, rgba(255,255,255,0) 34%), radial-gradient(circle at 50% 50%, rgba(255,255,255,.9) 0 8%, rgba(255,255,255,0) 30%), conic-gradient(from 210deg, #f4f6f8, #c3cad1 25%, #97a1ab 50%, #d5dce2 75%, #f4f6f8 100%);
+  box-shadow: 0 1.5rpx 3rpx rgba(0,0,0,.38), 0 1.5rpx 4rpx rgba(0,0,0,.16), inset 0 0 0 1rpx rgba(255,255,255,.60), inset 0 -1rpx 2rpx rgba(0,0,0,.30); }
+.rack-screw--tl { top: 5rpx; left: 5rpx; }
+.rack-screw--tr { top: 5rpx; right: 5rpx; }
+.rack-screw--bl { bottom: 5rpx; left: 5rpx; }
+.rack-screw--br { bottom: 5rpx; right: 5rpx; }
+/* 照片区：无底色（原型④），袋子直接落在玻璃卡内的透明底上；袋宽 84% 靠左（.paper-bag 规则）；
+   高度 = 卡宽 × 1.29（H5 .rack-photo 用 --rack-card-w 推导，这里同式） */
+.rack-photo { position: relative; height: calc(var(--rack-card-w) * 1.29); border-radius: 4rpx; overflow: hidden; display: flex; align-items: center; justify-content: flex-start;
+  background: linear-gradient(180deg, rgba(255,255,255,.10), rgba(0,0,0,.10)); }
+/* 袋图撑满照片区（aspectFit 等比、居中）—— 预期图里袋子几乎占满玻璃卡 */
+.rack-photo image { width: 100%; height: 100%; filter: drop-shadow(0 7rpx 18rpx rgba(0, 0, 0, .18)); }
 .recent-placeholder { width: 120rpx; height: 200rpx; border-radius: 12rpx; background: rgba(255, 255, 255, .4); }
-.rail-meta { padding: 14rpx 6rpx 0; }
-/* 挂袋名字走三级标题 EmGroupTitle 15pt，副信息走注释档 Footnote 12pt */
-/* H5 的 .rack-meta strong 只写 `Georgia, serif`，比卡片标题那套更素 */
-.rail-name { display: block; overflow: hidden; color: #4a3a22; font-family: Georgia, serif; font-size: var(--wc-font-group-title); font-weight: 700; line-height: 40rpx; white-space: nowrap; text-overflow: ellipsis; }
-.rail-info { display: block; overflow: hidden; margin-top: 4rpx; color: #a09274; font-size: var(--wc-font-footnote); line-height: 32rpx; white-space: nowrap; text-overflow: ellipsis; }
-/* 选中态：当前正在主展位展示的那一张（H5 .rack-item.is-active） */
-.recent-item.is-active { transform: translateY(-7rpx); }
-.recent-item.is-active .rail-frame { border-color: #c8891f; box-shadow: 0 11rpx 29rpx rgba(160,110,20,.26), inset 0 2rpx 0 rgba(255,255,255,.5); }
+/* meta：字号随卡宽推导（H5 .rack-meta：.064/.118/.082），靠左 */
+.rail-meta { padding: calc(var(--rack-card-w) * 0.064) 5rpx 0; text-align: left; }
+.rail-name { display: block; overflow: hidden; color: #4a3a22; font-family: Georgia, serif; font-size: calc(var(--rack-card-w) * 0.118); font-weight: 700; line-height: 1.2; white-space: nowrap; text-overflow: ellipsis; }
+.rail-info { display: block; overflow: hidden; margin-top: 4rpx; color: #a09274; font-size: calc(var(--rack-card-w) * 0.082); line-height: 1.4; white-space: nowrap; text-overflow: ellipsis; }
+/* 选中态：红环 + 红晕 + 红轮毂（原型⑯），玻璃与标题金不变；
+   上提由 --lift 变量驱动（吊线缩短 / 夹具与卡框上移），不再用 translateY */
+.recent-item.is-active .rail-frame { box-shadow: 0 0 0 3rpx #c50205, 0 11rpx 29rpx rgba(150,10,10,.28), inset 0 2rpx 0 rgba(255,255,255,.85); }
 .recent-item.is-active .rail-name { color: #8a5a10; }
-.recent-item.is-active .rail-clip { box-shadow: 0 0 0 5rpx rgba(240,154,42,.3), 0 2rpx 5rpx rgba(30,22,8,.3); }
-.rack-hint { display: block; padding: 15rpx 36rpx 0; color: #77736d; font-size: var(--wc-font-description); line-height: 1.4; text-align: center; opacity: .8; }
-/* 卡片内衬的 6 种复古底色，按渲染顺序循环（同 h5-prototype BAG_COLOR_CLASSES） */
-.tone-vermillion { background: linear-gradient(180deg, rgba(255,255,255,.12), rgba(0,0,0,.08)), linear-gradient(160deg, rgba(255,224,196,.14) 0%, transparent 45%), repeating-linear-gradient(37deg, rgba(255,224,196,.08) 0 2rpx, transparent 2rpx 38rpx), repeating-linear-gradient(-52deg, rgba(255,224,196,.06) 0 2rpx, transparent 2rpx 54rpx), repeating-linear-gradient(84deg, rgba(255,224,196,.05) 0 2rpx, transparent 2rpx 66rpx), #a22d2c; }
-.tone-kraft { background: linear-gradient(180deg, rgba(255,255,255,.12), rgba(0,0,0,.08)), repeating-linear-gradient(105deg, transparent 0 28rpx, rgba(255,255,255,.07) 28rpx 32rpx), #bd8958; }
-.tone-blue { background: linear-gradient(180deg, rgba(255,255,255,.12), rgba(0,0,0,.08)), repeating-linear-gradient(60deg, rgba(255,255,255,.16) 0 3rpx, transparent 3rpx 26rpx), repeating-linear-gradient(-60deg, rgba(255,255,255,.1) 0 3rpx, transparent 3rpx 26rpx), #1e5c90; }
-.tone-black { background: linear-gradient(180deg, rgba(255,255,255,.12), rgba(0,0,0,.08)), linear-gradient(145deg, transparent 0 54%, rgba(255,255,255,.12) 54% 56%, transparent 56%), #242323; }
-.tone-green { background: linear-gradient(180deg, rgba(255,255,255,.12), rgba(0,0,0,.08)), repeating-radial-gradient(ellipse at 20% 20%, transparent 0 24rpx, rgba(242,221,150,.19) 24rpx 30rpx), #458951; }
-.tone-pink { background: linear-gradient(180deg, rgba(255,255,255,.12), rgba(0,0,0,.08)), radial-gradient(circle at 15% 20%, rgba(255,255,255,.28) 0 4rpx, transparent 5rpx), radial-gradient(circle at 45% 60%, rgba(255,255,255,.22) 0 3rpx, transparent 4rpx), radial-gradient(circle at 75% 25%, rgba(255,255,255,.24) 0 4rpx, transparent 5rpx), radial-gradient(circle at 30% 85%, rgba(255,255,255,.2) 0 3rpx, transparent 4rpx), radial-gradient(circle at 85% 70%, rgba(255,255,255,.22) 0 4rpx, transparent 5rpx), radial-gradient(circle at 60% 40%, rgba(255,255,255,.18) 0 3rpx, transparent 4rpx), #f1718b; }
+/* 与大卡片「轻点翻面 · 查看详情」（.flip-hint）字号/颜色/字距完全一致 */
+.rack-hint { display: block; padding: 2rpx 36rpx 0; color: #c0bab1; font-size: 20rpx; line-height: 1.2; letter-spacing: .5rpx; text-align: center; }
 </style>

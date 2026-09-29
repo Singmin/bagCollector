@@ -1,17 +1,17 @@
-<view class="tab-shell {{masked ? 'is-masked' : ''}}" catchtap="swallow">
+<view class="tab-shell {{hidden ? 'is-hidden' : ''}}" catchtap="swallow">
   <view class="tab-bar">
     <button class="tab-item {{selected === 0 ? 'is-active' : ''}}" data-index="0" bindtap="switchTab">
-      <image class="tab-icon" src="{{selected === 0 ? '/static/figma/nav-showcase-active.svg' : '/static/figma/nav-showcase.svg'}}" mode="aspectFit" />
-      <text>陈列</text>
+      <image class="tab-icon" src="{{selected === 0 ? '/static/figma/nav-home-active.svg' : '/static/figma/nav-home.svg'}}" mode="aspectFit" />
+      <text>首页</text>
     </button>
     <view class="add-slot">
       <button class="add-button" bindtap="add" aria-label="添加收藏">
-        <image class="add-icon" src="/static/figma/add.svg" mode="aspectFit" />
+        <text class="add-glyph">＋</text>
       </button>
     </view>
     <button class="tab-item {{selected === 1 ? 'is-active' : ''}}" data-index="1" bindtap="switchTab">
       <image class="tab-icon" src="{{selected === 1 ? '/static/figma/nav-library-active.svg' : '/static/figma/nav-library.svg'}}" mode="aspectFit" />
-      <text>全部收藏</text>
+      <text>收藏架</text>
     </button>
   </view>
 </view>
