@@ -25,6 +25,8 @@ export interface CollectibleSummary {
   thumbnailUrl?: string;
   addedAt: string;
   updatedAt: string;
+  /** 发现页 feed 条目的主人昵称（官方精选时为品牌名）；自己的收藏没有该字段 */
+  ownerName?: string;
 }
 
 export interface Collectible extends CollectibleSummary {
