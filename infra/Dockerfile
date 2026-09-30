@@ -1,5 +1,9 @@
 FROM node:22.12.0-alpine AS base
-RUN corepack enable && corepack prepare pnpm@10.18.3 --activate
+# Node 22.12 内置的 corepack（0.28.x）缺 pnpm 新版签名公钥，直接 prepare 会报
+# "Internal Error: Cannot find matching keyid"。先升 corepack 拿到新 key 再 activate。
+RUN npm install -g corepack@latest \
+  && corepack enable \
+  && corepack prepare pnpm@10.18.3 --activate
 WORKDIR /app
 
 FROM base AS deps
