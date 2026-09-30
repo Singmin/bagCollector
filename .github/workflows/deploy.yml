@@ -61,12 +61,12 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           # 预先采集主机指纹，之后 StrictHostKeyChecking=yes 也不会交互卡住
           # -T 30：默认 5s 超时对海外->国内链路太短，放宽到 30s
-          if ssh-keyscan -T 30 -p "$DEPLOY_PORT" "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null; then
+          if ssh-keyscan -T 60 -p "$DEPLOY_PORT" "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null; then
             echo "主机指纹采集成功"
           else
             echo "::error::ssh-keyscan 失败：TCP 能连通但 SSH 握手无响应（$DEPLOY_HOST:$DEPLOY_PORT）" >&2
             echo "===== SSH 详细握手诊断（看卡在哪一步）=====" >&2
-            timeout 45 ssh -vv -o ConnectTimeout=20 -o BatchMode=yes \
+            timeout 90 ssh -vv -o ConnectTimeout=45 -o BatchMode=yes \
               -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" exit 2>&1 | tail -n 60 >&2 || true
             echo "===== 诊断结束。常见原因 =====" >&2
             echo "  1. 服务器上 sshd 未监听该端口：ss -tlnp | grep -E 'sshd|:22|:$DEPLOY_PORT'" >&2
@@ -86,7 +86,7 @@ jobs:
           TARGET_DIR: ${{ secrets.DEPLOY_PATH }}/incoming/${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           KEY="$HOME/.ssh/deploy_key"
-          COMMON="-i $KEY -o ConnectTimeout=20 -o BatchMode=yes -o StrictHostKeyChecking=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
+          COMMON="-i $KEY -o ConnectTimeout=45 -o BatchMode=yes -o StrictHostKeyChecking=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
           ARCHIVE="bagcollect-source-${GITHUB_SHA}.tar.gz"
           echo "===== 1/3 远程建目录 ====="
           timeout 60 ssh $COMMON -v -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$TARGET_DIR'"
@@ -114,7 +114,7 @@ jobs:
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
           ssh -i ~/.ssh/deploy_key -p "$DEPLOY_PORT" \
-            -o ConnectTimeout=20 -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=45 -o BatchMode=yes -o StrictHostKeyChecking=yes \
             -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
             "$DEPLOY_USER@$DEPLOY_HOST" /bin/bash -s <<'REMOTE_SCRIPT'
             set -eu
