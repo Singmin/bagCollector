@@ -43,6 +43,12 @@ export interface CollectiblePage {
   totalCount: number;
 }
 
+/** 拥有官方袋子（发现页「标记已有」）的结果：记录已建好，图片仍在后台复制。 */
+export interface OfficialClaimResult {
+  collectibleId: string;
+  processingStatus: ProcessingStatus;
+}
+
 export interface UploadPolicy {
   assetId: string;
   key: string;

@@ -134,11 +134,12 @@ async function loginAdmin() {
   }, 201);
 }
 
-async function uploadImage(adminToken, bagId, expected = 201, buffer) {
+async function uploadImage(adminToken, bagId, expected = 201, buffer, matting) {
   const body = buffer ?? (await pngBytes(100, 100));
   const form = new FormData();
   form.append('file', new Blob([body], { type: 'image/png' }), 'bag.png');
-  return request(`/admin/official-bags/${bagId}/image`, { method: 'POST', headers: bearer(adminToken), body: form }, expected);
+  const query = matting === undefined ? '' : `?matting=${matting}`;
+  return request(`/admin/official-bags/${bagId}/image${query}`, { method: 'POST', headers: bearer(adminToken), body: form }, expected);
 }
 
 try {
@@ -357,6 +358,40 @@ try {
   const stillThere = await prisma.collectible.findUnique({ where: { id: claim.collectibleId } });
   if (!stillThere) throw new Error('Offline bag deleted an already-claimed collectible');
 
+  // ---- 上传时按表单开关执行抠图 + 删除图片 ----
+  const imageBag = await request('/admin/official-bags', {
+    method: 'POST',
+    headers: bearer(admin.accessToken),
+    body: JSON.stringify({ name: `图片管理袋 ${suffix}`, matting: false })
+  }, 201);
+  const mattingUpload = await uploadImage(admin.accessToken, imageBag.id, 201, Buffer.from(await pngBytes(64, 64)), true);
+  if (mattingUpload.version !== 1) throw new Error('Upload with matting did not start at version 1');
+  if ((await prisma.officialBag.findUniqueOrThrow({ where: { id: imageBag.id } })).matting !== true) {
+    throw new Error('Upload did not override the bag matting flag');
+  }
+  await simulateProcessing(imageBag.id, 1);
+  await request(`/admin/official-bags/${imageBag.id}`, {
+    method: 'PATCH', headers: bearer(admin.accessToken), body: JSON.stringify({ status: 'PUBLISHED' })
+  });
+  const cleared = await request(`/admin/official-bags/${imageBag.id}/image`, {
+    method: 'DELETE', headers: bearer(admin.accessToken)
+  });
+  if (cleared.thumbnailUrl !== undefined || cleared.displayImageUrl !== undefined) {
+    throw new Error('Deleting images left rendition URLs on the bag');
+  }
+  if (cleared.status !== 'OFFLINE' || cleared.processStatus !== 'PENDING') {
+    throw new Error('Deleting images did not offline the bag / reset processStatus');
+  }
+  if ((await prisma.officialBagImage.count({ where: { officialBagId: imageBag.id } })) !== 0) {
+    throw new Error('Deleting images did not remove the image records');
+  }
+  await request(`/admin/official-bags/${imageBag.id}`, {
+    method: 'PATCH', headers: bearer(admin.accessToken), body: JSON.stringify({ status: 'PUBLISHED' })
+  }, 409);
+  await request(`/admin/official-bags/${imageBag.id}`, {
+    method: 'DELETE', headers: bearer(admin.accessToken)
+  });
+
   // ---- 未被拥有的袋子可删除 ----
   await request(`/admin/official-bags/${quotaBag.id}`, {
     method: 'DELETE', headers: bearer(admin.accessToken)
@@ -424,7 +459,7 @@ try {
     method: 'DELETE', headers: bearer(admin.accessToken)
   });
 
-  console.log('Official bags integration: admin auth, brand CRUD, bag CRUD, upload/replace, publish guard, discover visibility, claim idempotency/quota/default shelf/tags, offline, delete guards, and claim release passed');
+  console.log('Official bags integration: admin auth, brand CRUD, bag CRUD, upload/replace, upload-time matting, image delete, publish guard, discover visibility, claim idempotency/quota/default shelf/tags, offline, delete guards, and claim release passed');
 } catch (error) {
   // 失败时带上 API 服务器日志（NODE_ENV=test 时 Nest 不打日志，调试用 DEBUG_API=true 开 development）。
   // 等一拍让服务端异步写入的错误堆栈先刷出来。

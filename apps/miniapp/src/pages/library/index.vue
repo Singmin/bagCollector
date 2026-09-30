@@ -3,7 +3,7 @@ import { computed, getCurrentInstance, nextTick, ref, watch } from 'vue';
 import { onHide, onShow, onShareAppMessage, onShareTimeline } from '@dcloudio/uni-app';
 import type { Collectible, CollectibleSummary, Shelf } from '../../types';
 import { dataService } from '../../services/data';
-import { collectionRevision, shouldRefreshCollection, markCollectionDataStale } from '../../services/collection-state';
+import { claimPendingRecently, collectionRevision, shouldRefreshCollection, markCollectionDataStale } from '../../services/collection-state';
 import { daysAgoText, formattedDate } from '../../services/format';
 import { resolveCollectibleThumbnail } from '../../services/images';
 import { maskPageChrome } from '../../services/overlay';
@@ -135,6 +135,22 @@ function query(cursor?: string) {
   return params.join('&');
 }
 
+/* 「拥有」官方袋子（发现页标记已有）走的是官方认领接口：记录当场建好，但图片还在 worker 里
+   复制，而收藏列表只返回 READY —— 刚标记完就切过来，它可能还没现身。
+   标记后的窗口期内自动补几次刷新，让「标记了 → 收藏架里有」这段等待不至于看起来像丢失。 */
+let claimRetryTimer: ReturnType<typeof setTimeout> | undefined;
+let claimRetryLeft = 0;
+function scheduleClaimRetry() {
+  if (claimRetryTimer || !claimPendingRecently()) return;
+  if (claimRetryLeft <= 0) claimRetryLeft = 3;
+  claimRetryTimer = setTimeout(() => {
+    claimRetryTimer = undefined;
+    claimRetryLeft -= 1;
+    if (!claimPendingRecently()) { claimRetryLeft = 0; return; }
+    void load(true);
+  }, 2000);
+}
+
 function assertRenderable(nextItems: CollectibleSummary[], nextShelves: Shelf[]) {
   const shelfIds = new Set(nextShelves.map((shelf) => shelf.id));
   for (const item of nextItems) {
@@ -224,6 +240,7 @@ function load(force = false) {
       loadedAt = Date.now();
       loadedRevision = requestRevision;
       hydrateThumbnails(page.items);
+      scheduleClaimRetry();
     } catch (error) {
       const message = error instanceof Error ? error.message : '全部收藏加载失败';
       if (initialized.value) uni.showToast({ title: message, icon: 'none' });
@@ -537,9 +554,9 @@ function markFromDetail() {
   markItem.value = item as Collectible;
   markShow.value = true;
 }
-function onMarkSaved(source: Collectible, created: Collectible) {
+function onMarkSaved(source: Collectible, createdId: string) {
   /* 组件已落库并自动移出心愿袋；这里同步本地心愿列表与已拥有标记 */
-  justMarkedMap.value.set(source.id, created.id);
+  justMarkedMap.value.set(source.id, createdId);
   wishlistItems.value = wishlistItems.value.filter((current) => current.id !== source.id);
 }
 

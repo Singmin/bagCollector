@@ -170,8 +170,8 @@ let wishToggling = false;
 function isWished(id: string) { return wishlistIds.value.has(id); }
 
 async function toggleWish(item: Collectible) {
-  /* 互斥：已标记已有的纸袋不能再进心愿袋 */
-  if (markedMap.value.has(item.id)) return void uni.showToast({ title: '已标记已有，无需加入心愿袋', icon: 'none' });
+  /* 互斥：已标记已有的纸袋不能再进心愿袋（文案压到 9 字，微信 toast 一行放得下） */
+  if (markedMap.value.has(item.id)) return void uni.showToast({ title: '已标记，无需心愿袋', icon: 'none' });
   if (wishToggling) return;
   wishToggling = true;
   try {
@@ -226,9 +226,9 @@ function openMark(item: Collectible) {
 function closeMark() {
   markShow.value = false;
 }
-function onMarkSaved(source: Collectible, created: Collectible) {
+function onMarkSaved(source: Collectible, createdId: string) {
   /* 组件已落库并（如在心愿袋）自动移出；这里同步本地互斥与心愿状态 */
-  markedMap.value.set(source.id, created.id);
+  markedMap.value.set(source.id, createdId);
   if (wishlistIds.value.has(source.id)) {
     const next = new Set(wishlistIds.value);
     next.delete(source.id);

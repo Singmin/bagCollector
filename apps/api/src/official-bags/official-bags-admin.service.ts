@@ -195,8 +195,13 @@ export class OfficialBagsAdminService {
   /**
    * 上传/替换官方袋子原图。管理后台统一经 API 服务器中转写入对象存储，
    * 上传后自动入队处理（可选抠图），处理状态在袋子上跟踪。
+   * `matting` 由后台表单传入时会同时覆盖袋子的抠图设置。
    */
-  async uploadImage(adminId: string, id: string, file: { body: Buffer; contentType: string }) {
+  async uploadImage(
+    adminId: string,
+    id: string,
+    file: { body: Buffer; contentType: string; matting?: boolean }
+  ) {
     const bag = await this.findBag(id);
     if (bag.claimedCount > 0) {
       throw new ApiError('CONFLICT', '该袋子已被用户拥有，不能替换图片；请新建条目', HttpStatus.CONFLICT);
@@ -229,16 +234,68 @@ export class OfficialBagsAdminService {
         version
       }
     });
+    // 表单里的「执行抠图」开关直接决定这次处理：勾了就按抠图跑，不必先保存再上传。
+    const matting = file.matting ?? bag.matting;
     await this.prisma.officialBag.update({
       where: { id: bag.id },
-      data: { version, processStatus: OfficialProcessStatus.PROCESSING, processError: null }
+      data: {
+        version,
+        processStatus: OfficialProcessStatus.PROCESSING,
+        processError: null,
+        ...(file.matting !== undefined ? { matting: file.matting } : {})
+      }
     });
     await this.queues.add(
       'official-process',
-      { officialBagId: bag.id, version, matting: bag.matting },
+      { officialBagId: bag.id, version, matting },
       `official-process:${bag.id}:v${version}`
     );
-    await this.audit(adminId, 'OFFICIAL_BAG_UPLOAD', bag.id, { version, byteSize: file.body.length });    return { version, processStatus: OfficialProcessStatus.PROCESSING };
+    await this.audit(adminId, 'OFFICIAL_BAG_UPLOAD', bag.id, {
+      version,
+      byteSize: file.body.length,
+      matting
+    });
+    return { version, processStatus: OfficialProcessStatus.PROCESSING };
+  }
+
+  /**
+   * 删除袋子上的全部图片（原图 + 各版本衍生图），把袋子退回「未上传图片」状态。
+   * 已发布袋子会一并下架，避免小程序端展示空图；已被用户拥有的袋子不允许操作。
+   * version 继续自增，让仍在处理中的旧任务判定为过期，不再把图片写回来。
+   */
+  async removeImage(adminId: string, id: string) {
+    const bag = await this.findBag(id);
+    if (bag.claimedCount > 0) {
+      throw new ApiError(
+        'CONFLICT',
+        '该袋子已被用户拥有，不能删除图片；请先下架处理已有收藏',
+        HttpStatus.CONFLICT
+      );
+    }
+    const images = await this.prisma.officialBagImage.findMany({
+      where: { officialBagId: id },
+      select: { objectKey: true }
+    });
+    await this.prisma.$transaction([
+      this.prisma.officialBagImage.deleteMany({ where: { officialBagId: id } }),
+      this.prisma.officialBag.update({
+        where: { id },
+        data: {
+          version: bag.version + 1,
+          processStatus: OfficialProcessStatus.PENDING,
+          processError: null,
+          status: bag.status === OfficialBagStatus.PUBLISHED ? OfficialBagStatus.OFFLINE : bag.status
+        }
+      })
+    ]);
+    if (images.length) {
+      await this.queues.add('cleanup', { keys: images.map((image) => image.objectKey) });
+    }
+    await this.audit(adminId, 'OFFICIAL_BAG_IMAGE_DELETE', id, {
+      version: bag.version,
+      objectCount: images.length
+    });
+    return this.toDto(await this.prisma.officialBag.findUniqueOrThrow({ where: { id }, include: { brand: true } }));
   }
 
   async remove(adminId: string, id: string) {

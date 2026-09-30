@@ -179,6 +179,7 @@ export function App() {
   const [statusFilter, setStatusFilter] = useState<'' | OfficialBag['status']>('');
   const [search, setSearch] = useState('');
   const [editing, setEditing] = useState<OfficialBag | 'new' | null>(null);
+  const [bagEditorSession, setBagEditorSession] = useState(0);
   const [collapsed, setCollapsed] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
   const [brands, setBrands] = useState<Brand[]>([]);
@@ -292,6 +293,15 @@ export function App() {
     } catch (requestError) {
       message.error(requestError instanceof Error ? requestError.message : '删除失败');
     }
+  }
+
+  /**
+   * 打开袋子编辑器。每次打开都换一个 session，
+   * 让 BagEditor 重新挂载，避免残留上一次编辑的表单值与已选文件。
+   */
+  function openBagEditor(target: OfficialBag | 'new') {
+    setEditing(target);
+    setBagEditorSession((session) => session + 1);
   }
 
   /** 从品牌页跳到袋子列表并按品牌名过滤。 */
@@ -503,7 +513,7 @@ export function App() {
                       if (!event.target.value) setSearch('');
                     }}
                   />
-                  <Button type="primary" icon={<PlusOutlined />} block={isMobile} onClick={() => setEditing('new')}>
+                  <Button type="primary" icon={<PlusOutlined />} block={isMobile} onClick={() => openBagEditor('new')}>
                     新增袋子
                   </Button>
                 </Space>
@@ -590,7 +600,7 @@ export function App() {
                       width: 260,
                       render: (_, bag) => (
                         <Space size={4} wrap>
-                          <Button size="small" onClick={() => setEditing(bag)}>编辑</Button>
+                          <Button size="small" onClick={() => openBagEditor(bag)}>编辑</Button>
                           {bag.status !== 'PUBLISHED' && bag.processStatus === 'READY' && (
                             <Button size="small" type="primary" ghost onClick={() => void setBagStatus(bag, 'PUBLISHED')}>
                               发布
@@ -612,6 +622,7 @@ export function App() {
               </Card>
 
               <BagEditor
+                key={bagEditorSession}
                 bag={editing === 'new' ? null : editing}
                 brands={brands}
                 open={editing !== null}
@@ -712,6 +723,7 @@ function BagEditor({
   const [form] = Form.useForm<BagFormValues>();
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [removing, setRemoving] = useState(false);
   const [fileList, setFileList] = useState<UploadFile[]>([]);
   const [quickBrandOpen, setQuickBrandOpen] = useState(false);
   const [quickBrandName, setQuickBrandName] = useState('');
@@ -719,10 +731,11 @@ function BagEditor({
 
   const selectedFile = fileList[0]?.originFileObj ?? null;
 
-  async function uploadTo(bagId: string, file: File) {
+  async function uploadTo(bagId: string, file: File, matting: boolean) {
     const data = new FormData();
     data.append('file', file);
-    return api<{ version: number; processStatus: string }>(`/official-bags/${bagId}/image`, {
+    // 把当前开关一起带上：勾了抠图这次上传就按抠图处理，无需先保存表单。
+    return api<{ version: number; processStatus: string }>(`/official-bags/${bagId}/image?matting=${matting}`, {
       method: 'POST',
       body: data
     });
@@ -744,7 +757,7 @@ function BagEditor({
       } else {
         const created = await api<OfficialBag>('/official-bags', { method: 'POST', body: JSON.stringify(payload) });
         // 新建后如果已经选了文件，直接上传图片。
-        if (selectedFile) await uploadTo(created.id, selectedFile);
+        if (selectedFile) await uploadTo(created.id, selectedFile, values.matting ?? false);
       }
       message.success('保存成功');
       onDone();
@@ -756,19 +769,35 @@ function BagEditor({
   }
 
   async function replaceImage() {
-    if (!bag || !selectedFile) {
-      message.warning('请先选择图片文件');
+    if (!bag) return;
+    if (!selectedFile) {
+      message.warning('请先点击「选择图片」选一张图片');
       return;
     }
     setUploading(true);
     try {
-      await uploadTo(bag.id, selectedFile);
+      await uploadTo(bag.id, selectedFile, Boolean(form.getFieldValue('matting')));
       message.success('已上传，图片处理中');
       onDone();
     } catch (requestError) {
       message.error(requestError instanceof Error ? requestError.message : '上传失败');
     } finally {
       setUploading(false);
+    }
+  }
+
+  /** 删除袋子当前图片（原图与衍生图），袋子回到未上传状态；已发布袋子会自动下架。 */
+  async function removeImage() {
+    if (!bag) return;
+    setRemoving(true);
+    try {
+      await api(`/official-bags/${bag.id}/image`, { method: 'DELETE' });
+      message.success('图片已删除，可重新上传');
+      onDone();
+    } catch (requestError) {
+      message.error(requestError instanceof Error ? requestError.message : '删除失败');
+    } finally {
+      setRemoving(false);
     }
   }
 
@@ -853,7 +882,7 @@ function BagEditor({
         </Form.Item>
         <Typography.Paragraph type="secondary" style={{ marginTop: -8 }}>
           走腾讯云万象，0.02 元/次；不开启则仅压缩出图。
-          {bag && ' 修改该开关只影响下一次上传的图片，已有图片需重新上传才会按新设置处理。'}
+          {bag && ' 开关只作用于下一次上传：勾选后点「上传 / 替换图片」会立刻按新设置重新处理。'}
         </Typography.Paragraph>
 
         <Form.Item label="图片">
@@ -867,14 +896,25 @@ function BagEditor({
             >
               <Button icon={<UploadOutlined />}>选择图片</Button>
             </Upload>
-            {bag?.thumbnailUrl && <Image src={bag.thumbnailUrl} alt={bag.name} width={96} style={{ objectFit: 'contain' }} />}
+            {bag?.thumbnailUrl && (
+              <Space size={12} align="center">
+                <Image src={bag.thumbnailUrl} alt={bag.name} width={96} style={{ objectFit: 'contain' }} />
+                <Popconfirm
+                  title="删除这张图片？"
+                  description="删除后袋子回到未上传状态；已发布的袋子会自动下架。"
+                  okText="删除"
+                  okButtonProps={{ danger: true }}
+                  onConfirm={() => void removeImage()}
+                >
+                  <Button danger size="small" loading={removing} disabled={bag.claimedCount > 0}>
+                    删除图片
+                  </Button>
+                </Popconfirm>
+              </Space>
+            )}
             {bag && (
-              <Button
-                onClick={() => void replaceImage()}
-                loading={uploading}
-                disabled={bag.claimedCount > 0 || !selectedFile}
-              >
-                {bag.claimedCount > 0 ? '已被拥有，不能换图' : '上传 / 替换图片'}
+              <Button onClick={() => void replaceImage()} loading={uploading} disabled={bag.claimedCount > 0}>
+                {bag.claimedCount > 0 ? '已被拥有，不能换图 / 删图' : '上传 / 替换图片'}
               </Button>
             )}
             {!bag && <Typography.Text type="secondary">新建保存后，如已选择图片将自动上传并开始处理。</Typography.Text>}

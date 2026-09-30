@@ -122,6 +122,25 @@ export class OfficialBagsService {
     return this.toDto(bag, Boolean(claim));
   }
 
+  /** 用户指定的「品牌 / 店铺」必须是自己名下的展架。 */
+  private async assertShelf(userId: string, shelfId: string) {
+    const shelf = await this.prisma.shelf.findFirst({ where: { id: shelfId, userId } });
+    if (!shelf) throw new ApiError('NOT_FOUND', '展示架不存在', HttpStatus.NOT_FOUND);
+    return shelf;
+  }
+
+  private normalizeTags(tags: string[]) {
+    const seen = new Set<string>();
+    return tags
+      .map((tag) => tag.trim())
+      .filter((tag) => {
+        const normalized = tag.toLocaleLowerCase();
+        if (!tag || seen.has(normalized)) return false;
+        seen.add(normalized);
+        return true;
+      });
+  }
+
   private async resolveDefaultShelf(userId: string) {
     const existing = await this.prisma.shelf.findFirst({
       where: { userId, name: DEFAULT_SHELF_NAME },
@@ -138,8 +157,16 @@ export class OfficialBagsService {
    * 「拥有」官方袋子：创建一条归属当前用户的 Collectible（名称/备注/标签带过去，
    * 默认进「未分类」展示架，由用户自己归类），并排队把官方图片复制到用户名下。
    * 同一用户对同一袋子只能拥有一次（唯一约束兜底并发）。
+   *
+   * overrides：标记半窗里用户改过的名称 / 品牌展架 / 标签 / 备注；不传就用官方袋子自带内容。
+   * 注意 processingStatus 起步是 NORMALIZING（图片还在后台复制），
+   * 收藏列表只返回 READY —— 复制完成后才会出现在收藏架里。
    */
-  async claim(userId: string, id: string) {
+  async claim(
+    userId: string,
+    id: string,
+    overrides: { name?: string; shelfId?: string; notes?: string; tags?: string[] } = {}
+  ) {
     const bag = await this.prisma.officialBag.findFirst({
       where: { id, status: OfficialBagStatus.PUBLISHED, processStatus: OfficialProcessStatus.READY }
     });
@@ -162,7 +189,12 @@ export class OfficialBagsService {
       throw new ApiError('QUOTA_EXCEEDED', '收藏数量已达到上限', HttpStatus.PAYLOAD_TOO_LARGE);
     }
 
-    const shelf = await this.resolveDefaultShelf(userId);
+    const shelf = overrides.shelfId
+      ? await this.assertShelf(userId, overrides.shelfId)
+      : await this.resolveDefaultShelf(userId);
+    const name = overrides.name?.trim() || bag.name;
+    const notes = overrides.notes ?? bag.notes;
+    const tags = overrides.tags ? this.normalizeTags(overrides.tags) : bag.tags;
     const last = await this.prisma.collectible.aggregate({
       where: { userId, shelfId: shelf.id },
       _max: { shelfOrder: true }
@@ -175,14 +207,14 @@ export class OfficialBagsService {
           data: {
             userId,
             shelfId: shelf.id,
-            name: bag.name,
-            notes: bag.notes,
+            name,
+            notes,
             // 图片仍在后台复制，先置 NORMALIZING，完成后由 worker 置 READY。
             processingStatus: ProcessingStatus.NORMALIZING,
             shelfOrder: (last._max.shelfOrder ?? -1) + 1
           }
         });
-        for (const displayName of bag.tags) {
+        for (const displayName of tags) {
           const normalized = displayName.toLocaleLowerCase();
           const tag = await transaction.tag.upsert({
             where: { userId_normalized: { userId, normalized } },

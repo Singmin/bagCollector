@@ -13,6 +13,13 @@ function currentAdmin(request: FastifyRequest & { adminAuth?: AdminAuth }): Admi
   return request.adminAuth;
 }
 
+/** 上传时的「执行抠图」开关：用 query 传，避免 multipart 字段解析顺序带来的不确定性。 */
+function parseMatting(raw?: string): boolean | undefined {
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+  return undefined;
+}
+
 @Controller('admin/official-bags')
 @UseGuards(AdminGuard)
 export class OfficialBagsAdminController {
@@ -59,12 +66,22 @@ export class OfficialBagsAdminController {
   @Post(':id/image')
   async uploadImage(
     @Req() request: FastifyRequest & { adminAuth?: AdminAuth },
-    @Param('id') id: string
+    @Param('id') id: string,
+    @Query('matting') matting?: string
   ) {
     const file = await request.file();
     if (!file) throw new ApiError('UPLOAD_INVALID', '没有收到图片文件', HttpStatus.BAD_REQUEST);
     const body = await file.toBuffer();
-    return this.admin.uploadImage(currentAdmin(request).adminId, id, { body, contentType: file.mimetype });
+    return this.admin.uploadImage(currentAdmin(request).adminId, id, {
+      body,
+      contentType: file.mimetype,
+      matting: parseMatting(matting)
+    });
+  }
+
+  @Delete(':id/image')
+  removeImage(@Req() request: FastifyRequest & { adminAuth?: AdminAuth }, @Param('id') id: string) {
+    return this.admin.removeImage(currentAdmin(request).adminId, id);
   }
 
   @Delete(':id')
