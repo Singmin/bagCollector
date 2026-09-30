@@ -1447,7 +1447,9 @@ function onScrollToLower() { void loadMore(); }
    ⚠ 这一档**没有**用微信六档的 Headline(44rpx)：H5 里首页「袋袋集」和这里「全部收藏」
    共用同一个 .bags-title，两页必须一样大（用户 2026-09-24 专门点过这件事）。
    要改字号去首页 .bags-title 一起改，别只动这一处。 */
-.library-title { color: #141414; font-family: Iowan Old Style, Baskerville, "Times New Roman", "Songti SC", serif; font-size: 60rpx; font-weight: 900; line-height: 1; letter-spacing: 3rpx; }
+/* 2026-09-30 与首页 .bags-title 同步加粗：font-weight 已 900 封顶，宋体字族无更重字面，
+   改用 -webkit-text-stroke 描边加粗（两页一级标题必须同款，别只改一处）。 */
+.library-title { color: #141414; font-family: Iowan Old Style, Baskerville, "Times New Roman", "Songti SC", serif; font-size: 60rpx; font-weight: 900; line-height: 1; letter-spacing: 3rpx; -webkit-text-stroke: 1rpx #141414; }
 /* 副文案：与首页 .bags-tagline 同档（H5 是 12px，按 1.82 折只有 7pt，真机偏糊，
    两页统一提到 EmDesc 14pt，与标题留 11rpx = H5 的 6px） */
 .library-summary { margin-top: 11rpx; color: #77736d; font-size: var(--wc-font-description); line-height: 1.4; }

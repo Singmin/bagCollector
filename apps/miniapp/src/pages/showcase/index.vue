@@ -568,8 +568,12 @@ async function onRefresherRefresh() {
 /* 字体栈照搬 H5 的 h1（袋袋集原型.html:117）：Iowan Old Style / Baskerville 都是 iOS 系统
    衬线，中文没有对应字形会回退到 "Songti SC"（宋体）—— 截图里「袋袋集」的宋体感就来自这里。
    Android 上前面几个都缺失，落到通用 serif，属于预期内的降级。 */
-/* 2026-09-29 用户要求：54rpx / 900 / 无字距 */
-.bags-title { margin-bottom: 11rpx; color: #141414; font-family: Iowan Old Style, Baskerville, "Times New Roman", "Songti SC", serif; font-size: 54rpx; font-weight: 900; line-height: 1; letter-spacing: 0; }
+/* 2026-09-29 用户要求：54rpx / 900 / 无字距
+   2026-09-30 用户要求再粗一点：font-weight 已到 900 上限，但回退的宋体（Songti SC）
+   字族没有更重的字面，光靠字重已经加不动了 —— 用 -webkit-text-stroke 补一层描边
+   （与 .rack-new 角标同一套加粗手法）。描边是沿字形轮廓中心向两侧各扩一半，
+   1rpx ≈ 视觉上多 0.5rpx，够加粗又不糊；再粗会让笔画粘死，别往上调。 */
+.bags-title { margin-bottom: 11rpx; color: #141414; font-family: Iowan Old Style, Baskerville, "Times New Roman", "Songti SC", serif; font-size: 54rpx; font-weight: 900; line-height: 1; letter-spacing: 0; -webkit-text-stroke: 1rpx #141414; }
 /* 辅助内容：EmDesc 14pt（与「全部收藏」的副文案同档，两页一致） */
 .bags-tagline { color: #77736d; font-size: var(--wc-font-description); line-height: 1.4; }
 /* 设置钮已迁至「我的」页头部（2026-09-29），首页头部只保留标题块 */

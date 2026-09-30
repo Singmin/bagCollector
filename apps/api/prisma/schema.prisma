@@ -99,6 +99,7 @@ model User {
   processingJobs    ProcessingJob[]
   auditLogs         AuditLog[]
   officialClaims    OfficialClaim[]
+  wishlistItems     WishlistItem[]
 }
 
 model Session {
@@ -258,6 +259,7 @@ model OfficialBag {
   brand         Brand?              @relation(fields: [brandId], references: [id], onDelete: SetNull)
   images        OfficialBagImage[]
   claims        OfficialClaim[]
+  wishlistedBy  WishlistItem[]
 
   @@index([status, sortOrder])
 }
@@ -280,6 +282,19 @@ model OfficialBagImage {
 
   @@unique([officialBagId, kind, version])
   @@index([officialBagId, kind])
+}
+
+// 心愿袋：用户对官方袋子的「想要」标记（发现页 ♥）。袋子下架/删除时级联清除。
+model WishlistItem {
+  id            String      @id @default(cuid())
+  userId        String
+  officialBagId String
+  createdAt     DateTime    @default(now())
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  officialBag   OfficialBag @relation(fields: [officialBagId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, officialBagId])
+  @@index([userId, createdAt])
 }
 
 model OfficialClaim {

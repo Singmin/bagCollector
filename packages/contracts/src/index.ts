@@ -129,6 +129,8 @@ export interface CollectibleSummaryDto {
   thumbnailUrl?: string;
   addedAt: string;
   updatedAt: string;
+  /** 发现页 feed / 心愿袋条目的主人昵称（官方精选时为品牌名）；用户自己的收藏没有该字段。 */
+  ownerName?: string;
 }
 
 export interface CollectiblePageDto {

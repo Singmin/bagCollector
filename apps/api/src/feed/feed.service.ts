@@ -1,0 +1,147 @@
+import { HttpStatus, Injectable } from '@nestjs/common';
+import { AssetKind, AssetStatus, OfficialBagStatus, OfficialProcessStatus, Prisma } from '@prisma/client';
+import type { CollectibleDto, CollectiblePageDto } from '@bagcollect/contracts';
+import { ApiError } from '../common/api-error.js';
+import { PrismaService } from '../database/prisma.service.js';
+import { CosService } from '../assets/cos.service.js';
+
+/** 发现页 / 心愿袋可见的官方袋子：已发布且图片处理完成（与官方袋子列表口径一致）。 */
+const VISIBLE_BAG: Prisma.OfficialBagWhereInput = {
+  status: OfficialBagStatus.PUBLISHED,
+  processStatus: OfficialProcessStatus.READY
+};
+
+type BagWithBrand = Prisma.OfficialBagGetPayload<{ include: { brand: true } }>;
+
+type ImageUrlResolver = (bagId: string, kind: AssetKind) => string | undefined;
+
+@Injectable()
+export class FeedService {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cos: CosService
+  ) {}
+
+  /** 批量取袋子最新可用图片的签名 URL，避免逐袋子查图（N+1）。 */
+  private async imageUrls(bagIds: string[]): Promise<ImageUrlResolver> {
+    if (!bagIds.length) return () => undefined;
+    const images = await this.prisma.officialBagImage.findMany({
+      where: {
+        officialBagId: { in: bagIds },
+        kind: { in: [AssetKind.THUMBNAIL, AssetKind.DISPLAY] },
+        status: AssetStatus.AVAILABLE
+      },
+      orderBy: { version: 'desc' }
+    });
+    const latest = new Map<string, string>();
+    for (const image of images) {
+      const key = `${image.officialBagId}:${image.kind}`;
+      if (!latest.has(key)) latest.set(key, image.objectKey);
+    }
+    const urls = new Map<string, string>();
+    await Promise.all(
+      [...latest.entries()].map(async ([key, objectKey]) => {
+        urls.set(key, await this.cos.signedUrl(objectKey));
+      })
+    );
+    return (bagId, kind) => urls.get(`${bagId}:${kind}`);
+  }
+
+  /**
+   * 官方袋子 → 发现页条目。前端 feed / 心愿袋统一按 Collectible 结构消费
+   * （卡背面要展示标签与备注），shelf 字段留空、ownerName = 品牌名。
+   * 心愿条目与 feed 同 id（都是袋子 id），详情卡靠 GET /collectibles/:id 兜底打开。
+   */
+  private toFeedItem(bag: BagWithBrand, urlFor: ImageUrlResolver): CollectibleDto {
+    const thumbnail = urlFor(bag.id, AssetKind.THUMBNAIL);
+    const display = urlFor(bag.id, AssetKind.DISPLAY);
+    return {
+      id: bag.id,
+      name: bag.name,
+      shelfId: '',
+      shelfName: '',
+      processingStatus: 'READY',
+      notes: bag.notes,
+      tags: bag.tags,
+      ownerName: bag.brand?.name ?? '官方精选',
+      ...(thumbnail ? { thumbnailUrl: thumbnail } : {}),
+      ...(display ? { displayImageUrl: display } : {}),
+      addedAt: (bag.publishedAt ?? bag.createdAt).toISOString(),
+      updatedAt: bag.updatedAt.toISOString()
+    };
+  }
+
+  /** 发现页「纸袋上新」：官方精选 feed，排序与官方袋子列表一致（sortOrder 大者靠前）。 */
+  async feed(query: { search?: string; cursor?: string; limit?: number }): Promise<CollectiblePageDto> {
+    const limit = Math.min(Math.max(query.limit ?? 30, 1), 100);
+    const search = query.search?.trim();
+    const where = {
+      ...VISIBLE_BAG,
+      ...(search
+        ? {
+            OR: [
+              { name: { contains: search, mode: 'insensitive' as const } },
+              { brand: { name: { contains: search, mode: 'insensitive' as const } } },
+              { tags: { has: search } }
+            ]
+          }
+        : {})
+    } satisfies Prisma.OfficialBagWhereInput;
+    const [items, totalCount] = await Promise.all([
+      this.prisma.officialBag.findMany({
+        where,
+        ...(query.cursor ? { cursor: { id: query.cursor }, skip: 1 } : {}),
+        orderBy: [{ sortOrder: 'desc' }, { publishedAt: 'desc' }, { id: 'desc' }],
+        take: limit + 1,
+        include: { brand: true }
+      }),
+      this.prisma.officialBag.count({ where })
+    ]);
+    const hasMore = items.length > limit;
+    const page = hasMore ? items.slice(0, limit) : items;
+    const urlFor = await this.imageUrls(page.map((bag) => bag.id));
+    return {
+      items: page.map((bag) => this.toFeedItem(bag, urlFor)),
+      nextCursor: hasMore ? page.at(-1)?.id ?? null : null,
+      totalCount
+    };
+  }
+
+  /** 心愿袋列表：只带出仍可见的袋子（下架/删除的自动隐藏），按加入时间倒序。 */
+  async wishlist(userId: string): Promise<CollectibleDto[]> {
+    const entries = await this.prisma.wishlistItem.findMany({
+      where: { userId, officialBag: VISIBLE_BAG },
+      orderBy: { createdAt: 'desc' },
+      include: { officialBag: { include: { brand: true } } }
+    });
+    const urlFor = await this.imageUrls(entries.map((entry) => entry.officialBagId));
+    return entries.map((entry) => this.toFeedItem(entry.officialBag, urlFor));
+  }
+
+  async addWishlist(userId: string, bagId: string) {
+    const bag = await this.prisma.officialBag.findFirst({ where: { id: bagId, ...VISIBLE_BAG } });
+    if (!bag) throw new ApiError('NOT_FOUND', '纸袋不存在或已下架', HttpStatus.NOT_FOUND);
+    await this.prisma.wishlistItem.upsert({
+      where: { userId_officialBagId: { userId, officialBagId: bagId } },
+      create: { userId, officialBagId: bagId },
+      update: {}
+    });
+    return { success: true };
+  }
+
+  async removeWishlist(userId: string, bagId: string) {
+    await this.prisma.wishlistItem.deleteMany({ where: { userId, officialBagId: bagId } });
+    return { success: true };
+  }
+
+  /** 收藏详情兜底：心愿袋条目的 id 是官方袋子 id，详情卡要点开看（只读）。 */
+  async bagAsCollectible(bagId: string): Promise<CollectibleDto | null> {
+    const bag = await this.prisma.officialBag.findFirst({
+      where: { id: bagId, ...VISIBLE_BAG },
+      include: { brand: true }
+    });
+    if (!bag) return null;
+    const urlFor = await this.imageUrls([bag.id]);
+    return this.toFeedItem(bag, urlFor);
+  }
+}
