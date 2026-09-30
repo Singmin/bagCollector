@@ -108,43 +108,61 @@ jobs:
 
       - name: Build and deploy fixed source SHA on the server
         # 首次服务器构建需要拉基础镜像并安装依赖；后续命中 Docker BuildKit 缓存会快很多。
+        # 海外 Runner -> 国内服务器的 SSH 链路偶发「Timeout, server not responding」
+        # （exit 255，连接被掐断）。构建在服务器上通过 nohup 脱离会话运行，不会因此中断，
+        # 所以这里允许断线重连：只要后台任务还没写状态文件，重连后继续轮询等结果，
+        # 不重复启动构建；其余退出码视为真实部署失败，立即终止。
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
-          ssh -i ~/.ssh/deploy_key -p "$DEPLOY_PORT" \
-            -o ConnectTimeout=45 -o BatchMode=yes -o StrictHostKeyChecking=yes \
-            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
-            "$DEPLOY_USER@$DEPLOY_HOST" /bin/bash -s <<'REMOTE_SCRIPT'
+          attempt=0
+          max_attempts=6
+          while :; do
+            attempt=$((attempt+1))
+            echo "===== SSH 连接（第 $attempt/$max_attempts 次）====="
+            set +e
+            ssh -i ~/.ssh/deploy_key -p "$DEPLOY_PORT" \
+              -o ConnectTimeout=45 -o BatchMode=yes -o StrictHostKeyChecking=yes \
+              -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+              "$DEPLOY_USER@$DEPLOY_HOST" /bin/bash -s <<'REMOTE_SCRIPT'
             set -eu
             DEPLOY_DIR="${{ secrets.DEPLOY_PATH }}"
             TRANSFER_DIR="$DEPLOY_DIR/incoming/${{ github.run_id }}-${{ github.run_attempt }}"
             ARCHIVE="$TRANSFER_DIR/bagcollect-source-${{ github.sha }}.tar.gz"
             RELEASE_DIR="$DEPLOY_DIR/releases/${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}"
 
-            [ -f "$ARCHIVE" ] || { echo "找不到源码包：$ARCHIVE" >&2; exit 1; }
-            mkdir -p "$RELEASE_DIR"
-            tar -xzf "$ARCHIVE" -C "$RELEASE_DIR"
-
-            # 构建和部署都脱离 SSH 会话。即使网页/SSH 中断，服务器仍会继续完成；
-            # 每分钟回显一次末尾日志，GitHub 页面不会再长时间看起来像卡死。
             LOG=/tmp/bagcollect-deploy.log
             STATUS_FILE="/tmp/bagcollect-deploy-${{ github.run_id }}-${{ github.run_attempt }}.status"
-            rm -f "$LOG"
-            rm -f "$STATUS_FILE"
-            nohup sh -c '
-              status=0
-              env \
-                BAGCOLLECT_DEPLOY_DIR="$2" \
-                BAGCOLLECT_RELEASE_DIR="$3" \
-                BAGCOLLECT_IMAGE_TAG="$4" \
-                sh "$3/infra/build-and-deploy.sh" || status=$?
-              printf "%s\n" "$status" > "$1.tmp"
-              mv "$1.tmp" "$1"
-            ' sh "$STATUS_FILE" "$DEPLOY_DIR" "$RELEASE_DIR" "${{ github.sha }}" \
-              </dev/null >"$LOG" 2>&1 &
+            LAUNCHED_FILE="$STATUS_FILE.launched"
 
+            # 只在第一次连接时解压并启动后台构建；重连时直接跳到轮询，
+            # 避免把同一个 commit 的构建启动两遍。
+            if [ ! -f "$STATUS_FILE" ] && [ ! -f "$LAUNCHED_FILE" ]; then
+              [ -f "$ARCHIVE" ] || { echo "找不到源码包：$ARCHIVE" >&2; exit 1; }
+              mkdir -p "$RELEASE_DIR"
+              tar -xzf "$ARCHIVE" -C "$RELEASE_DIR"
+              rm -f "$LOG" "$STATUS_FILE" "$LAUNCHED_FILE"
+              nohup sh -c '
+                status=0
+                env \
+                  BAGCOLLECT_DEPLOY_DIR="$2" \
+                  BAGCOLLECT_RELEASE_DIR="$3" \
+                  BAGCOLLECT_IMAGE_TAG="$4" \
+                  sh "$3/infra/build-and-deploy.sh" || status=$?
+                printf "%s\n" "$status" > "$1.tmp"
+                mv "$1.tmp" "$1"
+              ' sh "$STATUS_FILE" "$DEPLOY_DIR" "$RELEASE_DIR" "${{ github.sha }}" \
+                </dev/null >"$LOG" 2>&1 &
+              touch "$LAUNCHED_FILE"
+              echo "已在服务器后台启动构建/部署，日志：$LOG"
+            else
+              echo "检测到之前的后台构建，继续跟进（不重复启动）"
+            fi
+
+            # 构建和部署都脱离 SSH 会话。即使连接中断，服务器仍会继续完成；
+            # 每分钟回显一次末尾日志，GitHub 页面不会再长时间看起来像卡死。
             for i in $(seq 1 260); do
               [ ! -f "$STATUS_FILE" ] || break
               if [ $((i % 3)) -eq 0 ]; then
@@ -154,15 +172,30 @@ jobs:
               sleep 20
             done
 
-            status=0
             if [ ! -f "$STATUS_FILE" ]; then
-              echo "服务器构建/部署超过等待上限；后台任务仍会继续，查看 $LOG" >&2
-              status=124
-            else
-              status=$(cat "$STATUS_FILE")
+              echo "本次连接等待超时；服务器后台任务仍会继续，重连后继续跟进，日志见 $LOG" >&2
+              exit 124
             fi
+            status=$(cat "$STATUS_FILE")
             tail -n 80 "$LOG"
-            [ "$status" -eq 0 ] || exit "$status"
-            grep -q "部署完成" "$LOG"
+            if [ "$status" -ne 0 ]; then
+              echo "服务器构建/部署失败（exit $status），完整日志见 $LOG" >&2
+              exit 1
+            fi
+            grep -q "部署完成" "$LOG" || { echo "未在日志中找到『部署完成』标记" >&2; exit 1; }
             echo "本次部署的镜像版本（commit）：${{ github.sha }}"
           REMOTE_SCRIPT
+            rc=$?
+            set -e
+            if [ "$rc" -eq 0 ]; then
+              break
+            fi
+            # 255：SSH 连接被掐断；124：单次连接等待上限。两种情况下服务器后台
+            # 构建仍在跑，重连跟进即可。其余退出码是真实的部署失败，直接终止。
+            if [ "$attempt" -lt "$max_attempts" ] && { [ "$rc" -eq 255 ] || [ "$rc" -eq 124 ]; }; then
+              echo "SSH 连接中断（exit $rc），服务器后台构建未受影响；30 秒后重连跟进" >&2
+              sleep 30
+              continue
+            fi
+            exit "$rc"
+          done
