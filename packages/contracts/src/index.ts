@@ -59,6 +59,20 @@ export const updateCollectibleSchema = z.object({
   shelfId: z.string().min(1).optional()
 });
 
+/**
+ * 「拥有」官方袋子（发现页标记已有）。
+ * 全部字段可选：不传就用官方袋子自带的名称/备注/标签，并默认进「未分类」展示架；
+ * 前端标记半窗允许用户改名、归类、改标签备注，这几项作为覆盖值传进来。
+ */
+export const claimOfficialBagSchema = z.object({
+  name: z.string().trim().min(1).max(80).optional(),
+  shelfId: z.string().min(1).optional(),
+  notes: z.string().max(2000).optional(),
+  tags: z.array(z.string().trim().min(1).max(30)).max(30).optional()
+});
+
+export type ClaimOfficialBagInput = z.infer<typeof claimOfficialBagSchema>;
+
 export const uploadPolicySchema = z.object({
   collectibleId: z.string().min(1),
   fileName: z.string().min(1).max(255),

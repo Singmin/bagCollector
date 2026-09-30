@@ -62,7 +62,7 @@ vi.mock('../src/matting-tencent-ci.js', () => ({
 }));
 
 const { AssetKind, JobStatus, ProcessingStatus } = await import('@prisma/client');
-const { failProcessing, matImage } = await import('../src/processor.js');
+const { failProcessing, matImage, standardImage } = await import('../src/processor.js');
 
 const jobData = {
   processingJobId: 'job-1',
@@ -189,5 +189,91 @@ describe('worker matting processor', () => {
       where: { id: jobData.collectibleId },
       data: { processingStatus: ProcessingStatus.FAILED, processingError: 'processing failure' }
     });
+  });
+});
+
+describe('standardImage', () => {
+  it('flattens transparent PNGs onto a white background instead of black', async () => {
+    const width = 100;
+    const height = 100;
+    const pixels = Buffer.alloc(width * height * 4, 0);
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const i = (y * width + x) * 4;
+        if (x < width / 2) {
+          pixels[i] = 255;
+          pixels[i + 1] = 0;
+          pixels[i + 2] = 0;
+          pixels[i + 3] = 255;
+        }
+        // 右半边保持 alpha=0（已初始化为 0）
+      }
+    }
+    const png = await sharp(pixels, { raw: { width, height, channels: 4 } }).png().toBuffer();
+
+    const standard = await standardImage(png);
+
+    expect(standard.contentType).toBe('image/jpeg');
+    expect(standard.extension).toBe('jpg');
+    expect(standard.width).toBe(width);
+    expect(standard.height).toBe(height);
+
+    const raw = await sharp(standard.body).raw().toBuffer();
+    // 取样右半边几个点，确认透明区域被铺成白色而非黑色。
+    // 右半边远离红/透明边界取样，避开 JPEG 压缩带来的边界混色。
+    const sampleIndices = [55, 65, 75, 85, 95];
+    for (const x of sampleIndices) {
+      const offset = (x + width * Math.floor(height / 2)) * 3;
+      expect([raw[offset], raw[offset + 1], raw[offset + 2]]).toEqual([255, 255, 255]);
+    }
+  });
+
+  it('keeps transparency as PNG when keepTransparency is requested', async () => {
+    const width = 100;
+    const height = 100;
+    const pixels = Buffer.alloc(width * height * 4, 0);
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const i = (y * width + x) * 4;
+        if (x < width / 2) {
+          pixels[i] = 255;
+          pixels[i + 1] = 0;
+          pixels[i + 2] = 0;
+          pixels[i + 3] = 255;
+        }
+        // 右半边保持 alpha=0（已初始化为 0）
+      }
+    }
+    const png = await sharp(pixels, { raw: { width, height, channels: 4 } }).png().toBuffer();
+
+    const standard = await standardImage(png, { keepTransparency: true });
+
+    expect(standard.contentType).toBe('image/png');
+    expect(standard.extension).toBe('png');
+    expect(standard.width).toBe(width);
+    expect(standard.height).toBe(height);
+
+    const meta = await sharp(standard.body).metadata();
+    expect(meta.format).toBe('png');
+    expect(meta.hasAlpha).toBe(true);
+    // 右半边仍应是完全透明。
+    const raw = await sharp(standard.body).raw().toBuffer();
+    const offset = (75 + width * Math.floor(height / 2)) * 4;
+    expect(raw[offset + 3]).toBe(0);
+  });
+
+  it('falls back to flattened JPEG for opaque images even with keepTransparency', async () => {
+    const png = await sharp({
+      create: { width: 8, height: 8, channels: 3, background: '#ff0000' }
+    })
+      .png()
+      .toBuffer();
+
+    const standard = await standardImage(png, { keepTransparency: true });
+
+    expect(standard.contentType).toBe('image/jpeg');
+    expect(standard.extension).toBe('jpg');
+    const meta = await sharp(standard.body).metadata();
+    expect(meta.format).toBe('jpeg');
   });
 });

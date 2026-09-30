@@ -41,6 +41,16 @@ const schema = z
     //           避免主体错位后静默产出错图。
     CI_MATTING_SIZE_MODE: z.enum(['strict', 'rescale']).default('rescale'),
 
+    // ---------------------------------------------------------------------
+    // 卡死任务对账：processStatus 长时间停在 PROCESSING/NORMALIZING/MATTING
+    // 说明任务没有被消费（worker 宕机、任务丢失或 stalled 后 attempts 已耗尽），
+    // 定时把这类记录翻成 FAILED，让管理后台/用户能看到失败原因并手动重试，
+    // 而不是永远「处理中」。队列积压时任务可能合法地排队更久，
+    // 所以阈值要明显大于单张图的正常处理时长。
+    // ---------------------------------------------------------------------
+    RECONCILE_INTERVAL_MS: z.coerce.number().int().min(10_000).default(60_000),
+    STUCK_PROCESSING_MS: z.coerce.number().int().min(60_000).default(900_000),
+
     LOCAL_STORAGE_PATH: z.string().min(1).default('../../data/local-storage'),
     COS_SECRET_ID: z.string().default(''),
     COS_SECRET_KEY: z.string().default(''),

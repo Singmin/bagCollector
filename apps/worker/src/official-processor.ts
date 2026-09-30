@@ -2,7 +2,7 @@ import { AssetKind, AssetStatus, OfficialProcessStatus, PrismaClient, Processing
 import sharp from 'sharp';
 import { upsertAssetRecord } from './asset-record.js';
 import { config } from './config.js';
-import { removeBackground, standardJpeg, trimTransparent } from './processor.js';
+import { removeBackground, standardImage, trimTransparent } from './processor.js';
 import { getObject, putObject } from './object-store.js';
 
 export interface OfficialProcessJobData {
@@ -56,8 +56,8 @@ async function upsertOfficialAsset(input: {
 }
 
 /**
- * 官方袋子的展示图与缩略图。抠图结果走透明 PNG（沿用 trim 逻辑）；
- * 不抠图时直接用标准 JPEG 出图，不做 trim —— JPEG 没有透明像素，
+ * 官方袋子的展示图与缩略图。透明口径（抠图结果、或保留了透明度的标准图）走透明
+ * PNG（沿用 trim 逻辑）；白底 JPEG 标准图不做 trim —— 没有透明像素，
  * trim 会按角落颜色误裁实体内容。
  */
 async function writeOfficialRenditions(
@@ -105,10 +105,17 @@ async function writeOfficialRenditions(
 
 /**
  * 管理后台上传官方袋子原图后的处理链路：
- * 原图 → STANDARD(≤4096 JPEG) →（可选抠图 → CUTOUT）→ DISPLAY + THUMBNAIL → READY。
+ * 原图 → STANDARD(≤4096；开抠图为白底 JPEG，不开抠图且原图透明时为 PNG) →
+ * （可选抠图 → CUTOUT）→ DISPLAY + THUMBNAIL → READY。
  * 不抠图时完全不调用腾讯云万象，官方库每天的录入量不受用户抠图配额与成本限制。
  */
 export async function processOfficialImage(data: OfficialProcessJobData) {
+  const current = await prisma.officialBag.findUnique({
+    where: { id: data.officialBagId },
+    select: { version: true }
+  });
+  // 图片已被替换或删除时 version 会变，旧任务直接丢弃，避免把已清理的图片写回来。
+  if (!current || current.version !== data.version) return;
   await prisma.officialBag.update({
     where: { id: data.officialBagId },
     data: { processStatus: OfficialProcessStatus.PROCESSING, processError: null }
@@ -123,14 +130,17 @@ export async function processOfficialImage(data: OfficialProcessJobData) {
     orderBy: { createdAt: 'desc' }
   });
   const source = await getObject(original.objectKey);
-  const standard = await standardJpeg(source);
+  // 不抠图时保留原图透明度：官方库常直接上传现成的透明 PNG 素材，
+  // 转白底 JPEG 会丢掉透明背景；开抠图时仍统一白底 JPEG，万象输入更稳定。
+  const standard = await standardImage(source, { keepTransparency: !data.matting });
+  const transparent = !data.matting && standard.contentType === 'image/png';
   const baseKey = `official/${data.officialBagId}`;
-  const standardKey = `${baseKey}/standard/v${data.version}.jpg`;
+  const standardKey = `${baseKey}/standard/v${data.version}.${standard.extension}`;
   await upsertOfficialAsset({
     officialBagId: data.officialBagId,
     kind: AssetKind.STANDARD,
     key: standardKey,
-    contentType: 'image/jpeg',
+    contentType: standard.contentType,
     body: standard.body,
     width: standard.width,
     height: standard.height,
@@ -158,11 +168,12 @@ export async function processOfficialImage(data: OfficialProcessJobData) {
       writeOfficialRenditions(data, cutout, baseKey, true)
     ]);
   } else {
-    await writeOfficialRenditions(data, standard.body, baseKey, false);
+    // 标准图若保留了透明度，展示图/缩略图同样按透明口径出图（含 trim）。
+    await writeOfficialRenditions(data, standard.body, baseKey, transparent);
   }
 
-  await prisma.officialBag.update({
-    where: { id: data.officialBagId },
+  await prisma.officialBag.updateMany({
+    where: { id: data.officialBagId, version: data.version },
     data: { processStatus: OfficialProcessStatus.READY, processError: null }
   });
 }
@@ -220,10 +231,30 @@ export async function claimOfficialBag(data: OfficialClaimJobData) {
 
 export async function failOfficialProcess(data: OfficialProcessJobData, error: unknown) {
   const message = error instanceof Error ? error.message.slice(0, 500) : '官方袋子图片处理失败';
-  await prisma.officialBag.update({
-    where: { id: data.officialBagId },
+  // 过期任务（图片已被替换或删除）不再改动袋子状态。
+  await prisma.officialBag.updateMany({
+    where: { id: data.officialBagId, version: data.version },
     data: { processStatus: OfficialProcessStatus.FAILED, processError: message }
   });
+}
+
+/**
+ * 卡死对账：PROCESSING 超过阈值说明任务没被消费（worker 宕机 / 任务丢失 / stalled），
+ * 翻成 FAILED 让管理后台可见、可手动重传。若任务其实只是排在长队尾，
+ * 它最终跑完时仍会把状态写回 READY，不影响自愈。
+ */
+export async function reconcileStuckOfficialProcessing(stuckBefore: Date) {
+  const result = await prisma.officialBag.updateMany({
+    where: { processStatus: OfficialProcessStatus.PROCESSING, updatedAt: { lt: stuckBefore } },
+    data: {
+      processStatus: OfficialProcessStatus.FAILED,
+      processError: '处理超时：任务长时间未完成，请重新上传图片触发重试'
+    }
+  });
+  if (result.count > 0) {
+    console.warn(JSON.stringify({ event: 'reconcile_stuck_official', count: result.count }));
+  }
+  return result.count;
 }
 
 export async function failOfficialClaim(data: OfficialClaimJobData, error: unknown) {
