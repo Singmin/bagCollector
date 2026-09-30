@@ -7,13 +7,10 @@ import { dataService } from '../../../services/data';
 const id = ref(''); const stage = ref<'normalize' | 'matting' | ''>(''); const item = ref<Collectible | null>(null);
 const elapsed = ref(0); const failureMessage = ref(''); const deleting = ref(false);
 let timer: ReturnType<typeof setTimeout> | undefined;
-let startingMatting = false;
 let startedAt = 0;
 
 // 轮询间隔决定用户看到状态变化的滞后，1 秒兼顾响应速度和服务端压力。
 const POLL_INTERVAL_MS = 1_000;
-// 刚提交完裁剪，任务马上就会动，这里不用等满一个轮询周期。
-const POST_CROP_DELAY_MS = 600;
 
 async function poll() {
   try {
@@ -21,16 +18,9 @@ async function poll() {
     // 用真实时间戳计算等待时长：轮询本身有耗时，按次数累加会低估实际等待。
     elapsed.value = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
     if (item.value.processingStatus === 'AWAITING_CROP') {
-      if (startingMatting) return;
-      startingMatting = true;
-      stage.value = 'matting';
-      try {
-        await dataService.crop(item.value.id, { x: 0, y: 0, width: 1, height: 1, rotation: 0 });
-        timer = setTimeout(() => void poll(), POST_CROP_DELAY_MS);
-      } catch (error) {
-        failureMessage.value = error instanceof Error ? error.message : '自动抠图启动失败';
-      }
-      return;
+      /* 抠图改为用户可选（2026-09-29）：规范化完成后直接进编辑页，
+         由编辑页的「自动抠图」按钮手动触发，不再自动全幅 crop。 */
+      return void uni.redirectTo({ url: `/package-editor/pages/metadata/index?id=${item.value.id}` });
     }
     if (item.value.processingStatus === 'READY') return void uni.redirectTo({ url: `/package-editor/pages/metadata/index?id=${item.value.id}` });
     if (item.value.processingStatus === 'FAILED') {

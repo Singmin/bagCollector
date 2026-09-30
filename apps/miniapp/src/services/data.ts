@@ -11,6 +11,11 @@ async function collectibles(query = '') {
   return api<CollectiblePage>(`/collectibles${query ? `?${query}` : ''}`);
 }
 
+/* 发现页「纸袋上新」官方精选（返回完整条目：背面要展示标签与备注） */
+async function feed(query = '') {
+  return api<CollectiblePage>(`/feed${query ? `?${query}` : ''}`);
+}
+
 async function changed<T>(request: Promise<T>) {
   const result = await request;
   markCollectionDataStale();
@@ -19,7 +24,7 @@ async function changed<T>(request: Promise<T>) {
 
 async function updateCollectible(
   id: string,
-  data: Partial<Pick<Collectible, 'name' | 'notes' | 'shelfId' | 'tags'>>
+  data: Partial<Pick<Collectible, 'name' | 'notes' | 'shelfId' | 'tags' | 'addedAt'>>
 ) {
   const item = await changed(api<Collectible>(`/collectibles/${id}`, { method: 'PUT', data }));
   return localizeCollectibleImages(item);
@@ -29,7 +34,11 @@ export const dataService = {
   shelves: () => api<Shelf[]>('/shelves'),
   collectibles,
   collectible,
-  createCollectible: (data: { name: string; shelfId: string }) =>
+  feed,
+  wishlist: () => api<Collectible[]>(`/wishlist`),
+  addWishlist: (id: string) => api(`/wishlist/${id}`, { method: 'POST' }).then(() => markCollectionDataStale()),
+  removeWishlist: (id: string) => api(`/wishlist/${id}`, { method: 'DELETE' }).then(() => markCollectionDataStale()),
+  createCollectible: (data: { name: string; shelfId: string; thumbnailUrl?: string; displayImageUrl?: string; notes?: string; tags?: string[] }) =>
     changed(api<Collectible>('/collectibles', { method: 'POST', data })),
   updateCollectible,
   removeCollectible: (id: string) => changed(api(`/collectibles/${id}`, { method: 'DELETE' })),

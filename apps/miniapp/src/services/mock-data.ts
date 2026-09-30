@@ -3,18 +3,35 @@ import type { ApiRequestOptions } from './http';
 
 /* ── 本地 Mock 开关（仅用于无后端时预览 UI）──
    构建时注入 VITE_USE_MOCK=1 才生效，正式构建完全不受影响。
-   数据只存在内存里，模拟器里刷新即重置。 */
+   数据只存在内存里，模拟器里刷新即重置。
+
+   ⚠️ 真实后端尚未实现（由另一名同事后续补齐，接口清单见 services/http.ts 顶部备注）。
+   现阶段前端联调/演示请只用 Mock 构建：pnpm build:miniapp:mock；
+   不要跑全仓 pnpm build（会先构建后端包而失败）。后端就绪后前端零改动即可切换。
+
+   三套数据：
+   · feedItems      —— 发现页「纸袋上新」官方精选（别人的纸袋，带 ownerName）
+   · myCollectibles —— 收藏架「我的」分段（自己的纸袋，挂在 shelves 下）
+   · wishlist       —— 心愿袋（从发现页加入的纸袋，保存的是 feed 条目的副本） */
 export const USE_MOCK = String(import.meta.env.VITE_USE_MOCK ?? '').trim() === '1';
 
-/* 模拟藏品用真实袋子抠图（用户提供，static/figma/bags/）：
-   bag-01/02/03 = luckin 三款、bag-04/05 = CHAGEE 两款、bag-06 = luckin×MINISO */
+/* 十张袋子均为真实联名/系列款（已逐张识别）：
+   bag-01 luckin×Crocs「LUCK IN SUMMER」/ bag-02「ALL IN LUCKIN」白色拼贴 /
+   bag-03「ALL IN LUCKIN」彩色满印 / bag-04 CHAGEE×梵高《盛开的杏花》 /
+   bag-05 CHAGEE×莫奈《日出·印象》 / bag-06 luckin×MINISO「LUCK IN HAND」/
+   bag-07 Peet's「THE FLOWER OF Handcraft」/ bag-08 Peet's「Whispers of Autumn」/
+   bag-09 Peet's 经典牛皮纸袋 / bag-10 Peet's 窄长单杯袋 */
 const BAG_IMAGES = [
   '/static/figma/bags/bag-01.png',
   '/static/figma/bags/bag-02.png',
   '/static/figma/bags/bag-03.png',
   '/static/figma/bags/bag-04.png',
   '/static/figma/bags/bag-05.png',
-  '/static/figma/bags/bag-06.png'
+  '/static/figma/bags/bag-06.png',
+  '/static/figma/bags/bag-07.png',
+  '/static/figma/bags/bag-08.png',
+  '/static/figma/bags/bag-09.png',
+  '/static/figma/bags/bag-10.png'
 ];
 
 interface MockCollectible extends Collectible {
@@ -31,47 +48,54 @@ function nextId(prefix: string) {
 const shelves: Shelf[] = [
   { id: 'shelf-mock-001', name: '霸王茶姬', theme: 'SAGE', sortOrder: 1, itemCount: 0 },
   { id: 'shelf-mock-002', name: '瑞幸咖啡', theme: 'ROSE', sortOrder: 2, itemCount: 0 },
-  { id: 'shelf-mock-003', name: '喜茶', theme: 'AMBER', sortOrder: 3, itemCount: 0 },
-  { id: 'shelf-mock-004', name: '无印良品', theme: 'GRAPHITE', sortOrder: 4, itemCount: 0 }
+  { id: 'shelf-mock-003', name: "Peet's Coffee", theme: 'AMBER', sortOrder: 3, itemCount: 0 }
 ];
 
-const collectibles: MockCollectible[] = [];
-let collectibleAddedAt = 0;
+const feedItems: MockCollectible[] = [];
+const myCollectibles: MockCollectible[] = [];
+const wishlist: MockCollectible[] = [];
 
-function seedCollectible(shelfIndex: number, name: string, tags: string[], notes: string, daysAgo: number, imageIndex: number) {
-  const shelf = shelves[shelfIndex % shelves.length];
-  const now = Date.now() - daysAgo * 24 * 60 * 60 * 1000;
+/* 通用种子：往指定列表塞一条，addedAtMs 保证按写入顺序错开 */
+let seedTick = 0;
+function seedCollectible(list: MockCollectible[], shelf: Shelf | null, name: string, tags: string[], notes: string, daysAgo: number, imageIndex: number, ownerName?: string) {
+  const now = Date.now() - daysAgo * 24 * 60 * 60 * 1000 - seedTick * 60 * 60 * 1000;
+  seedTick += 1;
   const image = BAG_IMAGES[imageIndex % BAG_IMAGES.length];
-  collectibles.push({
+  list.push({
     id: nextId('collectible'),
     name,
-    shelfId: shelf.id,
-    shelfName: shelf.name,
+    shelfId: shelf?.id ?? '',
+    shelfName: shelf?.name ?? '',
     processingStatus: 'READY',
     thumbnailUrl: image,
     displayImageUrl: image,
-    addedAt: new Date(now - collectibleAddedAt).toISOString(),
-    updatedAt: new Date(now - collectibleAddedAt).toISOString(),
+    addedAt: new Date(now).toISOString(),
+    updatedAt: new Date(now).toISOString(),
     notes,
     tags,
-    addedAtMs: now - collectibleAddedAt
+    addedAtMs: now,
+    ...(ownerName ? { ownerName } : {})
   });
-  collectibleAddedAt += 60 * 60 * 1000;
-  shelf.itemCount += 1;
+  if (shelf) shelf.itemCount += 1;
 }
 
-/* 图片按品牌对号：bag-04/05 = CHAGEE（霸王茶姬）、bag-01/02/03/06 = luckin（瑞幸），
-   喜茶/无印良品暂无对应实拍，从池子里就近取用 */
-seedCollectible(0, '伯牙绝弦', ['奶茶', '国风', '常喝'], '大杯少糖去冰，袋子上是山水烫金纹。', 1, 3);
-seedCollectible(0, '醒时春山', ['奶茶', '春季限定'], '杯套是浅绿色的，袋子封口贴纸完好。', 3, 4);
-seedCollectible(1, '生椰拿铁', ['咖啡', '常喝'], '袋子小，只装了一杯的量。', 2, 0);
-seedCollectible(1, '橙C美式', ['咖啡', '果咖'], '', 5, 1);
-seedCollectible(2, '多肉葡萄', ['果茶', '夏日'], '袋子提手是圆绳，颜色很夏天。', 4, 2);
-seedCollectible(2, '烤黑糖波波', ['奶茶'], '底部有糖浆渍，拍完照就洗干净了。', 8, 5);
-seedCollectible(3, '香薰机包装', ['家居', '礼盒'], '袋子厚实，内衬是米白色的。', 12, 3);
-seedCollectible(3, '文具周边袋', ['文具'], '印着经典 logo，纸感偏硬挺。', 20, 0);
-seedCollectible(0, '万里木兰', ['奶茶', '轻乳茶'], '第二次回购，袋子比上一版换成了哑光。', 30, 4);
-seedCollectible(2, '芝芝莓莓', ['果茶'], '袋子有轻微折痕，整体完整。', 45, 2);
+/* ── 发现页「纸袋上新」：官方精选 10 条（ownerName = 品牌官方账号）──
+   收藏名 = 联名/系列名（袋面文字），不是饮品名 —— 收藏对象是袋子本身 */
+seedCollectible(feedItems, null, '盛开的杏花', ['联名', '艺术系列', '蓝白'], 'CHAGEE × 梵高《盛开的杏花》联名袋，蓝底白杏花铺满整面，封口贴纸完好。', 0, 3, '霸王茶姬');
+seedCollectible(feedItems, null, 'LUCK IN SUMMER', ['联名', '夏日', '涂鸦'], 'luckin × Crocs「LUCK IN SUMMER」联名袋，深蓝底印满滑板、椰子和阳光涂鸦。', 0, 0, '瑞幸咖啡');
+seedCollectible(feedItems, null, 'THE FLOWER OF Handcraft', ['联名', '花艺', '大理石纹'], 'Peet\'s「THE FLOWER OF Handcraft」花艺大理石纹袋，橙白漩涡纹样，随袋附同系列杯套。', 7, 6, "Peet's Coffee");
+seedCollectible(feedItems, null, '日出·印象', ['联名', '艺术系列', '灰蓝'], 'CHAGEE × 莫奈《日出·印象》联名袋，灰蓝海面上一轮橙日，绳子是黑色的。', 10, 4, '霸王茶姬');
+seedCollectible(feedItems, null, 'LUCK IN HAND', ['联名', 'MINISO', '紫色'], 'luckin × MINISO「LUCK IN HAND」联名袋，紫色底上 YOYO 南瓜头小人举着咖啡。', 13, 5, '瑞幸咖啡');
+seedCollectible(feedItems, null, 'Whispers of Autumn', ['限定', '秋季', '花卉'], 'Peet\'s「Whispers of Autumn」秋日花卉袋，米底金黄秋花满印，秋日限定系列。', 16, 7, "Peet's Coffee");
+seedCollectible(feedItems, null, 'ALL IN LUCKIN · 白色拼贴', ['联名', '白色拼贴'], '「ALL IN LUCKIN」白色拼贴款，扁平小人举着爱心，徽章写「幸运在你身边了」。', 20, 1, '瑞幸咖啡');
+seedCollectible(feedItems, null, '经典牛皮纸袋', ['经典款', '牛皮纸'], 'Peet\'s 经典款牛皮纸袋，白字「Coffee for Coffee People」。', 24, 8, "Peet's Coffee");
+seedCollectible(feedItems, null, 'ALL IN LUCKIN · 彩色满印', ['联名', '彩色满印'], '「ALL IN LUCKIN」彩色满印款，满版人物插画，绿色爱心徽章写「有你幸运来了」。', 27, 2, '瑞幸咖啡');
+seedCollectible(feedItems, null, '窄长单杯袋', ['单杯', '牛皮纸'], 'Peet\'s 窄长款单杯袋，竖排 Peet\'s 标志，装一杯冷萃刚刚好。', 30, 9, "Peet's Coffee");
+
+/* ── 收藏架「我的」：3 条自己的收藏（每个展架一条）── */
+seedCollectible(myCollectibles, shelves[0], '盛开的杏花', ['联名', '艺术系列'], '在门店排队两小时才抢到的首发联名，杏花那面舍不得折角。', 4, 3);
+seedCollectible(myCollectibles, shelves[1], 'LUCK IN HAND', ['联名', 'MINISO'], 'MINISO 联名第二波，紫色这只袋子最完整，YOYO 小人一个都没磨掉。', 7, 5);
+seedCollectible(myCollectibles, shelves[2], '经典牛皮纸袋', ['经典款'], '第一次去 Peet\'s 门店留下的袋子，纸感很厚实。', 15, 8);
 
 function summary(item: MockCollectible): CollectibleSummary {
   const { addedAtMs: _addedAtMs, notes: _notes, tags: _tags, displayImageUrl: _display, standardImageUrl: _standard, ...rest } = item;
@@ -138,11 +162,40 @@ export function mockRequest<T>(path: string, options: ApiRequestOptions = {}): P
 
   if (rawPath === '/account') {
     return jsonResponse({
-      collectibleCount: collectibles.length,
+      collectibleCount: myCollectibles.length,
       shelfCount: shelves.length,
-      storageUsedBytes: collectibles.length * 1024 * 512,
+      storageUsedBytes: myCollectibles.length * 1024 * 512,
       storageQuotaBytes: 5 * 1024 * 1024 * 1024
     });
+  }
+
+  /* ── 发现页「纸袋上新」：官方精选 feed（返回完整条目，背面要展示标签与备注）── */
+  if (rawPath === '/feed') {
+    const { limit, search, cursor } = parseQuery(rawQuery);
+    const filtered = sortDesc(feedItems.filter((item) => matchSearch(item, search)));
+    const start = cursor ? Math.max(0, Number(cursor) || 0) : 0;
+    const pageItems = filtered.slice(start, start + limit).map(publicCollectible);
+    const next = start + limit < filtered.length ? String(start + limit) : null;
+    return jsonResponse<CollectiblePage>({ items: pageItems as unknown as CollectibleSummary[], nextCursor: next, totalCount: filtered.length });
+  }
+
+  /* ── 心愿袋 ── */
+  if (rawPath === '/wishlist' && method === 'GET') {
+    return jsonResponse<Collectible[]>(sortDesc(wishlist).map(publicCollectible));
+  }
+  const wishMatch = rawPath.match(/^\/wishlist\/([^/]+)$/);
+  if (wishMatch) {
+    const source = feedItems.find((item) => item.id === wishMatch[1]);
+    if (!source) return Promise.reject(new Error('纸袋不存在或已下架'));
+    if (method === 'POST') {
+      if (!wishlist.some((item) => item.id === source.id)) wishlist.push({ ...source });
+      return jsonResponse({});
+    }
+    if (method === 'DELETE') {
+      const index = wishlist.findIndex((item) => item.id === source.id);
+      if (index >= 0) wishlist.splice(index, 1);
+      return jsonResponse({});
+    }
   }
 
   if (rawPath === '/shelves/reorder' && method === 'POST') {
@@ -177,7 +230,7 @@ export function mockRequest<T>(path: string, options: ApiRequestOptions = {}): P
     if (method === 'DELETE') {
       const index = shelves.indexOf(shelf);
       shelves.splice(index, 1);
-      collectibles.filter((item) => item.shelfId === shelf.id).forEach((item) => { item.shelfId = ''; item.shelfName = ''; });
+      myCollectibles.filter((item) => item.shelfId === shelf.id).forEach((item) => { item.shelfId = ''; item.shelfName = ''; });
       touchShelvesSortOrder();
       return jsonResponse({});
     }
@@ -185,26 +238,30 @@ export function mockRequest<T>(path: string, options: ApiRequestOptions = {}): P
 
   if (rawPath === '/collectibles') {
     if (method === 'POST') {
+      /* 标记已有：从发现页带入袋子的图与默认文案；上传流程：只带名称与展架 */
       const shelf = shelves.find((current) => current.id === body.shelfId) ?? shelves[0];
       const now = Date.now();
       const item: MockCollectible = {
         id: nextId('collectible'),
-        name: String(body.name ?? '未命名藏品'),
+        name: String(body.name ?? '未命名纸袋'),
         shelfId: shelf?.id ?? '',
         shelfName: shelf?.name ?? '',
-        processingStatus: 'READY',
+        /* 新建即「待抠图」：抠图已改为编辑页用户手动触发（真实后端同样流转），crop 后置 READY */
+        processingStatus: 'AWAITING_CROP',
+        thumbnailUrl: body.thumbnailUrl ? String(body.thumbnailUrl) : undefined,
+        displayImageUrl: body.displayImageUrl ? String(body.displayImageUrl) : undefined,
         addedAt: new Date(now).toISOString(),
         updatedAt: new Date(now).toISOString(),
-        notes: '',
-        tags: [],
+        notes: body.notes ? String(body.notes) : '',
+        tags: Array.isArray(body.tags) ? (body.tags as string[]).slice(0, 30) : [],
         addedAtMs: now
       };
-      collectibles.push(item);
+      myCollectibles.push(item);
       if (shelf) shelf.itemCount += 1;
       return jsonResponse<Collectible>(publicCollectible(item));
     }
     const { limit, search, cursor } = parseQuery(rawQuery);
-    const filtered = sortDesc(collectibles.filter((item) => item.shelfId && matchSearch(item, search)));
+    const filtered = sortDesc(myCollectibles.filter((item) => item.shelfId && matchSearch(item, search)));
     const start = cursor ? Math.max(0, Number(cursor) || 0) : 0;
     const pageItems = filtered.slice(start, start + limit).map(summary);
     const next = start + limit < filtered.length ? String(start + limit) : null;
@@ -212,33 +269,48 @@ export function mockRequest<T>(path: string, options: ApiRequestOptions = {}): P
   }
 
   const cropMatch = rawPath.match(/^\/collectibles\/([^/]+)\/crop$/);
-  if (cropMatch && method === 'POST') return jsonResponse({ jobId: 'mock-job-001' });
+  /* Mock 抠图：提交即视为完成（真实后端走 MATTING 再 READY），处理页轮询到 READY 后回编辑页 */
+  if (cropMatch && method === 'POST') {
+    const target = myCollectibles.find((current) => current.id === cropMatch[1]);
+    if (target) target.processingStatus = 'READY';
+    return jsonResponse({ jobId: 'mock-job-001' });
+  }
 
   const collectibleMatch = rawPath.match(/^\/collectibles\/([^/]+)$/);
   if (collectibleMatch) {
-    const item = collectibles.find((current) => current.id === collectibleMatch[1]);
-    if (!item) return Promise.reject(new Error('收藏不存在'));
-    if (method === 'PUT') {
-      if (body.name !== undefined) item.name = String(body.name);
-      if (body.notes !== undefined) item.notes = String(body.notes);
-      if (body.tags !== undefined) item.tags = (body.tags as string[]).slice(0, 30);
-      if (body.shelfId !== undefined) {
-        const shelf = shelves.find((current) => current.id === body.shelfId);
-        const previous = shelves.find((current) => current.id === item.shelfId);
-        if (previous && previous.id !== shelf?.id) previous.itemCount = Math.max(0, previous.itemCount - 1);
-        if (shelf && previous?.id !== shelf.id) shelf.itemCount += 1;
-        item.shelfId = shelf?.id ?? '';
-        item.shelfName = shelf?.name ?? '';
+    const mine = myCollectibles.find((current) => current.id === collectibleMatch[1]);
+    if (method === 'PUT' || method === 'DELETE') {
+      /* 写操作仅限自有收藏：feed/心愿条目不可改（心愿条目与 feed 同 id，防误改） */
+      const item = mine;
+      if (!item) return Promise.reject(new Error('收藏不存在'));
+      if (method === 'PUT') {
+        if (body.name !== undefined) item.name = String(body.name);
+        if (body.notes !== undefined) item.notes = String(body.notes);
+        if (body.tags !== undefined) item.tags = (body.tags as string[]).slice(0, 30);
+        if (body.addedAt !== undefined) {
+          /* 收藏日期可改：同步 addedAtMs 保持列表排序正确 */
+          const t = new Date(String(body.addedAt));
+          if (!Number.isNaN(t.getTime())) { item.addedAt = t.toISOString(); item.addedAtMs = t.getTime(); }
+        }
+        if (body.shelfId !== undefined) {
+          const shelf = shelves.find((current) => current.id === body.shelfId);
+          const previous = shelves.find((current) => current.id === item.shelfId);
+          if (previous && previous.id !== shelf?.id) previous.itemCount = Math.max(0, previous.itemCount - 1);
+          if (shelf && previous?.id !== shelf.id) shelf.itemCount += 1;
+          item.shelfId = shelf?.id ?? '';
+          item.shelfName = shelf?.name ?? '';
+        }
+        item.updatedAt = new Date().toISOString();
+        return jsonResponse<Collectible>(publicCollectible(item));
       }
-      item.updatedAt = new Date().toISOString();
-      return jsonResponse<Collectible>(publicCollectible(item));
-    }
-    if (method === 'DELETE') {
       const shelf = shelves.find((current) => current.id === item.shelfId);
       if (shelf) shelf.itemCount = Math.max(0, shelf.itemCount - 1);
-      collectibles.splice(collectibles.indexOf(item), 1);
+      myCollectibles.splice(myCollectibles.indexOf(item), 1);
       return jsonResponse({});
     }
+    /* GET 允许命中 feed 条目：心愿袋里的纸袋与 feed 同 id，详情卡要点开看 */
+    const item = mine ?? feedItems.find((current) => current.id === collectibleMatch[1]);
+    if (!item) return Promise.reject(new Error('收藏不存在'));
     return jsonResponse<Collectible>(publicCollectible(item));
   }
 
