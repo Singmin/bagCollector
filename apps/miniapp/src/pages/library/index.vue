@@ -184,7 +184,7 @@ function hydrateThumbnails(nextItems: CollectibleSummary[]) {
 const segment = ref<'mine' | 'wish'>('mine');
 const wishlistItems = ref<Collectible[]>([]);
 
-function removeWish(item: Collectible) {
+function removeWish(item: CollectibleSummary) {
   uni.showModal({
     title: '取消心愿',
     content: `把「${item.name}」移出心愿袋？`,
@@ -549,7 +549,7 @@ function open(item: CollectibleSummary) {
   detailData.value = cached ?? null;
   /* 大图先用列表已下好的缩略图顶着（秒出），详情回来再换 displayImageUrl；
      心愿条目不在 thumbnailUrls 里，回退用条目自带图 */
-  detailArtwork.value = thumbnailUrls.value[item.id] ?? item.thumbnailUrl ?? item.displayImageUrl ?? '';
+  detailArtwork.value = thumbnailUrls.value[item.id] ?? item.thumbnailUrl ?? (item as Collectible).displayImageUrl ?? '';
   detailLoading.value = !cached;
   editing.value = false;
   detailAtEnd.value = false;

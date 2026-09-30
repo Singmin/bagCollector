@@ -111,15 +111,18 @@ function load() {
       /* feed = 官方精选纸袋上新；心愿袋状态一并拉取（标记/取消心愿后要保持同步） */
       const [page, wish] = await Promise.all([dataService.feed('limit=9'), dataService.wishlist()]);
       assertRenderable(page.items);
-      items.value = page.items as unknown as Collectible[];
+      /* feed 接口声明返回摘要，但 mock 与真实后端都带完整字段（见下方 selectHero 注释），
+         这里统一按完整条目使用 —— 与旧的逐处 as 转换等价，只收敛到一个出口。 */
+      const feedItems = page.items as unknown as Collectible[];
+      items.value = feedItems;
       totalCount.value = page.totalCount;
       initialized.value = true;
       wishlistIds.value = new Set(wish.map((item) => item.id));
-      hydrateThumbnails(page.items as unknown as CollectibleSummary[]);
+      hydrateThumbnails(feedItems);
       // 刷新后沿用当前选中的那一张，它不在列表里才退回最新一张。
-      const kept = page.items.find((item) => item.id === heroItem.value?.id);
+      const kept = feedItems.find((item) => item.id === heroItem.value?.id);
       if (kept) heroItem.value = kept;
-      else selectHero(page.items[0] ?? null);
+      else selectHero(feedItems[0] ?? null);
     } catch (error) {
       console.error(error);
       const message = error instanceof Error ? error.message : '发现加载失败';
