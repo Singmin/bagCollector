@@ -906,15 +906,15 @@ function BagEditor({
                   okButtonProps={{ danger: true }}
                   onConfirm={() => void removeImage()}
                 >
-                  <Button danger size="small" loading={removing} disabled={bag.claimedCount > 0}>
+                  <Button danger size="small" loading={removing}>
                     删除图片
                   </Button>
                 </Popconfirm>
               </Space>
             )}
             {bag && (
-              <Button onClick={() => void replaceImage()} loading={uploading} disabled={bag.claimedCount > 0}>
-                {bag.claimedCount > 0 ? '已被拥有，不能换图 / 删图' : '上传 / 替换图片'}
+              <Button onClick={() => void replaceImage()} loading={uploading}>
+                上传 / 替换图片
               </Button>
             )}
             {!bag && <Typography.Text type="secondary">新建保存后，如已选择图片将自动上传并开始处理。</Typography.Text>}

@@ -203,9 +203,6 @@ export class OfficialBagsAdminService {
     file: { body: Buffer; contentType: string; matting?: boolean }
   ) {
     const bag = await this.findBag(id);
-    if (bag.claimedCount > 0) {
-      throw new ApiError('CONFLICT', '该袋子已被用户拥有，不能替换图片；请新建条目', HttpStatus.CONFLICT);
-    }
     if (!ALLOWED_CONTENT_TYPES.includes(file.contentType as (typeof ALLOWED_CONTENT_TYPES)[number])) {
       throw new ApiError('UPLOAD_INVALID', '只支持 JPEG / PNG / WebP / HEIC 图片', HttpStatus.BAD_REQUEST);
     }
@@ -260,18 +257,11 @@ export class OfficialBagsAdminService {
 
   /**
    * 删除袋子上的全部图片（原图 + 各版本衍生图），把袋子退回「未上传图片」状态。
-   * 已发布袋子会一并下架，避免小程序端展示空图；已被用户拥有的袋子不允许操作。
+   * 已发布袋子会一并下架，避免小程序端展示空图；已被拥有的袋子同样允许操作。
    * version 继续自增，让仍在处理中的旧任务判定为过期，不再把图片写回来。
    */
   async removeImage(adminId: string, id: string) {
     const bag = await this.findBag(id);
-    if (bag.claimedCount > 0) {
-      throw new ApiError(
-        'CONFLICT',
-        '该袋子已被用户拥有，不能删除图片；请先下架处理已有收藏',
-        HttpStatus.CONFLICT
-      );
-    }
     const images = await this.prisma.officialBagImage.findMany({
       where: { officialBagId: id },
       select: { objectKey: true }
