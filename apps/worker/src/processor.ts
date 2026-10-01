@@ -19,7 +19,8 @@ export interface ProcessingJobData {
 const prisma = new PrismaClient();
 
 // 抠图实现只在模块加载时构建一次：并发限流器必须跨任务共享，不能每次调用都重建。
-const removeBackground = createTencentCiBackgroundRemover(
+// 导出给官方袋子处理链路复用（官方库可选抠图，与用户链路使用同一实现与计费口径）。
+export const removeBackground = createTencentCiBackgroundRemover(
   {
     process: config.CI_MATTING_PROCESS,
     timeoutMs: config.CI_MATTING_TIMEOUT_MS,
@@ -77,7 +78,7 @@ async function upsertAsset(input: {
  * 前端按比例展示时的可见尺寸（与素材处理口径一致）。
  * 整图透明等极端情况（trim 后尺寸非法或解码失败）回退原图，不阻断出图。
  */
-async function trimTransparent(source: Buffer): Promise<Buffer> {
+export async function trimTransparent(source: Buffer): Promise<Buffer> {
   try {
     const trimmed = await sharp(source, { limitInputPixels: config.MAX_IMAGE_PIXELS })
       .trim()
@@ -129,19 +130,58 @@ async function writeRenditions(data: ProcessingJobData, source: Buffer, baseKey:
   ]);
 }
 
-async function standardJpeg(source: Buffer) {
+/** 标准化产物：统一 ≤4096px，透明输入可保留 alpha（PNG），其余为白底 JPEG。 */
+export interface StandardImage {
+  body: Buffer;
+  width: number;
+  height: number;
+  contentType: 'image/jpeg' | 'image/png';
+  extension: 'jpg' | 'png';
+}
+
+/**
+ * 原图标准化为 ≤4096px 的图片，供裁剪/抠图/展示链路复用。
+ *
+ * - 默认输出 JPEG：用户链路标准化后必然走裁剪 + 万象抠图，透明度由抠图重新生成，
+ *   JPEG 体积小且抠图输入更稳定。JPEG 不支持透明通道，透明像素先铺成白色
+ *   （sharp 默认合成到黑色背景，会导致黑底）。
+ * - `keepTransparency: true` 且原图带 alpha 时输出 PNG：官方库常直接上传现成的
+ *   透明素材，未开抠图时若转 JPEG 会丢掉透明度；PNG 超过 10MB 时回退白底 JPEG，
+ *   维持既有的标准图体积预算。
+ */
+export async function standardImage(
+  source: Buffer,
+  options: { keepTransparency?: boolean } = {}
+): Promise<StandardImage> {
   const base = sharp(source, { limitInputPixels: config.MAX_IMAGE_PIXELS }).rotate().resize({
     width: 4096,
     height: 4096,
     fit: 'inside',
     withoutEnlargement: true
   });
+
+  if (options.keepTransparency) {
+    const metadata = await sharp(source, { limitInputPixels: config.MAX_IMAGE_PIXELS }).metadata();
+    if (metadata.hasAlpha) {
+      const { data, info } = await base
+        .clone()
+        .png({ compressionLevel: 6 })
+        .toBuffer({ resolveWithObject: true });
+      if (!info.width || !info.height) throw new Error('无法读取标准图尺寸');
+      if (data.length <= 10_000_000) {
+        return { body: data, width: info.width, height: info.height, contentType: 'image/png', extension: 'png' };
+      }
+      // 超出体积预算的透明图回退白底 JPEG，避免标准图无限膨胀。
+    }
+  }
+
+  const flattened = base.flatten({ background: { r: 255, g: 255, b: 255 } });
   for (const quality of [90, 84, 78, 72]) {
     // resolveWithObject 直接带回输出尺寸，省掉一次完整 JPEG 解码。
-    const { data, info } = await base.clone().jpeg({ quality, mozjpeg: true }).toBuffer({ resolveWithObject: true });
+    const { data, info } = await flattened.clone().jpeg({ quality, mozjpeg: true }).toBuffer({ resolveWithObject: true });
     if (!info.width || !info.height) throw new Error('无法读取标准图尺寸');
     if (data.length <= 10_000_000 || quality === 72) {
-      return { body: data, width: info.width, height: info.height };
+      return { body: data, width: info.width, height: info.height, contentType: 'image/jpeg', extension: 'jpg' };
     }
   }
   throw new Error('图片标准化失败');
@@ -160,14 +200,14 @@ export async function normalizeImage(data: ProcessingJobData) {
     orderBy: { createdAt: 'desc' }
   });
   const source = await getObject(original.objectKey);
-  const standard = await standardJpeg(source);
-  const key = `users/${data.userId}/collectibles/${data.collectibleId}/standard/v${data.version}.jpg`;
+  // 用户链路标准化后必然走裁剪 + 抠图，透明度由抠图重新生成，统一白底 JPEG。
+  const standard = await standardImage(source);
+  const key = `users/${data.userId}/collectibles/${data.collectibleId}/standard/v${data.version}.${standard.extension}`;
   await upsertAsset({
     ...data,
+    ...standard,
     kind: AssetKind.STANDARD,
-    key,
-    contentType: 'image/jpeg',
-    ...standard
+    key
   });
   await prisma.collectible.update({
     where: { id: data.collectibleId },
@@ -233,11 +273,13 @@ async function cropToAsset(data: ProcessingJobData) {
     width: collectible.cropWidth,
     height: collectible.cropHeight
   });
-  /* P2：调色在裁剪之后做（与前端预览同一顺序），缺省 1 = 不调整 */
+  /* 「认领官方袋子」复制过来的标准图可能是透明 PNG —— 裁剪图要送万象抠图，
+     先铺白底再出 JPEG，避免透明像素被合成成黑底。
+     P2：调色在裁剪之后做（与前端预览同一顺序），缺省 1 = 不调整 */
   const brightness = collectible.cropBrightness ?? 1;
   const contrast = collectible.cropContrast ?? 1;
   const saturation = collectible.cropSaturation ?? 1;
-  let pipeline = rotated.extract(rect);
+  let pipeline = rotated.extract(rect).flatten({ background: { r: 255, g: 255, b: 255 } });
   if (brightness !== 1 || saturation !== 1) pipeline = pipeline.modulate({ brightness, saturation });
   if (contrast !== 1) pipeline = pipeline.linear(contrast, -(128 * contrast) + 128); // 标准对比度公式
   const cropped = await pipeline.jpeg({ quality: 90, mozjpeg: true }).toBuffer();
@@ -328,6 +370,57 @@ export async function failProcessing(data: ProcessingJobData, error: unknown) {
       data: { processingStatus: ProcessingStatus.FAILED, processingError: message }
     })
   ]);
+}
+
+/**
+ * 卡死对账：NORMALIZING/MATTING 超过阈值说明任务没被消费，翻成 FAILED 让用户可见并
+ * 可重新触发。AWAITING_CROP 是在等用户裁剪，可能合法停留很久，不参与对账。
+ */
+export async function reconcileStuckProcessing(stuckBefore: Date) {
+  const result = await prisma.collectible.updateMany({
+    where: {
+      processingStatus: { in: [ProcessingStatus.NORMALIZING, ProcessingStatus.MATTING] },
+      updatedAt: { lt: stuckBefore }
+    },
+    data: { processingStatus: ProcessingStatus.FAILED, processingError: '处理超时，请重新上传图片' }
+  });
+  if (result.count > 0) {
+    console.warn(JSON.stringify({ event: 'reconcile_stuck_collectible', count: result.count }));
+  }
+  return result.count;
+}
+
+/**
+ * 被遗弃上传对账：UPLOADING 且没有任何图片资产、又超过阈值（ABANDONED_UPLOAD_MS，
+ * 默认 24h）的记录是「建了记录但图永远不会来」的残骸 —— 典型来源是旧版小程序的
+ * 「标记已有」误走拍照上传接口（POST /collectibles 建完记录就关页面，图根本不会传）。
+ * 这类记录在收藏列表里不可见（列表只返回 READY），却占着用户的收藏配额，直接删除；
+ * CollectibleTag / ImageAsset / ProcessingJob 由数据库级联清理。
+ * 认领得到的记录起步是 NORMALIZING，理论上不会是 UPLOADING，但 OfficialClaim 没有
+ * 外键，删除前仍排除已被认领引用的记录，避免孤儿认领行。
+ */
+export async function reconcileAbandonedUploads(before: Date) {
+  const candidates = await prisma.collectible.findMany({
+    where: {
+      processingStatus: ProcessingStatus.UPLOADING,
+      updatedAt: { lt: before },
+      imageAssets: { none: {} }
+    },
+    select: { id: true }
+  });
+  if (!candidates.length) return 0;
+  const claimed = await prisma.officialClaim.findMany({
+    where: { collectibleId: { in: candidates.map((row) => row.id) } },
+    select: { collectibleId: true }
+  });
+  const claimedIds = new Set(claimed.map((row) => row.collectibleId));
+  const doomed = candidates.map((row) => row.id).filter((id) => !claimedIds.has(id));
+  if (!doomed.length) return 0;
+  const result = await prisma.collectible.deleteMany({ where: { id: { in: doomed } } });
+  if (result.count > 0) {
+    console.warn(JSON.stringify({ event: 'reconcile_abandoned_upload', count: result.count }));
+  }
+  return result.count;
 }
 
 export async function cleanup(keys: string[]) {

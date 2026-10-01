@@ -112,15 +112,18 @@ function load() {
       /* feed = 官方精选纸袋上新；心愿袋状态一并拉取（标记/取消心愿后要保持同步） */
       const [page, wish] = await Promise.all([dataService.feed('limit=9'), dataService.wishlist()]);
       assertRenderable(page.items);
-      items.value = page.items as unknown as Collectible[];
+      /* feed 接口声明返回摘要，但 mock 与真实后端都带完整字段（见下方 selectHero 注释），
+         这里统一按完整条目使用 —— 与旧的逐处 as 转换等价，只收敛到一个出口。 */
+      const feedItems = page.items as unknown as Collectible[];
+      items.value = feedItems;
       totalCount.value = page.totalCount;
       initialized.value = true;
       wishlistIds.value = new Set(wish.map((item) => item.id));
-      hydrateThumbnails(page.items as unknown as CollectibleSummary[]);
+      hydrateThumbnails(feedItems);
       // 刷新后沿用当前选中的那一张，它不在列表里才退回最新一张。
-      const kept = page.items.find((item) => item.id === heroItem.value?.id);
+      const kept = feedItems.find((item) => item.id === heroItem.value?.id);
       if (kept) heroItem.value = kept;
-      else selectHero(page.items[0] ?? null);
+      else selectHero(feedItems[0] ?? null);
     } catch (error) {
       console.error(error);
       const message = error instanceof Error ? error.message : '发现加载失败';
@@ -168,8 +171,8 @@ let wishToggling = false;
 function isWished(id: string) { return wishlistIds.value.has(id); }
 
 async function toggleWish(item: Collectible) {
-  /* 互斥：已标记已有的纸袋不能再进心愿袋 */
-  if (markedMap.value[item.id]) return void uni.showToast({ title: '已标记已有，无需加入心愿袋', icon: 'none' });
+  /* 互斥：已标记已有的纸袋不能再进心愿袋（文案压到 9 字，微信 toast 一行放得下） */
+  if (markedMap.value[item.id]) return void uni.showToast({ title: '已标记，无需心愿袋', icon: 'none' });
   if (wishToggling) return;
   wishToggling = true;
   try {
@@ -224,9 +227,9 @@ function openMark(item: Collectible) {
 function closeMark() {
   markShow.value = false;
 }
-function onMarkSaved(source: Collectible, created: Collectible) {
+function onMarkSaved(source: Collectible, createdId: string) {
   /* 组件已落库并（如在心愿袋）自动移出；这里同步本地互斥与心愿状态 */
-  markedMap.value[source.id] = created.id;
+  markedMap.value[source.id] = createdId;
   if (wishlistIds.value.has(source.id)) {
     const next = new Set(wishlistIds.value);
     next.delete(source.id);
@@ -572,8 +575,12 @@ async function onRefresherRefresh() {
 /* 字体栈照搬 H5 的 h1（袋袋集原型.html:117）：Iowan Old Style / Baskerville 都是 iOS 系统
    衬线，中文没有对应字形会回退到 "Songti SC"（宋体）—— 截图里「袋袋集」的宋体感就来自这里。
    Android 上前面几个都缺失，落到通用 serif，属于预期内的降级。 */
-/* 2026-09-29 用户要求：54rpx / 900 / 无字距 */
-.bags-title { margin-bottom: 11rpx; color: #141414; font-family: Iowan Old Style, Baskerville, "Times New Roman", "Songti SC", serif; font-size: 54rpx; font-weight: 900; line-height: 1; letter-spacing: 0; }
+/* 2026-09-29 用户要求：54rpx / 900 / 无字距
+   2026-09-30 用户要求再粗一点：font-weight 已到 900 上限，但回退的宋体（Songti SC）
+   字族没有更重的字面，光靠字重已经加不动了 —— 用 -webkit-text-stroke 补一层描边
+   （与 .rack-new 角标同一套加粗手法）。描边是沿字形轮廓中心向两侧各扩一半，
+   1rpx ≈ 视觉上多 0.5rpx，够加粗又不糊；再粗会让笔画粘死，别往上调。 */
+.bags-title { margin-bottom: 11rpx; color: #141414; font-family: Iowan Old Style, Baskerville, "Times New Roman", "Songti SC", serif; font-size: 54rpx; font-weight: 900; line-height: 1; letter-spacing: 0; -webkit-text-stroke: 1rpx #141414; }
 /* 辅助内容：EmDesc 14pt（与「全部收藏」的副文案同档，两页一致） */
 .bags-tagline { color: #77736d; font-size: var(--wc-font-description); line-height: 1.4; }
 /* 设置钮已迁至「我的」页头部（2026-09-29），首页头部只保留标题块 */

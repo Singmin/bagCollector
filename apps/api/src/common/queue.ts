@@ -1,6 +1,8 @@
 export const IMAGE_QUEUE = 'bagcollect-images';
 
-export type ImageJobName = 'normalize' | 'crop' | 'matting' | 'cleanup';
+/* 任务名并集：crop / matting 为用户收藏链路（端点拆分后各自入队），
+   official-process / official-claim 为官方袋子链路 */
+export type ImageJobName = 'normalize' | 'crop' | 'matting' | 'cleanup' | 'official-process' | 'official-claim';
 
 export interface NormalizeJobData {
   processingJobId: string;
@@ -17,4 +19,16 @@ export type MattingJobData = NormalizeJobData;
 
 export interface CleanupJobData {
   keys: string[];
+}
+
+export interface OfficialProcessJobData {
+  officialBagId: string;
+  version: number;
+  matting: boolean;
+}
+
+export interface OfficialClaimJobData {
+  officialBagId: string;
+  userId: string;
+  collectibleId: string;
 }

@@ -34,13 +34,12 @@ const BAG_IMAGES = [
   '/static/figma/bags/bag-10.png'
 ];
 
-function iso(daysAgo: number) {
-  return new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000).toISOString();
-}
-
 interface MockCollectible extends Collectible {
   addedAtMs: number;
 }
+
+/* 认领官方袋子时的兜底展架名（与后端 official-bags.service 的 DEFAULT_SHELF_NAME 一致） */
+const DEFAULT_SHELF_NAME = '未分类';
 
 let shelfSeq = 0;
 let collectibleSeq = 0;
@@ -58,6 +57,8 @@ const shelves: Shelf[] = [
 const feedItems: MockCollectible[] = [];
 const myCollectibles: MockCollectible[] = [];
 const wishlist: MockCollectible[] = [];
+/* 已认领的官方袋子：收藏 id → 袋子 id（同一袋子只能拥有一次；删除收藏时解除） */
+const claims = new Map<string, string>();
 
 /* 通用种子：往指定列表塞一条，addedAtMs 保证按写入顺序错开 */
 let seedTick = 0;
@@ -170,8 +171,8 @@ function matchSearch(item: MockCollectible, search: string) {
     || item.tags.some((tag) => tag.toLowerCase().includes(search));
 }
 
-function jsonResponse<T>(data: T) {
-  return Promise.resolve(data as T);
+function jsonResponse<T>(data: T): Promise<any> {
+  return Promise.resolve(data);
 }
 
 function touchShelvesSortOrder() {
@@ -271,9 +272,48 @@ export function mockRequest<T>(path: string, options: ApiRequestOptions = {}): P
     }
   }
 
+  /* ── 拥有官方袋子（发现页「标记已有」）──
+     与真实后端同口径：建一条归属自己的收藏（默认进「未分类」展架）、带上袋子的图与文案。
+     Mock 没有后台复制图片的等待，直接就是 READY，所以标记完立刻能在收藏架看到。 */
+  const claimMatch = rawPath.match(/^\/official-bags\/([^/]+)\/claim$/);
+  if (claimMatch && method === 'POST') {
+    const bag = feedItems.find((item) => item.id === claimMatch[1]);
+    if (!bag) return Promise.reject(new Error('袋子不存在或暂不可见'));
+    if ([...claims.values()].includes(bag.id)) return Promise.reject(new Error('你已经拥有过这个袋子'));
+    /* 未指定展架时进「未分类」（与后端 resolveDefaultShelf 同口径），没有就现建一个 */
+    let shelf = body.shelfId ? shelves.find((current) => current.id === body.shelfId) : undefined;
+    if (!shelf) shelf = shelves.find((current) => current.name === DEFAULT_SHELF_NAME);
+    if (!shelf) {
+      shelf = { id: nextId('shelf'), name: DEFAULT_SHELF_NAME, theme: 'SAGE', sortOrder: shelves.length + 1, itemCount: 0 };
+      shelves.push(shelf);
+    }
+    const now = Date.now();
+    const item: MockCollectible = {
+      id: nextId('collectible'),
+      name: body.name ? String(body.name) : bag.name,
+      shelfId: shelf.id,
+      shelfName: shelf.name,
+      processingStatus: 'READY',
+      thumbnailUrl: bag.thumbnailUrl,
+      displayImageUrl: bag.displayImageUrl,
+      addedAt: new Date(now).toISOString(),
+      updatedAt: new Date(now).toISOString(),
+      notes: body.notes !== undefined ? String(body.notes) : bag.notes,
+      tags: Array.isArray(body.tags) ? (body.tags as string[]).slice(0, 30) : [...bag.tags],
+      addedAtMs: now
+    };
+    myCollectibles.push(item);
+    shelf.itemCount += 1;
+    claims.set(item.id, bag.id);
+    const wishIndex = wishlist.findIndex((current) => current.id === bag.id);
+    if (wishIndex >= 0) wishlist.splice(wishIndex, 1);
+    return jsonResponse<{ collectibleId: string; processingStatus: string }>({ collectibleId: item.id, processingStatus: 'READY' });
+  }
+
   if (rawPath === '/collectibles') {
     if (method === 'POST') {
-      /* 标记已有：从发现页带入袋子的图与默认文案；上传流程：只带名称与展架 */
+      /* 拍照/相册上传流程专用（只带名称与展架，图随后由上传链路补上）。
+         「标记已有」不在这里 —— 它走 /official-bags/:id/claim，见上一段。 */
       const shelf = shelves.find((current) => current.id === body.shelfId) ?? shelves[0];
       const now = Date.now();
       const item: MockCollectible = {
@@ -368,6 +408,8 @@ export function mockRequest<T>(path: string, options: ApiRequestOptions = {}): P
       const shelf = shelves.find((current) => current.id === item.shelfId);
       if (shelf) shelf.itemCount = Math.max(0, shelf.itemCount - 1);
       myCollectibles.splice(myCollectibles.indexOf(item), 1);
+      /* 删掉「拥有」的收藏＝解除拥有关系，否则这只袋子永远无法再标记 */
+      claims.delete(item.id);
       return jsonResponse({});
     }
     /* GET 允许命中 feed 条目：心愿袋里的纸袋与 feed 同 id，详情卡要点开看 */

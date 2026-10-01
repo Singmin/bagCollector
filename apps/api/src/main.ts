@@ -10,11 +10,12 @@ import { env } from './common/env.js';
 
 async function bootstrap() {
   const config = env();
-  const app = await NestFactory.create<NestFastifyApplication>(AppModule, new FastifyAdapter({
+  const adapter = new FastifyAdapter({
     logger: config.NODE_ENV !== 'test',
     bodyLimit: 1_048_576,
     trustProxy: true
-  }));
+  });
+  const app = await NestFactory.create<NestFastifyApplication>(AppModule, adapter);
 
   await app.register(helmet, {
     contentSecurityPolicy: false,
@@ -23,6 +24,28 @@ async function bootstrap() {
   await app.register(multipart, {
     limits: { files: 1, fileSize: config.MAX_UPLOAD_BYTES }
   });
+
+  // Fastify 默认要求声明了 application/json 的请求必须带 body，否则直接 400
+  // （DELETE 这类无 body 的请求最常踩到）。这里把空 body 解析成 undefined，
+  // 非空 body 仍按 JSON 解析，非法 JSON 返回 400。
+  // 必须通过 adapter.useBodyParser 注册：它会标记 _isParserRegistered，
+  // 避免 Nest 在 init 时再注册默认 JSON parser 导致 FST_ERR_CTP_ALREADY_PRESENT。
+  // useBodyParser 强制 parseAs: 'buffer'，因此 parser 收到的是 Buffer。
+  adapter.useBodyParser('application/json', false, {}, (_request, body, done) => {
+    const raw = Buffer.isBuffer(body) ? body.toString('utf8').trim() : '';
+    if (!raw) {
+      done(null, undefined);
+      return;
+    }
+    try {
+      done(null, JSON.parse(raw));
+    } catch {
+      const error = new Error('请求体不是合法的 JSON') as Error & { statusCode?: number };
+      error.statusCode = 400;
+      done(error, undefined);
+    }
+  });
+
   app.setGlobalPrefix('api');
   app.enableShutdownHooks();
 

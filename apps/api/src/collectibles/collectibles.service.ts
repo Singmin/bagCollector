@@ -5,13 +5,15 @@ import { ApiError } from '../common/api-error.js';
 import { QueueService } from '../common/queue.service.js';
 import { PrismaService } from '../database/prisma.service.js';
 import { AssetsService } from '../assets/assets.service.js';
+import { FeedService } from '../feed/feed.service.js';
 
 @Injectable()
 export class CollectiblesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly assets: AssetsService,
-    private readonly queues: QueueService
+    private readonly queues: QueueService,
+    private readonly feedBags: FeedService
   ) {}
 
   private async assertShelf(userId: string, shelfId: string) {
@@ -173,8 +175,12 @@ export class CollectiblesService {
       where: { id, userId },
       include: this.include()
     });
-    if (!collectible) throw new ApiError('NOT_FOUND', '收藏不存在', HttpStatus.NOT_FOUND);
-    return this.toDto(collectible);
+    if (collectible) return this.toDto(collectible);
+    /* 兜底官方袋子：心愿袋条目的 id 是袋子 id（与 feed 同 id），详情卡要点开看。
+       写操作（PUT/DELETE）不兜底 —— 心愿/feed 条目对用户只读。 */
+    const official = await this.feedBags.bagAsCollectible(id);
+    if (official) return official;
+    throw new ApiError('NOT_FOUND', '收藏不存在', HttpStatus.NOT_FOUND);
   }
 
   async update(
@@ -381,6 +387,12 @@ export class CollectiblesService {
       0n
     );
     const keys = collectible.imageAssets.map((asset) => asset.objectKey);
+    // 「拥有」官方袋子得到的收藏被删除时，同步解除拥有关系并回减计数，
+    // 否则用户删掉后将永远无法再次拥有同一个袋子（唯一约束会一直命中）。
+    const claim = await this.prisma.officialClaim.findFirst({
+      where: { collectibleId: id, userId },
+      select: { id: true, officialBagId: true }
+    });
     await this.prisma.$transaction(async (transaction) => {
       await transaction.collectible.delete({ where: { id } });
       await transaction.$executeRaw`
@@ -388,6 +400,13 @@ export class CollectiblesService {
         SET "storageUsedBytes" = GREATEST(0, "storageUsedBytes" - ${bytes})
         WHERE "id" = ${userId}
       `;
+      if (claim) {
+        await transaction.officialClaim.delete({ where: { id: claim.id } });
+        await transaction.officialBag.update({
+          where: { id: claim.officialBagId },
+          data: { claimedCount: { decrement: 1 } }
+        });
+      }
     });
     if (keys.length) await this.queues.add('cleanup', { keys });
     return { success: true };

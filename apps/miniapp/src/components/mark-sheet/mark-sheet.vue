@@ -6,9 +6,9 @@ import { setTabBarHidden } from '../../services/tab-bar';
 
 /* ── 标记已有半窗（先核对后入库，全局统一交互）──
    show 置 true 自动预填 feed 信息并拉展架列表；wished = 条目已在心愿袋（顶部互斥提示，确认标记后自动移出）；
-   保存成功 emit('saved', 来源条目) 由父页面同步本地状态。样式复用 styles/edit-form.css */
+   保存成功 emit('saved', 来源条目, 新建的收藏 id) 由父页面同步本地状态。样式复用 styles/edit-form.css */
 const props = defineProps<{ show: boolean; item: Collectible | null; wished?: boolean }>();
-const emit = defineEmits<{ (e: 'close'): void; (e: 'saved', source: Collectible, created: Collectible): void }>();
+const emit = defineEmits<{ (e: 'close'): void; (e: 'saved', source: Collectible, createdId: string): void }>();
 
 const saving = ref(false);
 const focusField = ref('');
@@ -79,22 +79,32 @@ async function save() {
   saving.value = true;
   try {
     commitTags();
-    const created = await dataService.createCollectible({
+    /* 标记已有 = 拥有这只官方袋子，必须走认领接口：它会建好收藏并把官方图片复制到用户名下
+       （走 POST /collectibles 只会得到一条没有图、且永远停在 UPLOADING 的记录，收藏架看不到）。
+       半窗里改过的名称 / 分类 / 标签 / 备注作为覆盖值传给后端。 */
+    const { collectibleId } = await dataService.claimOfficialBag(source.id, {
       name: nameVal,
       shelfId: shelf.id,
-      thumbnailUrl: source.thumbnailUrl,
-      displayImageUrl: source.displayImageUrl,
       notes: notes.value.trim(),
       tags: [...tagList.value]
     });
     if (props.wished) {
       try { await dataService.removeWishlist(source.id); } catch { /* 移出失败不阻塞入库 */ }
     }
-    emit('saved', source, created);
+    emit('saved', source, collectibleId);
     emit('close');
-    uni.showToast({ title: '已加入我的收藏', icon: 'success' });
+    /* 记录先落库、图片随后由 worker 复制，所以这里是「已在收藏架（稍后现身）」而不是「已入库」 */
+    uni.showToast({ title: '已加入收藏架', icon: 'success' });
   } catch (error) {
-    uni.showToast({ title: error instanceof Error ? error.message : '收藏失败', icon: 'none' });
+    /* 同一只袋子只能拥有一次。本地「已标记」状态是内存态，重启后会丢，
+       用户可能再标一次 —— 后端这时回 409，提示他去收藏架看，别让人以为又失败。 */
+    const conflict = (error as { code?: string }).code === 'CONFLICT'
+      || (error instanceof Error && error.message.includes('已经拥有'));
+    if (conflict) emit('close');
+    uni.showToast({
+      title: conflict ? '这只袋子已在收藏架' : (error instanceof Error ? error.message : '收藏失败'),
+      icon: 'none'
+    });
   } finally { saving.value = false; }
 }
 function close() { emit('close'); }

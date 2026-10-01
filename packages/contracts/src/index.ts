@@ -9,9 +9,13 @@ export const processingStatuses = [
   'READY',
   'FAILED'
 ] as const;
+export const officialBagStatuses = ['DRAFT', 'PUBLISHED', 'OFFLINE'] as const;
+export const officialProcessStatuses = ['PENDING', 'PROCESSING', 'READY', 'FAILED'] as const;
 
 export type ShelfTheme = (typeof shelfThemes)[number];
 export type ProcessingStatus = (typeof processingStatuses)[number];
+export type OfficialBagStatus = (typeof officialBagStatuses)[number];
+export type OfficialProcessStatus = (typeof officialProcessStatuses)[number];
 
 /* 裁剪几何 + 调色：只描述「怎么裁」，不含「要不要抠图」——
    抠图是独立端点（POST /collectibles/:id/matte），两个动作互不夹带 */
@@ -78,6 +82,20 @@ export const updateCollectibleSchema = z.object({
   shelfId: z.string().min(1).optional()
 });
 
+/**
+ * 「拥有」官方袋子（发现页标记已有）。
+ * 全部字段可选：不传就用官方袋子自带的名称/备注/标签，并默认进「未分类」展示架；
+ * 前端标记半窗允许用户改名、归类、改标签备注，这几项作为覆盖值传进来。
+ */
+export const claimOfficialBagSchema = z.object({
+  name: z.string().trim().min(1).max(80).optional(),
+  shelfId: z.string().min(1).optional(),
+  notes: z.string().max(2000).optional(),
+  tags: z.array(z.string().trim().min(1).max(30)).max(30).optional()
+});
+
+export type ClaimOfficialBagInput = z.infer<typeof claimOfficialBagSchema>;
+
 export const uploadPolicySchema = z.object({
   collectibleId: z.string().min(1),
   fileName: z.string().min(1).max(255),
@@ -104,6 +122,26 @@ export const adminLoginSchema = z.object({
   password: z.string().min(8).max(256)
 });
 
+export const createOfficialBagSchema = z.object({
+  name: z.string().trim().min(1).max(80),
+  brandId: z.string().min(1).nullable().optional(),
+  notes: z.string().max(2000).optional(),
+  tags: z.array(z.string().trim().min(1).max(30)).max(30).optional(),
+  matting: z.boolean().optional()
+});
+
+export const updateOfficialBagSchema = createOfficialBagSchema.partial().extend({
+  status: z.enum(officialBagStatuses).optional(),
+  sortOrder: z.number().int().min(0).max(1_000_000).optional()
+});
+
+export const createBrandSchema = z.object({
+  name: z.string().trim().min(1).max(80),
+  sortOrder: z.number().int().min(0).max(1_000_000).optional()
+});
+
+export const updateBrandSchema = createBrandSchema.partial();
+
 export interface AuthTokens {
   accessToken: string;
   accessTokenExpiresIn: number;
@@ -128,6 +166,8 @@ export interface CollectibleSummaryDto {
   thumbnailUrl?: string;
   addedAt: string;
   updatedAt: string;
+  /** 发现页 feed / 心愿袋条目的主人昵称（官方精选时为品牌名）；用户自己的收藏没有该字段。 */
+  ownerName?: string;
 }
 
 export interface CollectiblePageDto {
@@ -142,6 +182,49 @@ export interface CollectibleDto extends CollectibleSummaryDto {
   processingError?: string;
   displayImageUrl?: string;
   standardImageUrl?: string;
+}
+
+export interface OfficialBagDto {
+  id: string;
+  name: string;
+  brandId?: string;
+  brand?: string;
+  notes: string;
+  tags: string[];
+  matting: boolean;
+  status: OfficialBagStatus;
+  processStatus: OfficialProcessStatus;
+  processError?: string;
+  claimedCount: number;
+  sortOrder: number;
+  publishedAt?: string;
+  thumbnailUrl?: string;
+  displayImageUrl?: string;
+  /** 用户端专用：当前用户是否已拥有过该袋子。 */
+  claimed?: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface OfficialBagPageDto {
+  items: OfficialBagDto[];
+  nextCursor: string | null;
+  totalCount: number;
+}
+
+export interface OfficialClaimResultDto {
+  collectibleId: string;
+  processingStatus: ProcessingStatus;
+}
+
+export interface BrandDto {
+  id: string;
+  name: string;
+  sortOrder: number;
+  /** 旗下袋子数量（管理端返回）。 */
+  bagCount: number;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface ApiErrorBody {

@@ -87,8 +87,6 @@ function measureShelves() {
   });
 }
 
-watch(groups, () => measureShelves());
-
 function onShelfScroll(groupId: string, event: { detail: { scrollLeft: number } }) {
   const left = event.detail.scrollLeft;
   const metrics = shelfMetrics.get(groupId);
@@ -128,12 +126,18 @@ const groups = computed<ShelfGroup[]>(() => {
   })).filter((group) => group.items.length);
 });
 
+watch(groups, () => measureShelves());
+
 function query(cursor?: string) {
   const params = ['limit=30'];
   if (keyword.value) params.push(`search=${encodeURIComponent(keyword.value)}`);
   if (cursor) params.push(`cursor=${encodeURIComponent(cursor)}`);
   return params.join('&');
 }
+
+/* 「拥有官方袋子」（发现页标记已有）落库后图片还在 worker 里复制，收藏列表只返回 READY，
+   刚标记完切过来它可能还没现身 —— 不做任何自动补刷（2026-09-30 用户明确要求），
+   用户自己下拉刷新即可。 */
 
 function assertRenderable(nextItems: CollectibleSummary[], nextShelves: Shelf[]) {
   const shelfIds = new Set(nextShelves.map((shelf) => shelf.id));
@@ -142,10 +146,11 @@ function assertRenderable(nextItems: CollectibleSummary[], nextShelves: Shelf[])
   }
 }
 
-/* 展架袋图尺寸：高度固定 300rpx，宽度 = 高度 × 图片真实宽高比（等比缩放）。
-   heightFix 在部分基础库上表现不稳，改为读图后显式计算（读不到回落 3:4）。 */
+/* 展架袋图尺寸：高度固定 240rpx，宽度 = 高度 × 图片真实宽高比（等比缩放）。
+   heightFix 在部分基础库上表现不稳，改为读图后显式计算（读不到回落 3:4）。
+   2026-10-01 调整记录：270 → 200 → 240rpx。 */
 const thumbnailAspect = ref<Record<string, number>>({});
-const SHELF_IMAGE_HEIGHT = 270;
+const SHELF_IMAGE_HEIGHT = 240;
 
 function shelfImageWidth(id: string) {
   const aspect = thumbnailAspect.value[id] ?? 0.75;
@@ -184,7 +189,7 @@ function hydrateThumbnails(nextItems: CollectibleSummary[]) {
 const segment = ref<'mine' | 'wish'>('mine');
 const wishlistItems = ref<Collectible[]>([]);
 
-function removeWish(item: Collectible) {
+function removeWish(item: CollectibleSummary) {
   uni.showModal({
     title: '取消心愿',
     content: `把「${item.name}」移出心愿袋？`,
@@ -543,9 +548,9 @@ function markFromDetail() {
   markItem.value = item as Collectible;
   markShow.value = true;
 }
-function onMarkSaved(source: Collectible, created: Collectible) {
+function onMarkSaved(source: Collectible, createdId: string) {
   /* 组件已落库并自动移出心愿袋；这里同步本地心愿列表与已拥有标记 */
-  justMarkedMap.value.set(source.id, created.id);
+  justMarkedMap.value.set(source.id, createdId);
   wishlistItems.value = wishlistItems.value.filter((current) => current.id !== source.id);
 }
 
@@ -555,7 +560,7 @@ function open(item: CollectibleSummary) {
   detailData.value = cached ?? null;
   /* 大图先用列表已下好的缩略图顶着（秒出），详情回来再换 displayImageUrl；
      心愿条目不在 thumbnailUrls 里，回退用条目自带图 */
-  detailArtwork.value = thumbnailUrls.value[item.id] ?? item.thumbnailUrl ?? item.displayImageUrl ?? '';
+  detailArtwork.value = thumbnailUrls.value[item.id] ?? item.thumbnailUrl ?? (item as Collectible).displayImageUrl ?? '';
   detailLoading.value = !cached;
   editing.value = false;
   detailAtEnd.value = false;
@@ -1044,7 +1049,7 @@ function onScrollToLower() { void loadMore(); }
                 v-if="thumbnailUrls[item.id] && !failedThumbnails[item.id]"
                 class="shelf-image"
                 :src="thumbnailUrls[item.id]"
-                mode="scaleToFill"
+                mode="aspectFit"
                 lazy-load
                 :style="{ width: `${shelfImageWidth(item.id)}rpx`, height: `${SHELF_IMAGE_HEIGHT}rpx` }"
                 @error="failedThumbnails[item.id] = true"
@@ -1453,7 +1458,9 @@ function onScrollToLower() { void loadMore(); }
    ⚠ 这一档**没有**用微信六档的 Headline(44rpx)：H5 里首页「袋袋集」和这里「全部收藏」
    共用同一个 .bags-title，两页必须一样大（用户 2026-09-24 专门点过这件事）。
    要改字号去首页 .bags-title 一起改，别只动这一处。 */
-.library-title { color: #141414; font-family: Iowan Old Style, Baskerville, "Times New Roman", "Songti SC", serif; font-size: 60rpx; font-weight: 900; line-height: 1; letter-spacing: 3rpx; }
+/* 2026-09-30 与首页 .bags-title 同步加粗：font-weight 已 900 封顶，宋体字族无更重字面，
+   改用 -webkit-text-stroke 描边加粗（两页一级标题必须同款，别只改一处）。 */
+.library-title { color: #141414; font-family: Iowan Old Style, Baskerville, "Times New Roman", "Songti SC", serif; font-size: 60rpx; font-weight: 900; line-height: 1; letter-spacing: 3rpx; -webkit-text-stroke: 1rpx #141414; }
 /* 副文案：与首页 .bags-tagline 同档（H5 是 12px，按 1.82 折只有 7pt，真机偏糊，
    两页统一提到 EmDesc 14pt，与标题留 11rpx = H5 的 6px） */
 .library-summary { margin-top: 11rpx; color: #77736d; font-size: var(--wc-font-description); line-height: 1.4; }
@@ -1515,15 +1522,15 @@ function onScrollToLower() { void loadMore(); }
 .shelf-scroll { position: relative; z-index: 2; width: 100%; font-size: 0; line-height: 0; }
 /* 间距 18 → 10rpx（2026-09-26 用户反馈） */
 .shelf-items { display: inline-flex; align-items: flex-end; gap: 10rpx; min-width: 100%; padding: 29rpx 40rpx 15rpx; }
-/* 卡片槽：H5 .collection-group-card。袋图定高 300rpx（2026-09-26 用户要求加高，
-   269 → 300rpx）、宽度按图片自身比例（heightFix，同 H5 的 height:148px; width:auto） */
-.shelf-item { width: 175rpx; height: 270rpx; flex: 0 0 175rpx; margin: 0; padding: 0; display: flex; align-items: flex-end; justify-content: center; background: transparent; overflow: visible; }
-/* 袋图宽高由 inline style 按真实宽高比计算（高度固定 300rpx，宽度等比） */
+/* 卡片槽：H5 .collection-group-card。袋图定高 240rpx（2026-10-01 用户反馈调整，
+   270 → 200 → 240rpx）、宽度按图片自身比例（heightFix，同 H5 的 height:148px; width:auto） */
+.shelf-item { width: 175rpx; height: 240rpx; flex: 0 0 175rpx; margin: 0; padding: 0; display: flex; align-items: flex-end; justify-content: center; background: transparent; overflow: visible; }
+/* 袋图宽高由 inline style 按真实宽高比计算（高度固定 240rpx，宽度等比） */
 .shelf-item .shelf-image { transform: translateY(-18rpx); filter: drop-shadow(0 7rpx 18rpx rgba(0,0,0,.18)); }
 /* 占位块必须和袋图共用同一套位移。漏掉它的话，占位块不跟着上移，
    底边会从板体下沿露出约 6px 白边（用户实测截图里框出来的就是这条）。
    H5 里袋图和纸袋占位也是同一个 transform，别只写一半。 */
-.shelf-image-placeholder { width: 140rpx; height: 270rpx; border-radius: 24rpx; background: rgba(255,255,255,.62); transform: translateY(-18rpx); }
+.shelf-image-placeholder { width: 140rpx; height: 20rpx; border-radius: 24rpx; background: rgba(255,255,255,.62); transform: translateY(-18rpx); }
 
 /* ── 展架板体：H5 .collection-group .acrylic-shelf
    （左右 14px、底 14px、高 57px、圆角 9px、1px 白描边、顶部一道柔光、中性落影）。

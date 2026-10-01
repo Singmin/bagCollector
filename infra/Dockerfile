@@ -1,5 +1,14 @@
-FROM node:22-alpine AS base
-RUN corepack enable && corepack prepare pnpm@10.18.3 --activate
+FROM node:22.12.0-alpine AS base
+# 该镜像只在生产服务器（国内）构建使用：npm 官方源走海外链路极慢，统一切 npmmirror。
+# corepack 拉 pnpm 也要走镜像，需同步设置 COREPACK_NPM_REGISTRY。
+# tarball 内容与官方源一致，pnpm lockfile 的 integrity 校验不受影响。
+RUN npm config set registry https://registry.npmmirror.com
+ENV COREPACK_NPM_REGISTRY=https://registry.npmmirror.com
+# Node 22.12 内置的 corepack（0.28.x）缺 pnpm 新版签名公钥，直接 prepare 会报
+# "Internal Error: Cannot find matching keyid"。先升 corepack 拿到新 key 再 activate。
+RUN npm install -g corepack@latest \
+  && corepack enable \
+  && corepack prepare pnpm@10.18.3 --activate
 WORKDIR /app
 
 FROM base AS deps

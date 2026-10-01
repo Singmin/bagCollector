@@ -136,7 +136,8 @@ export async function api<T>(path: string, options: ApiRequestOptions = {}, didR
     return await requestRaw<T>(path, {
       ...options,
       header: {
-        ...(options.data !== undefined ? { 'content-type': 'application/json' } : {}),
+        /* 微信会默认注入 application/json，空 body 的请求会被 Fastify 以空 JSON 体拒绝（400），这里显式覆盖 */
+        'content-type': options.data !== undefined ? 'application/json' : 'text/plain',
         Authorization: `Bearer ${tokens.accessToken}`,
         ...(options.header || {})
       }
