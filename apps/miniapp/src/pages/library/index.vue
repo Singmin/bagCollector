@@ -514,7 +514,12 @@ const markShow = ref(false);
 const markItem = ref<Collectible | null>(null);
 function markFromDetail() {
   const item = detailItem.value; if (!item) return;
-  /* 已标记 → 弹删除确认，可撤回标记 */
+  /* 靶心点击语义与右上角图标（isOwnedDetail）严格一致 ——
+     旧版只认 justMarkedMap（仅记录本次会话刚标记的心愿条目），导致「我的」收藏条目
+     明明显示红环「已拥有」，点下去却拉起「标记已有」半窗再建一条重复收藏。
+     · 心愿条目本次刚标记 → 删掉标记时创建的那条收藏（撤回标记，详情卡保持打开）
+     · 本来就是「我的」收藏 → 走与长按删除同一套 confirmRemove（关详情 / 出列表 / 展架件数 −1）
+     · 心愿条目且未标记 → 拉起「标记已有」半窗 */
   const createdId = justMarkedMap.value.get(item.id);
   if (createdId) {
     return void uni.showModal({
@@ -534,6 +539,7 @@ function markFromDetail() {
       }
     });
   }
+  if (!isWishDetail.value) return void confirmRemove(item);
   markItem.value = item as Collectible;
   markShow.value = true;
 }

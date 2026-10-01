@@ -118,7 +118,8 @@ export async function authorizedHeaders() {
    · GET    /collectibles/:id         收藏详情
    · PUT    /collectibles/:id         更新收藏
    · DELETE /collectibles/:id         删除收藏
-   · PUT    /collectibles/:id/crop    更新抠图裁剪
+   · PUT    /collectibles/:id/crop    只裁剪：重出展示图/缩略图，不抠图
+   · POST   /collectibles/:id/matte   只抠图：沿用已保存裁剪参数（可缺省按全幅），走万象、计配额
    · GET    /wishlist                 心愿袋列表
    · POST   /wishlist/:id             加入心愿袋
    · DELETE /wishlist/:id             移出心愿袋

@@ -11,6 +11,9 @@ export interface ProcessingJobData {
   collectibleId: string;
   userId: string;
   version: number;
+  /* 已抠图的图再次裁剪时为 true：worker 必须重新调万象抠图，否则新展示图与旧透明图在构图上失配。
+     由 /crop 入口在「已有 CUTOUT 资产」时置位；同一张图只计一次万象扣费（配额在 /matte 入口计） */
+  rematte?: boolean;
 }
 
 const prisma = new PrismaClient();
@@ -88,8 +91,9 @@ async function trimTransparent(source: Buffer): Promise<Buffer> {
   }
 }
 
-async function writeRenditions(data: ProcessingJobData, source: Buffer, baseKey: string) {
-  const trimmed = await trimTransparent(source);
+async function writeRenditions(data: ProcessingJobData, source: Buffer, baseKey: string, options: { trim: boolean }) {
+  /* 只有抠图结果（带透明边）才 trim 白/透明边；普通裁剪图是实拍照片，trim 会啃掉画面边缘 */
+  const trimmed = options.trim ? await trimTransparent(source) : source;
   // 展示图与缩略图互不依赖，并行编码，避免白白多等一轮 CPU。
   const [display, thumbnail] = await Promise.all([
     sharp(trimmed, { limitInputPixels: config.MAX_IMAGE_PIXELS })
@@ -191,7 +195,9 @@ async function produceCutout(input: {
   });
 }
 
-export async function matImage(data: ProcessingJobData) {
+/** 两条流水线（只裁剪 / 裁剪+抠图）共用的第一步：按 Collectible 上保存的裁剪参数
+ *  旋转 → 裁剪 → 调色，产出裁剪图并写入 CROPPED 资产。返回万象需要的全部上下文。 */
+async function cropToAsset(data: ProcessingJobData) {
   await setRunning(data.processingJobId);
   const [collectible, standard] = await Promise.all([
     prisma.collectible.findFirstOrThrow({ where: { id: data.collectibleId, userId: data.userId } }),
@@ -216,7 +222,9 @@ export async function matImage(data: ProcessingJobData) {
     throw new Error('缺少裁剪参数');
   }
   const source = await getObject(standard.objectKey);
-  const rotated = sharp(source, { limitInputPixels: config.MAX_IMAGE_PIXELS }).rotate(collectible.cropRotation);
+  /* P1：任意角度旋转（非 90° 倍数时必须给 background 补角，这里用白底，输出 JPEG 无透明通道） */
+  const rotated = sharp(source, { limitInputPixels: config.MAX_IMAGE_PIXELS })
+    .rotate(collectible.cropRotation ?? 0, { background: '#ffffff' });
   const metadata = await rotated.metadata();
   if (!metadata.width || !metadata.height) throw new Error('无法读取裁剪图尺寸');
   const rect = computeCropRect(metadata.width, metadata.height, {
@@ -225,11 +233,18 @@ export async function matImage(data: ProcessingJobData) {
     width: collectible.cropWidth,
     height: collectible.cropHeight
   });
-  const cropped = await rotated.extract(rect).jpeg({ quality: 90, mozjpeg: true }).toBuffer();
+  /* P2：调色在裁剪之后做（与前端预览同一顺序），缺省 1 = 不调整 */
+  const brightness = collectible.cropBrightness ?? 1;
+  const contrast = collectible.cropContrast ?? 1;
+  const saturation = collectible.cropSaturation ?? 1;
+  let pipeline = rotated.extract(rect);
+  if (brightness !== 1 || saturation !== 1) pipeline = pipeline.modulate({ brightness, saturation });
+  if (contrast !== 1) pipeline = pipeline.linear(contrast, -(128 * contrast) + 128); // 标准对比度公式
+  const cropped = await pipeline.jpeg({ quality: 90, mozjpeg: true }).toBuffer();
   const croppedKey = `users/${data.userId}/collectibles/${data.collectibleId}/cropped/v${data.version}.jpg`;
   const baseKey = `users/${data.userId}/collectibles/${data.collectibleId}`;
   // 裁剪图必须先写入存储并在 COS 上可见，万象才读得到它。
-  // 这里立刻挂一个空 catch，否则失败时会触发未处理拒绝，真正的错误在下面 await 时抛出。
+  // 这里立刻挂一个空 catch，否则失败时会触发未处理拒绝，真正的错误在调用方 await 时抛出。
   const croppedAsset = upsertAsset({
     ...data,
     kind: AssetKind.CROPPED,
@@ -240,6 +255,43 @@ export async function matImage(data: ProcessingJobData) {
     height: rect.height
   });
   croppedAsset.catch(() => undefined);
+  return { collectible, cropped, croppedKey, croppedAsset, rect, baseKey };
+}
+
+/** 裁剪（POST /collectibles/:id/crop 的 CROP 任务）。
+ *  常规：不调万象，展示图/缩略图直接由裁剪图派生（不写 CUTOUT）；
+ *  rematte：该图已抠过图，再次裁剪必须重新抠图，否则新展示图与旧透明图在构图上失配——
+ *  复用 matte 流水线（万象重抠一次），产出 CUTOUT + 裁剪后的展示图。 */
+export async function cropImage(data: ProcessingJobData) {
+  const { croppedKey, croppedAsset, cropped, rect, baseKey } = await cropToAsset(data);
+  await croppedAsset;
+  if (data.rematte) {
+    const cutout = await produceCutout({ croppedKey, croppedAsset, rect });
+    await Promise.all([
+      upsertAsset({
+        ...data,
+        kind: AssetKind.CUTOUT,
+        key: `${baseKey}/cutout/v${data.version}.png`,
+        contentType: 'image/png',
+        body: cutout,
+        width: rect.width,
+        height: rect.height
+      }),
+      writeRenditions(data, cutout, baseKey, { trim: true })
+    ]);
+  } else {
+    await writeRenditions(data, cropped, baseKey, { trim: false });
+  }
+  await prisma.collectible.update({
+    where: { id: data.collectibleId },
+    data: { processingStatus: ProcessingStatus.READY, processingError: null }
+  });
+  await setSucceeded(data.processingJobId);
+}
+
+/** 裁剪 + 抠图（POST /collectibles/:id/matte 的 MATTING 任务） */
+export async function matImage(data: ProcessingJobData) {
+  const { croppedKey, croppedAsset, rect, baseKey } = await cropToAsset(data);
 
   const cutout = await produceCutout({ croppedKey, croppedAsset, rect });
 
@@ -254,7 +306,7 @@ export async function matImage(data: ProcessingJobData) {
       width: rect.width,
       height: rect.height
     }),
-    writeRenditions(data, cutout, baseKey)
+    writeRenditions(data, cutout, baseKey, { trim: true })
   ]);
 
   await prisma.collectible.update({

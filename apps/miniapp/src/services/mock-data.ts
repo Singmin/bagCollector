@@ -73,6 +73,8 @@ function seedCollectible(list: MockCollectible[], shelf: Shelf | null, name: str
     processingStatus: 'READY',
     thumbnailUrl: image,
     displayImageUrl: image,
+    /* 种子数据都是「已完成」的收藏：带上抠图结果，避免编辑页再显示「自动抠图」按钮 */
+    cutoutImageUrl: image,
     addedAt: new Date(now).toISOString(),
     updatedAt: new Date(now).toISOString(),
     notes,
@@ -102,7 +104,7 @@ seedCollectible(myCollectibles, shelves[1], 'LUCK IN HAND', ['联名', 'MINISO']
 seedCollectible(myCollectibles, shelves[2], '经典牛皮纸袋', ['经典款'], '第一次去 Peet\'s 门店留下的袋子，纸感很厚实。', 15, 8);
 
 function summary(item: MockCollectible): CollectibleSummary {
-  const { addedAtMs: _addedAtMs, notes: _notes, tags: _tags, displayImageUrl: _display, standardImageUrl: _standard, ...rest } = item;
+  const { addedAtMs: _addedAtMs, notes: _notes, tags: _tags, displayImageUrl: _display, standardImageUrl: _standard, cutoutImageUrl: _cutout, crop: _crop, ...rest } = item;
   return rest;
 }
 
@@ -113,6 +115,35 @@ function sortDesc(list: MockCollectible[]) {
 function publicCollectible(item: MockCollectible): Collectible {
   const { addedAtMs: _addedAtMs, ...rest } = item;
   return rest;
+}
+
+/* 解析裁剪请求体：/crop 必填全量（缺省按全幅兜底，Mock 不做像素处理） */
+function readCropBody(body: Record<string, unknown>): NonNullable<Collectible['crop']> {
+  return {
+    x: Number(body.x ?? 0),
+    y: Number(body.y ?? 0),
+    width: Number(body.width ?? 1),
+    height: Number(body.height ?? 1),
+    rotation: Number(body.rotation ?? 0),
+    ...(body.brightness !== undefined ? { brightness: Number(body.brightness) } : {}),
+    ...(body.contrast !== undefined ? { contrast: Number(body.contrast) } : {}),
+    ...(body.saturation !== undefined ? { saturation: Number(body.saturation) } : {})
+  };
+}
+
+/* /matte 的覆盖参数：只取请求里给的字段（与真实后端 matteSchema.partial() 同语义），
+   未给的字段沿用已存裁剪参数 */
+function readCropOverride(body: Record<string, unknown>): Partial<NonNullable<Collectible['crop']>> {
+  const override: Partial<NonNullable<Collectible['crop']>> = {};
+  if (body.x !== undefined) override.x = Number(body.x);
+  if (body.y !== undefined) override.y = Number(body.y);
+  if (body.width !== undefined) override.width = Number(body.width);
+  if (body.height !== undefined) override.height = Number(body.height);
+  if (body.rotation !== undefined) override.rotation = Number(body.rotation);
+  if (body.brightness !== undefined) override.brightness = Number(body.brightness);
+  if (body.contrast !== undefined) override.contrast = Number(body.contrast);
+  if (body.saturation !== undefined) override.saturation = Number(body.saturation);
+  return override;
 }
 
 /* 小程序运行时没有 URLSearchParams，手写一个最小查询串解析 */
@@ -272,12 +303,39 @@ export function mockRequest<T>(path: string, options: ApiRequestOptions = {}): P
     return jsonResponse<CollectiblePage>({ items: pageItems, nextCursor: next, totalCount: filtered.length });
   }
 
+  /* Mock 裁剪：只记裁剪参数并置 READY（与真实后端 /crop 的 CROPPING→READY 一致），
+     处理页轮询到 READY 后回编辑页。已抠图的图再裁（rematte）会顺带重新生成抠图结果，
+     保持透明图与新裁剪构图对齐——这里直接刷新 cutoutImageUrl（Mock 不做像素处理） */
   const cropMatch = rawPath.match(/^\/collectibles\/([^/]+)\/crop$/);
-  /* Mock 抠图：提交即视为完成（真实后端走 MATTING 再 READY），处理页轮询到 READY 后回编辑页 */
   if (cropMatch && method === 'POST') {
-    const target = myCollectibles.find((current) => current.id === cropMatch[1]);
-    if (target) target.processingStatus = 'READY';
-    return jsonResponse({ jobId: 'mock-job-001' });
+    const target = myCollectibles.find((current) => current.id === cropMatch[1])
+      ?? feedItems.find((current) => current.id === cropMatch[1]);
+    if (target) {
+      target.processingStatus = 'READY';
+      /* 已抠过的图再裁：重新生成抠图结果（对应真实后端 worker 的 rematte 分支） */
+      if (target.cutoutImageUrl) target.cutoutImageUrl = target.displayImageUrl ?? target.thumbnailUrl;
+      /* 记下裁剪参数：抠图要原样沿用，保证「抠图 = 裁剪 + 抠背景」 */
+      target.crop = readCropBody(body);
+    }
+    return jsonResponse({ jobId: 'mock-job-crop-001' });
+  }
+
+  /* Mock 抠图：写 cutoutImageUrl 表示「已抠图」，之后编辑页两个按钮都收起。
+     成本闸门同后端：每张图只允许抠一次 */
+  const matteMatch = rawPath.match(/^\/collectibles\/([^/]+)\/matte$/);
+  if (matteMatch && method === 'POST') {
+    const target = myCollectibles.find((current) => current.id === matteMatch[1]);
+    if (target?.cutoutImageUrl) return Promise.reject(new Error('这张图片已经抠过图了，每张图片仅支持抠图一次'));
+    if (target) {
+      target.processingStatus = 'READY';
+      /* 参数可全省：沿用上次保存的裁剪参数，只合并请求里给的字段（Mock 与真实后端同语义） */
+      const override = readCropOverride(body);
+      if (Object.keys(override).length) {
+        target.crop = { ...(target.crop ?? { x: 0, y: 0, width: 1, height: 1, rotation: 0 }), ...override };
+      }
+      target.cutoutImageUrl = target.displayImageUrl ?? target.thumbnailUrl;
+    }
+    return jsonResponse({ jobId: 'mock-job-matting-001' });
   }
 
   const collectibleMatch = rawPath.match(/^\/collectibles\/([^/]+)$/);
@@ -315,7 +373,9 @@ export function mockRequest<T>(path: string, options: ApiRequestOptions = {}): P
     /* GET 允许命中 feed 条目：心愿袋里的纸袋与 feed 同 id，详情卡要点开看 */
     const item = mine ?? feedItems.find((current) => current.id === collectibleMatch[1]);
     if (!item) return Promise.reject(new Error('收藏不存在'));
-    return jsonResponse<Collectible>(publicCollectible(item));
+    const detail = publicCollectible(item);
+    /* Mock 没有「标准化」环节：标准图兜底为展示图/缩略图，裁剪页才有图可裁 */
+    return jsonResponse<Collectible>({ ...detail, standardImageUrl: detail.standardImageUrl ?? detail.displayImageUrl ?? detail.thumbnailUrl });
   }
 
   if (rawPath === '/uploads/policy') {

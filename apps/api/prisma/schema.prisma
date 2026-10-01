@@ -20,10 +20,15 @@ enum ShelfTheme {
   GRAPHITE
 }
 
+/* 图片处理状态机：UPLOADING → NORMALIZING → AWAITING_CROP
+   →（裁剪）CROPPING → READY
+   →（抠图）MATTING → READY
+   任一步失败进 FAILED；READY / FAILED 都可以再发起裁剪或抠图（版本号 +1） */
 enum ProcessingStatus {
   UPLOADING
   NORMALIZING
   AWAITING_CROP
+  CROPPING
   MATTING
   READY
   FAILED
@@ -44,8 +49,10 @@ enum AssetStatus {
   FAILED
 }
 
+/* 任务类型与端点一一对应：/complete → NORMALIZE，/crop → CROP，/matte → MATTING */
 enum JobType {
   NORMALIZE
+  CROP
   MATTING
   CLEANUP
 }
@@ -122,7 +129,12 @@ model Collectible {
   cropY             Float?
   cropWidth         Float?
   cropHeight        Float?
-  cropRotation      Int?
+  // P1：自由角度（任意角度，不再限于 90° 步进）
+  cropRotation      Float?
+  // P2：调色（1 = 不调整）
+  cropBrightness    Float?
+  cropContrast      Float?
+  cropSaturation    Float?
   addedAt           DateTime         @default(now())
   updatedAt         DateTime         @updatedAt
   user              User             @relation(fields: [userId], references: [id], onDelete: Cascade)

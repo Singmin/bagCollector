@@ -42,8 +42,14 @@ export const dataService = {
     changed(api<Collectible>('/collectibles', { method: 'POST', data })),
   updateCollectible,
   removeCollectible: (id: string) => changed(api(`/collectibles/${id}`, { method: 'DELETE' })),
-  crop: (id: string, data: { x: number; y: number; width: number; height: number; rotation: 0 | 90 | 180 | 270 }) =>
-    changed(api<{ jobId: string }>(`/collectibles/${id}/crop`, { method: 'POST', data })),
+  /* 只裁剪（裁剪页提交）：后端重出展示图/缩略图，不做抠图 */
+  crop: (
+    id: string,
+    data: { x: number; y: number; width: number; height: number; rotation: number; brightness?: number; contrast?: number; saturation?: number }
+  ) => changed(api<{ jobId: string }>(`/collectibles/${id}/crop`, { method: 'POST', data })),
+  /* 只抠图（编辑页「自动抠图」按钮）：参数可全省 —— 后端沿用已保存的裁剪参数，没有则按全幅 */
+  matte: (id: string, data: Partial<{ x: number; y: number; width: number; height: number; rotation: number; brightness?: number; contrast?: number; saturation?: number }> = {}) =>
+    changed(api<{ jobId: string }>(`/collectibles/${id}/matte`, { method: 'POST', data })),
   createShelf: (data: { name: string; theme: ShelfTheme }) =>
     changed(api<Shelf>('/shelves', { method: 'POST', data })),
   updateShelf: (id: string, data: { name?: string; theme?: ShelfTheme }) =>

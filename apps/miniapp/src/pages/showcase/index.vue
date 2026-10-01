@@ -19,8 +19,9 @@ const failedThumbnails = ref<Record<string, boolean>>({});
 /* 心愿袋：已在心愿袋的纸袋 id 集合 */
 const wishlistIds = ref<Set<string>>(new Set());
 /* 已「标记已有」的 feed 条目 → 创建的收藏 id（本页内存态）：标记与心愿互斥；
-   再次点击「标记已有」时凭收藏 id 弹删除确认，可撤回标记 */
-const markedMap = ref<Map<string, string>>(new Map());
+   再次点击「标记已有」时凭收藏 id 弹删除确认，可撤回标记。
+   用普通对象而非 Map —— 小程序端对象属性的响应式最可靠，模板里可直接取用判断图标态 */
+const markedMap = ref<Record<string, string>>({});
 
 /* 自定义导航（与全部收藏页同一套对齐方式）：
    标题顶部 = 胶囊按钮顶部；设置钮在头部文档流内，与标题块垂直居中。 */
@@ -168,7 +169,7 @@ function isWished(id: string) { return wishlistIds.value.has(id); }
 
 async function toggleWish(item: Collectible) {
   /* 互斥：已标记已有的纸袋不能再进心愿袋 */
-  if (markedMap.value.has(item.id)) return void uni.showToast({ title: '已标记已有，无需加入心愿袋', icon: 'none' });
+  if (markedMap.value[item.id]) return void uni.showToast({ title: '已标记已有，无需加入心愿袋', icon: 'none' });
   if (wishToggling) return;
   wishToggling = true;
   try {
@@ -197,8 +198,8 @@ async function toggleWish(item: Collectible) {
 const markShow = ref(false);
 const markItem = ref<Collectible | null>(null);
 function openMark(item: Collectible) {
-  /* 已标记 → 弹删除确认，可撤回标记 */
-  const createdId = markedMap.value.get(item.id);
+  /* 已标记 → 弹删除确认，可撤回标记（撤回后靶心图标同步回到未标记态） */
+  const createdId = markedMap.value[item.id];
   if (createdId) {
     return void uni.showModal({
       title: '删除这条收藏？',
@@ -209,7 +210,7 @@ function openMark(item: Collectible) {
         if (!result.confirm) return;
         try {
           await dataService.removeCollectible(createdId);
-          markedMap.value.delete(item.id);
+          delete markedMap.value[item.id];
           uni.showToast({ title: '已从收藏架移除', icon: 'none' });
         } catch (error) {
           uni.showToast({ title: error instanceof Error ? error.message : '移除失败', icon: 'none' });
@@ -225,7 +226,7 @@ function closeMark() {
 }
 function onMarkSaved(source: Collectible, created: Collectible) {
   /* 组件已落库并（如在心愿袋）自动移出；这里同步本地互斥与心愿状态 */
-  markedMap.value.set(source.id, created.id);
+  markedMap.value[source.id] = created.id;
   if (wishlistIds.value.has(source.id)) {
     const next = new Set(wishlistIds.value);
     next.delete(source.id);
@@ -355,7 +356,7 @@ async function onRefresherRefresh() {
             <image class="hero-quick__icon" :src="isWished(heroItem.id) ? '/static/figma/heart-active.svg' : '/static/figma/heart.svg'" mode="aspectFit" />
           </view>
           <view class="hero-quick__btn" hover-class="is-pressed" :hover-stay-time="80" @tap.stop="openMark(heroItem)">
-            <image class="hero-quick__icon" src="/static/figma/target.svg" mode="aspectFit" />
+            <image class="hero-quick__icon" :src="markedMap[heroItem.id] ? '/static/figma/target-marked.svg' : '/static/figma/target.svg'" mode="aspectFit" />
           </view>
         </view>
 
@@ -391,33 +392,39 @@ async function onRefresherRefresh() {
           <view class="glass-glow" />
           <view class="corner-glow" />
 
-          <view class="back-inner">
-            <text v-if="heroNo" class="back-eyebrow">{{ heroNo }}</text>
-            <text class="back-name">{{ heroItem.name }}</text>
-            <text class="back-brand">{{ heroItem.ownerName ?? '官方精选' }}</text>
-            <view class="back-divider" />
-            <view class="back-facts">
-              <view v-for="row in heroFacts" :key="row.label" class="back-facts__row">
-                <text class="back-facts__key">{{ row.label }}</text>
-                <text class="back-facts__value">{{ row.value }}</text>
+          <!-- 背面内容超出卡片高度时，在卡内上下滚动。
+               ⚠ enhanced 必须开：show-scrollbar 是「增强特性属性」，只在 enhanced 为 true 时生效，
+               只写 show-scrollbar="false" 卡片右侧仍会冒出一条竖向滚动条（与详情页 detail-scroll 同坑）。
+               不加 @tap.stop —— 点击背面（非按钮区）仍需冒泡到 flip-face--back 翻回正面 -->
+          <scroll-view class="back-scroll" scroll-y enhanced :show-scrollbar="false">
+            <view class="back-inner">
+              <text v-if="heroNo" class="back-eyebrow">{{ heroNo }}</text>
+              <text class="back-name">{{ heroItem.name }}</text>
+              <text class="back-brand">{{ heroItem.ownerName ?? '官方精选' }}</text>
+              <view class="back-divider" />
+              <view class="back-facts">
+                <view v-for="row in heroFacts" :key="row.label" class="back-facts__row">
+                  <text class="back-facts__key">{{ row.label }}</text>
+                  <text class="back-facts__value">{{ row.value }}</text>
+                </view>
+              </view>
+              <view v-if="heroTags.length" class="back-tags">
+                <text v-for="tag in heroTags" :key="tag"># {{ tag }}</text>
+              </view>
+              <text v-if="heroNote" class="back-note">{{ heroNote }}</text>
+              <!-- 发现页操作：加入/取消心愿袋 + 标记已有（收进我的收藏并核对信息） -->
+              <view class="back-actions">
+                <button class="back-action" :class="{ 'is-on': isWished(heroItem.id) }" @tap.stop="toggleWish(heroItem)">
+                  <image class="back-action__icon" :src="isWished(heroItem.id) ? '/static/figma/heart-active.svg' : '/static/figma/heart.svg'" mode="aspectFit" />
+                  <text>{{ isWished(heroItem.id) ? '已在心愿袋' : '加入心愿袋' }}</text>
+                </button>
+                <button class="back-action" :class="{ 'back-action--primary': !markedMap[heroItem.id] }" @tap.stop="openMark(heroItem)">
+                  <image class="back-action__icon" :src="markedMap[heroItem.id] ? '/static/figma/target-marked.svg' : '/static/figma/target-white.svg'" mode="aspectFit" />
+                  <text>{{ markedMap[heroItem.id] ? '已拥有' : '标记已有' }}</text>
+                </button>
               </view>
             </view>
-            <view v-if="heroTags.length" class="back-tags">
-              <text v-for="tag in heroTags" :key="tag"># {{ tag }}</text>
-            </view>
-            <text v-if="heroNote" class="back-note">{{ heroNote }}</text>
-            <!-- 发现页操作：加入/取消心愿袋 + 标记已有（收进我的收藏并核对信息） -->
-            <view class="back-actions">
-              <button class="back-action" :class="{ 'is-on': isWished(heroItem.id) }" @tap.stop="toggleWish(heroItem)">
-                <image class="back-action__icon" :src="isWished(heroItem.id) ? '/static/figma/heart-active.svg' : '/static/figma/heart.svg'" mode="aspectFit" />
-                <text>{{ isWished(heroItem.id) ? '已在心愿袋' : '加入心愿袋' }}</text>
-              </button>
-              <button class="back-action back-action--primary" @tap.stop="openMark(heroItem)">
-                <image class="back-action__icon" src="/static/figma/target-white.svg" mode="aspectFit" />
-                <text>标记已有</text>
-              </button>
-            </view>
-          </view>
+          </scroll-view>
         </view>
       </view>
 
@@ -639,7 +646,11 @@ async function onRefresherRefresh() {
    name 19px；brand 11px；divider 11px；facts gap 6px、dt 9.5px、dd 10.5px；
    tags gap 5px、9.5px、padding 4px 9px；note 10px、padding 8px 10px。
    字号按 1px=2rpx（375 屏基准，见正面说明）── */
-.back-inner { position: relative; z-index: 3; height: 100%; display: flex; flex-direction: column; padding: 29rpx 33rpx 25rpx; overflow: hidden; }
+/* 背面滚动区：撑满卡片，内容超高时在卡内上下滚（滚动条已由 enhanced + show-scrollbar 关闭） */
+.back-scroll { position: relative; z-index: 3; height: 100%; }
+/* 原 height:100% + overflow:hidden 会把超高内容直接裁掉且滚不动；
+   改为 min-height:100%（内容少时仍撑满，观感不变）+ 自然高度，超出部分交给外层 scroll-view */
+.back-inner { display: flex; flex-direction: column; min-height: 100%; padding: 29rpx 33rpx 25rpx; }
 .back-eyebrow { color: #77736d; font-size: 20rpx; font-weight: 700; line-height: 1.2; letter-spacing: 3rpx; }
 /* 背面字段与正面对齐：名称 19px/700 同 .front-caption__title，
    品牌行 24rpx #8d877c 同 .front-caption__sub（2026-09-29 用户要求两面对齐） */

@@ -1,7 +1,7 @@
 import { Worker } from 'bullmq';
 import { Redis } from 'ioredis';
 import { config } from './config.js';
-import { cleanup, closeProcessor, failProcessing, matImage, normalizeImage, type ProcessingJobData } from './processor.js';
+import { cleanup, closeProcessor, cropImage, failProcessing, matImage, normalizeImage, type ProcessingJobData } from './processor.js';
 
 const IMAGE_QUEUE = 'bagcollect-images';
 const connection = new Redis(config.REDIS_URL, { maxRetriesPerRequest: null });
@@ -16,6 +16,7 @@ const worker = new Worker(
     const data = job.data as ProcessingJobData;
     try {
       if (job.name === 'normalize') await normalizeImage(data);
+      else if (job.name === 'crop') await cropImage(data);
       else if (job.name === 'matting') await matImage(data);
       else throw new Error(`Unknown image job: ${job.name}`);
     } catch (error) {
