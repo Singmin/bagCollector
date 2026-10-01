@@ -288,11 +288,13 @@ export class OfficialBagsAdminService {
     return this.toDto(await this.prisma.officialBag.findUniqueOrThrow({ where: { id }, include: { brand: true } }));
   }
 
+  /**
+   * 删除官方袋子。已被用户「拥有」的也允许删（管理端会二次确认）：
+   * 用户的拥有记录（OfficialClaim）与心愿标记（WishlistItem）由数据库级联清除，
+   * 用户已收藏到自己架子的袋子是独立副本，不受影响。
+   */
   async remove(adminId: string, id: string) {
     const bag = await this.findBag(id);
-    if (bag.claimedCount > 0) {
-      throw new ApiError('CONFLICT', '该袋子已被用户拥有，只能下架不能删除', HttpStatus.CONFLICT);
-    }
     const images = await this.prisma.officialBagImage.findMany({
       where: { officialBagId: id },
       select: { objectKey: true }

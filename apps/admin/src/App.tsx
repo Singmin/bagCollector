@@ -98,16 +98,20 @@ function useIsMobile() {
 
 async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = sessionStorage.getItem(TOKEN_KEY);
+  // 只有真的带 JSON body 时才声明 Content-Type：DELETE 这类没有 body 的请求
+  // 若带上 application/json，Fastify 会按「空 JSON body」直接返回 400。
+  const hasJsonBody =
+    options.body !== undefined && options.body !== null && !(options.body instanceof FormData);
   const response = await fetch(`/api/admin${path}`, {
     ...options,
     headers: {
-      ...(options.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
+      ...(hasJsonBody ? { 'Content-Type': 'application/json' } : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...options.headers
     }
   });
-  const body = await response.json();
-  if (!response.ok) throw new Error(body?.error?.message || '请求失败');
+  const body = await response.json().catch(() => null);
+  if (!response.ok) throw new Error(body?.error?.message || body?.message || '请求失败');
   return body as T;
 }
 
@@ -609,11 +613,19 @@ export function App() {
                           {bag.status === 'PUBLISHED' && (
                             <Button size="small" onClick={() => void setBagStatus(bag, 'OFFLINE')}>下架</Button>
                           )}
-                          {bag.claimedCount === 0 && (
-                            <Popconfirm title={`确定删除「${bag.name}」？`} description="已删除的图片无法恢复" onConfirm={() => void removeBag(bag)}>
-                              <Button size="small" danger>删除</Button>
-                            </Popconfirm>
-                          )}
+                          <Popconfirm
+                            title={`确定删除「${bag.name}」？`}
+                            description={
+                              bag.claimedCount > 0
+                                ? `已有 ${bag.claimedCount} 位用户拥有，删除会清除他们的拥有记录与心愿标记（不影响其已收藏到自己架子的袋子）`
+                                : '已删除的图片无法恢复'
+                            }
+                            okText="删除"
+                            okButtonProps={{ danger: true }}
+                            onConfirm={() => void removeBag(bag)}
+                          >
+                            <Button size="small" danger>删除</Button>
+                          </Popconfirm>
                         </Space>
                       )
                     }

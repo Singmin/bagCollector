@@ -23,6 +23,28 @@ async function bootstrap() {
   await app.register(multipart, {
     limits: { files: 1, fileSize: config.MAX_UPLOAD_BYTES }
   });
+
+  // Fastify 默认要求声明了 application/json 的请求必须带 body，否则直接 400
+  // （DELETE 这类无 body 的请求最常踩到）。这里把空 body 解析成 undefined，
+  // 非空 body 仍按 JSON 解析，非法 JSON 返回 400。
+  app
+    .getHttpAdapter()
+    .getInstance()
+    .addContentTypeParser('application/json', { parseAs: 'string' }, (_request, body, done) => {
+      const raw = typeof body === 'string' ? body.trim() : '';
+      if (!raw) {
+        done(null, undefined);
+        return;
+      }
+      try {
+        done(null, JSON.parse(raw));
+      } catch {
+        const error = new Error('请求体不是合法的 JSON') as Error & { statusCode?: number };
+        error.statusCode = 400;
+        done(error, undefined);
+      }
+    });
+
   app.setGlobalPrefix('api');
   app.enableShutdownHooks();
 
