@@ -1,7 +1,7 @@
 import type { Collectible, CollectiblePage, OfficialClaimResult, Shelf, ShelfTheme } from '../types';
 import { api } from './http';
 import { localizeCollectibleImages } from './images';
-import { markClaimPending, markCollectionDataStale } from './collection-state';
+import { markCollectionDataStale } from './collection-state';
 
 async function collectible(id: string) {
   return localizeCollectibleImages(await api<Collectible>(`/collectibles/${id}`));
@@ -47,8 +47,7 @@ export const dataService = {
     id: string,
     overrides: { name?: string; shelfId?: string; notes?: string; tags?: string[] } = {}
   ) =>
-    changed(api<OfficialClaimResult>(`/official-bags/${id}/claim`, { method: 'POST', data: overrides }))
-      .then((result) => { markClaimPending(); return result; }),
+    changed(api<OfficialClaimResult>(`/official-bags/${id}/claim`, { method: 'POST', data: overrides })),
   updateCollectible,
   removeCollectible: (id: string) => changed(api(`/collectibles/${id}`, { method: 'DELETE' })),
   crop: (id: string, data: { x: number; y: number; width: number; height: number; rotation: 0 | 90 | 180 | 270 }) =>

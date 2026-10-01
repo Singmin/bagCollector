@@ -3,7 +3,7 @@ import { computed, getCurrentInstance, nextTick, ref, watch } from 'vue';
 import { onHide, onShow, onShareAppMessage, onShareTimeline } from '@dcloudio/uni-app';
 import type { Collectible, CollectibleSummary, Shelf } from '../../types';
 import { dataService } from '../../services/data';
-import { claimPendingRecently, collectionRevision, shouldRefreshCollection, markCollectionDataStale } from '../../services/collection-state';
+import { collectionRevision, shouldRefreshCollection, markCollectionDataStale } from '../../services/collection-state';
 import { daysAgoText, formattedDate } from '../../services/format';
 import { resolveCollectibleThumbnail } from '../../services/images';
 import { maskPageChrome } from '../../services/overlay';
@@ -135,21 +135,9 @@ function query(cursor?: string) {
   return params.join('&');
 }
 
-/* 「拥有」官方袋子（发现页标记已有）走的是官方认领接口：记录当场建好，但图片还在 worker 里
-   复制，而收藏列表只返回 READY —— 刚标记完就切过来，它可能还没现身。
-   标记后的窗口期内自动补几次刷新，让「标记了 → 收藏架里有」这段等待不至于看起来像丢失。 */
-let claimRetryTimer: ReturnType<typeof setTimeout> | undefined;
-let claimRetryLeft = 0;
-function scheduleClaimRetry() {
-  if (claimRetryTimer || !claimPendingRecently()) return;
-  if (claimRetryLeft <= 0) claimRetryLeft = 3;
-  claimRetryTimer = setTimeout(() => {
-    claimRetryTimer = undefined;
-    claimRetryLeft -= 1;
-    if (!claimPendingRecently()) { claimRetryLeft = 0; return; }
-    void load(true);
-  }, 2000);
-}
+/* 「拥有官方袋子」（发现页标记已有）落库后图片还在 worker 里复制，收藏列表只返回 READY，
+   刚标记完切过来它可能还没现身 —— 不做任何自动补刷（2026-09-30 用户明确要求），
+   用户自己下拉刷新即可。 */
 
 function assertRenderable(nextItems: CollectibleSummary[], nextShelves: Shelf[]) {
   const shelfIds = new Set(nextShelves.map((shelf) => shelf.id));
@@ -158,10 +146,11 @@ function assertRenderable(nextItems: CollectibleSummary[], nextShelves: Shelf[])
   }
 }
 
-/* 展架袋图尺寸：高度固定 300rpx，宽度 = 高度 × 图片真实宽高比（等比缩放）。
-   heightFix 在部分基础库上表现不稳，改为读图后显式计算（读不到回落 3:4）。 */
+/* 展架袋图尺寸：高度固定 240rpx，宽度 = 高度 × 图片真实宽高比（等比缩放）。
+   heightFix 在部分基础库上表现不稳，改为读图后显式计算（读不到回落 3:4）。
+   2026-10-01 调整记录：270 → 200 → 240rpx。 */
 const thumbnailAspect = ref<Record<string, number>>({});
-const SHELF_IMAGE_HEIGHT = 270;
+const SHELF_IMAGE_HEIGHT = 240;
 
 function shelfImageWidth(id: string) {
   const aspect = thumbnailAspect.value[id] ?? 0.75;
@@ -240,7 +229,6 @@ function load(force = false) {
       loadedAt = Date.now();
       loadedRevision = requestRevision;
       hydrateThumbnails(page.items);
-      scheduleClaimRetry();
     } catch (error) {
       const message = error instanceof Error ? error.message : '全部收藏加载失败';
       if (initialized.value) uni.showToast({ title: message, icon: 'none' });
@@ -1055,7 +1043,7 @@ function onScrollToLower() { void loadMore(); }
                 v-if="thumbnailUrls[item.id] && !failedThumbnails[item.id]"
                 class="shelf-image"
                 :src="thumbnailUrls[item.id]"
-                mode="scaleToFill"
+                mode="aspectFit"
                 lazy-load
                 :style="{ width: `${shelfImageWidth(item.id)}rpx`, height: `${SHELF_IMAGE_HEIGHT}rpx` }"
                 @error="failedThumbnails[item.id] = true"
@@ -1528,15 +1516,15 @@ function onScrollToLower() { void loadMore(); }
 .shelf-scroll { position: relative; z-index: 2; width: 100%; font-size: 0; line-height: 0; }
 /* 间距 18 → 10rpx（2026-09-26 用户反馈） */
 .shelf-items { display: inline-flex; align-items: flex-end; gap: 10rpx; min-width: 100%; padding: 29rpx 40rpx 15rpx; }
-/* 卡片槽：H5 .collection-group-card。袋图定高 300rpx（2026-09-26 用户要求加高，
-   269 → 300rpx）、宽度按图片自身比例（heightFix，同 H5 的 height:148px; width:auto） */
-.shelf-item { width: 175rpx; height: 270rpx; flex: 0 0 175rpx; margin: 0; padding: 0; display: flex; align-items: flex-end; justify-content: center; background: transparent; overflow: visible; }
-/* 袋图宽高由 inline style 按真实宽高比计算（高度固定 300rpx，宽度等比） */
+/* 卡片槽：H5 .collection-group-card。袋图定高 240rpx（2026-10-01 用户反馈调整，
+   270 → 200 → 240rpx）、宽度按图片自身比例（heightFix，同 H5 的 height:148px; width:auto） */
+.shelf-item { width: 175rpx; height: 240rpx; flex: 0 0 175rpx; margin: 0; padding: 0; display: flex; align-items: flex-end; justify-content: center; background: transparent; overflow: visible; }
+/* 袋图宽高由 inline style 按真实宽高比计算（高度固定 240rpx，宽度等比） */
 .shelf-item .shelf-image { transform: translateY(-18rpx); filter: drop-shadow(0 7rpx 18rpx rgba(0,0,0,.18)); }
 /* 占位块必须和袋图共用同一套位移。漏掉它的话，占位块不跟着上移，
    底边会从板体下沿露出约 6px 白边（用户实测截图里框出来的就是这条）。
    H5 里袋图和纸袋占位也是同一个 transform，别只写一半。 */
-.shelf-image-placeholder { width: 140rpx; height: 270rpx; border-radius: 24rpx; background: rgba(255,255,255,.62); transform: translateY(-18rpx); }
+.shelf-image-placeholder { width: 140rpx; height: 20rpx; border-radius: 24rpx; background: rgba(255,255,255,.62); transform: translateY(-18rpx); }
 
 /* ── 展架板体：H5 .collection-group .acrylic-shelf
    （左右 14px、底 14px、高 57px、圆角 9px、1px 白描边、顶部一道柔光、中性落影）。
