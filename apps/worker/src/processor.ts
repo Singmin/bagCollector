@@ -342,6 +342,39 @@ export async function reconcileStuckProcessing(stuckBefore: Date) {
   return result.count;
 }
 
+/**
+ * 被遗弃上传对账：UPLOADING 且没有任何图片资产、又超过阈值（ABANDONED_UPLOAD_MS，
+ * 默认 24h）的记录是「建了记录但图永远不会来」的残骸 —— 典型来源是旧版小程序的
+ * 「标记已有」误走拍照上传接口（POST /collectibles 建完记录就关页面，图根本不会传）。
+ * 这类记录在收藏列表里不可见（列表只返回 READY），却占着用户的收藏配额，直接删除；
+ * CollectibleTag / ImageAsset / ProcessingJob 由数据库级联清理。
+ * 认领得到的记录起步是 NORMALIZING，理论上不会是 UPLOADING，但 OfficialClaim 没有
+ * 外键，删除前仍排除已被认领引用的记录，避免孤儿认领行。
+ */
+export async function reconcileAbandonedUploads(before: Date) {
+  const candidates = await prisma.collectible.findMany({
+    where: {
+      processingStatus: ProcessingStatus.UPLOADING,
+      updatedAt: { lt: before },
+      imageAssets: { none: {} }
+    },
+    select: { id: true }
+  });
+  if (!candidates.length) return 0;
+  const claimed = await prisma.officialClaim.findMany({
+    where: { collectibleId: { in: candidates.map((row) => row.id) } },
+    select: { collectibleId: true }
+  });
+  const claimedIds = new Set(claimed.map((row) => row.collectibleId));
+  const doomed = candidates.map((row) => row.id).filter((id) => !claimedIds.has(id));
+  if (!doomed.length) return 0;
+  const result = await prisma.collectible.deleteMany({ where: { id: { in: doomed } } });
+  if (result.count > 0) {
+    console.warn(JSON.stringify({ event: 'reconcile_abandoned_upload', count: result.count }));
+  }
+  return result.count;
+}
+
 export async function cleanup(keys: string[]) {
   if (keys.length) await deleteObjects(keys);
 }

@@ -50,6 +50,10 @@ const schema = z
     // ---------------------------------------------------------------------
     RECONCILE_INTERVAL_MS: z.coerce.number().int().min(10_000).default(60_000),
     STUCK_PROCESSING_MS: z.coerce.number().int().min(60_000).default(900_000),
+    // 被遗弃上传的清理阈值：UPLOADING 且没有任何图片资产、又超过这个时长的记录
+    // 视为残骸直接删除（见 processor.ts reconcileAbandonedUploads）。
+    // 要远大于正常「申请上传凭证 → 直传 COS → complete」的耗时，避免误删在途上传。
+    ABANDONED_UPLOAD_MS: z.coerce.number().int().min(3_600_000).default(86_400_000),
 
     LOCAL_STORAGE_PATH: z.string().min(1).default('../../data/local-storage'),
     COS_SECRET_ID: z.string().default(''),

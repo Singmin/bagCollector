@@ -17,6 +17,7 @@ import {
   failProcessing,
   matImage,
   normalizeImage,
+  reconcileAbandonedUploads,
   reconcileStuckProcessing,
   type ProcessingJobData
 } from './processor.js';
@@ -100,7 +101,12 @@ worker.on('failed', (job, error) => {
 async function reconcileStuckJobs() {
   try {
     const stuckBefore = new Date(Date.now() - config.STUCK_PROCESSING_MS);
-    await Promise.all([reconcileStuckOfficialProcessing(stuckBefore), reconcileStuckProcessing(stuckBefore)]);
+    const abandonedBefore = new Date(Date.now() - config.ABANDONED_UPLOAD_MS);
+    await Promise.all([
+      reconcileStuckOfficialProcessing(stuckBefore),
+      reconcileStuckProcessing(stuckBefore),
+      reconcileAbandonedUploads(abandonedBefore)
+    ]);
   } catch (error) {
     console.error(
       JSON.stringify({
