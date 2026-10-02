@@ -27,9 +27,7 @@ onShow(() => void load());
        半窗形式：点半窗外任意空白（上半截）= 收起（返回上一页）；
        自定义导航去掉原生返回按钮。 -->
   <view class="settings-screen" @tap="goBack">
-    <view class="scene-bg">
-      <image class="scene-bg__img" src="/static/figma/bags/bag-01.png" mode="aspectFill" />
-    </view>
+    <view class="scene-bg" />
 
     <view class="sheet" :class="{ 'is-closing': closing }" @tap.stop>
       <view class="handle" />
@@ -62,9 +60,9 @@ onShow(() => void load());
 
 <style scoped>
 .settings-screen { position: relative; min-height: 100vh; display: flex; flex-direction: column; overflow: hidden; background: #f2f3f7; }
-/* 上半截场景：模糊放大的袋子图（原型 .ph-bg：blur(10px) saturate(.85) scale(1.16) 透明 .55） */
-.scene-bg { position: absolute; top: 0; left: 0; right: 0; height: 42vh; overflow: hidden; }
-.scene-bg__img { width: 100%; height: 100%; opacity: .55; filter: blur(20rpx) saturate(.85); transform: scale(1.16); }
+/* 上半截场景：冷调渐变光斑（原为模糊放大的袋子演示图，素材已移除） */
+.scene-bg { position: absolute; top: 0; left: 0; right: 0; height: 42vh; background: linear-gradient(165deg, #dfe6f2 0%, #e9eef6 40%, #f2f3f7 100%); }
+.scene-bg::after { content: ''; position: absolute; inset: 0; background: radial-gradient(60% 45% at 72% 18%, rgba(255,255,255,.85) 0%, rgba(255,255,255,0) 70%), radial-gradient(50% 40% at 18% 55%, rgba(198,209,230,.55) 0%, rgba(198,209,230,0) 72%); }
 
 /* ── 玻璃底座（方案 A）：冷调白渐变 + 冷投影 + 内圈白棱，与详情卡同材质 ── */
 .sheet { position: relative; z-index: 1; margin-top: auto; padding: 32rpx 40rpx calc(44rpx + env(safe-area-inset-bottom)); border-radius: 60rpx 60rpx 0 0; background: linear-gradient(160deg, #ffffff 0%, #fafbfd 56%, #f2f4f8 100%); box-shadow: inset 0 2rpx 0 #ffffff, inset 0 -2rpx 0 rgba(255,255,255,.34), inset 0 0 0 2rpx rgba(255,255,255,.9), 0 -33rpx 95rpx rgba(52,66,92,.16), 0 -5rpx 22rpx rgba(52,66,92,.07); }

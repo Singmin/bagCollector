@@ -368,13 +368,11 @@ onHide(() => {
 /* 分享：转发给朋友 / 分享到朋友圈（封面用袋子图，5:4 内自动裁切） */
 onShareAppMessage(() => ({
   title: '袋袋集 · 收集每一个纸袋的故事',
-  path: '/pages/showcase/index',
-  imageUrl: '/static/figma/bags/bag-04.png'
+  path: '/pages/showcase/index'
 }));
 onShareTimeline(() => ({
   title: '袋袋集 · 收集每一个纸袋的故事',
-  query: '',
-  imageUrl: '/static/figma/bags/bag-04.png'
+  query: ''
 }));
 /* 顶部标题区固定后，下拉刷新迁移到内容区 scroll-view */
 const refresherTriggered = ref(false);

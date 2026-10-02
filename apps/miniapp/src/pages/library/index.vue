@@ -879,13 +879,11 @@ onHide(() => { closeDetail(); closeSettings(); if (markShow.value) markShow.valu
 /* 分享：转发给朋友 / 分享到朋友圈 */
 onShareAppMessage(() => ({
   title: '袋袋集 · 我的纸袋收藏架',
-  path: '/pages/library/index',
-  imageUrl: '/static/figma/bags/bag-01.png'
+  path: '/pages/library/index'
 }));
 onShareTimeline(() => ({
   title: '袋袋集 · 我的纸袋收藏架',
-  query: '',
-  imageUrl: '/static/figma/bags/bag-01.png'
+  query: ''
 }));
 /* 设置半窗（自首页迁入）：上滑进入、下滑收起；底栏是框架层压不住，打开期间整条隐藏 */
 const settingsShow = ref(false);
