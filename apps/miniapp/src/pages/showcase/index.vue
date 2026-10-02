@@ -16,7 +16,7 @@ const items = ref<Collectible[]>([]);
 const totalCount = ref(0);
 /* 精选上新：一次取到后端上限 100 条，不再按小页分页展示（后端 limit 允许 1~100）。
    官方袋子超过 100 条时，游标翻页仍会继续追加剩余（loadMore / scrolltolower 保留作兜底）。
-   翻页只追加不清空，避免主展位跳回第一张。mock 与真实后端都支持 cursor。 */
+   翻页只追加不清空，避免主展位跳回第一张。后端 feed 支持 cursor 游标翻页。 */
 const FEED_PAGE_SIZE = 100;
 const nextCursor = ref<string | null>(null);
 const loadingMore = ref(false);
@@ -148,7 +148,7 @@ function load() {
       /* feed = 官方精选纸袋上新；心愿袋状态一并拉取（标记/取消心愿后要保持同步） */
       const [page, wish] = await Promise.all([dataService.feed(`limit=${FEED_PAGE_SIZE}`), dataService.wishlist()]);
       assertRenderable(page.items);
-      /* feed 接口声明返回摘要，但 mock 与真实后端都带完整字段（见下方 selectHero 注释），
+      /* feed 接口声明返回摘要，但后端实际带完整字段（见下方 selectHero 注释），
          这里统一按完整条目使用 —— 与旧的逐处 as 转换等价，只收敛到一个出口。 */
       const feedItems = page.items as unknown as Collectible[];
       items.value = feedItems;

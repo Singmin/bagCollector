@@ -3,7 +3,6 @@ import { ref } from 'vue';
 import { onLoad } from '@dcloudio/uni-app';
 import type { Collectible, Shelf, UploadPolicy } from '../../../types';
 import { api, authorizedHeaders } from '../../../services/http';
-import { USE_MOCK } from '../../../services/mock-data';
 import { dataService } from '../../../services/data';
 
 const systemInfo = uni.getSystemInfoSync();
@@ -123,13 +122,6 @@ async function submit(sourcePath: string) {
   try {
     const path = await prepareUpload(sourcePath);
     compressing.value = false;
-    /* Mock 模式没有存储后端（policy.uploadUrl 为空，uploadFile 必失败）：
-       跳过 policy / upload / complete 三步，直接用本地临时图充当缩略图与展示图 */
-    if (USE_MOCK) {
-      const collectible = await dataService.createCollectible({ name: '未命名纸袋', shelfId: await targetShelfId(), thumbnailUrl: path, displayImageUrl: path });
-      uni.redirectTo({ url: nextStepUrl(collectible) });
-      return;
-    }
     const size = await fileSize(path);
     const collectible = await dataService.createCollectible({ name: '未命名纸袋', shelfId: await targetShelfId() });
     const sourceName = path.split('/').pop() || `paper-bag-${Date.now()}.jpg`;
