@@ -35,8 +35,9 @@ describe('worker configuration', () => {
     expect(config.CI_MATTING_MAX_CONCURRENCY).toBe(4);
   });
 
-  it('rejects the local storage driver because 万象 cannot read local files', async () => {
-    await expect(loadConfig({ STORAGE_DRIVER: 'local' })).rejects.toThrow('要求 STORAGE_DRIVER=cos');
+  it('accepts the local storage driver for local development（图片统一代理，仅万象不可用）', async () => {
+    const { config } = await loadConfig({ STORAGE_DRIVER: 'local' });
+    expect(config.STORAGE_DRIVER).toBe('local');
   });
 
   it('rejects 数据万象抠图 without COS credentials', async () => {
