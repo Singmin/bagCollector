@@ -1,7 +1,6 @@
 import { runtimeConfig } from '../config';
 import type { AuthTokens } from '../types';
 import { readTokens, removeTokens, writeTokens } from './auth-storage';
-import { USE_MOCK, mockRequest } from './mock-data';
 let loginPromise: Promise<void> | undefined;
 let refreshPromise: Promise<void> | undefined;
 
@@ -48,17 +47,6 @@ function systemName() {
 }
 
 export async function login() {
-  /* Mock 模式：不发真实登录请求，写入假 token 让依赖 token 的代码路径正常走 */
-  if (USE_MOCK) {
-    const now = Date.now();
-    writeTokens({
-      accessToken: `mock-access-${now}`,
-      accessTokenExpiresIn: 3600,
-      refreshToken: `mock-refresh-${now}`,
-      refreshTokenExpiresAt: new Date(now + 30 * 24 * 60 * 60 * 1000).toISOString()
-    });
-    return;
-  }
   loginPromise ??= (async () => {
     const tokens = await requestRaw<AuthTokens>('/auth/wechat/login', {
       method: 'POST',
@@ -97,12 +85,7 @@ export async function authorizedHeaders() {
 }
 
 /* ══════════════════════════════════════════════════════════════════
-   ⚠️ 后端尚未实现（2026-09-29）：所有接口由 mock-data.ts 内存模拟。
-   前端联调/演示一律用 Mock 构建：pnpm build:miniapp:mock
-   （VITE_USE_MOCK=1 时 api() 直接走 mockRequest，不触网）。
-   不要跑全仓 pnpm build —— 会先构建 apps/api、apps/worker 等后端包而失败。
-
-   后端同事需实现的接口清单（路径与响应结构以 contracts 包 + mock-data.ts 为准）：
+   后端接口清单（路径与响应结构以 packages/contracts 为准）：
    · POST   /auth/wechat/login        微信 code 登录
    · POST   /auth/refresh             刷新 token
    · POST   /auth/logout              登出
@@ -118,17 +101,15 @@ export async function authorizedHeaders() {
    · GET    /collectibles/:id         收藏详情
    · PUT    /collectibles/:id         更新收藏
    · DELETE /collectibles/:id         删除收藏
-   · PUT    /collectibles/:id/crop    更新抠图裁剪
+   · PUT    /collectibles/:id/crop    只裁剪：重出展示图/缩略图，不抠图
+   · POST   /collectibles/:id/matte   只抠图：沿用已保存裁剪参数（可缺省按全幅），走万象、计配额
    · GET    /wishlist                 心愿袋列表
    · POST   /wishlist/:id             加入心愿袋
    · DELETE /wishlist/:id             移出心愿袋
    · POST   /uploads/policy           取上传凭证
    · POST   /uploads/complete         完成上传
-   后端就绪后：前端代码零改动，去掉 mock 构建开关即切真实接口。
    ══════════════════════════════════════════════════════════════════ */
 export async function api<T>(path: string, options: ApiRequestOptions = {}, didRetry = false): Promise<T> {
-  /* Mock 模式：全部请求走内存假数据，不触网 */
-  if (USE_MOCK) return mockRequest<T>(path, options);
   await ensureLogin();
   const tokens = readTokens()!;
   try {
@@ -151,7 +132,6 @@ export async function api<T>(path: string, options: ApiRequestOptions = {}, didR
 }
 
 export async function logout() {
-  if (USE_MOCK) { removeTokens(); return; }
   const tokens = readTokens();
   if (tokens?.refreshToken) {
     await requestRaw('/auth/logout', { method: 'POST', data: { refreshToken: tokens.refreshToken } });

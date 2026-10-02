@@ -15,6 +15,23 @@ export class LocalAssetsController {
   }
 }
 
+/**
+ * 存储无关的统一图片代理（token 签名保护，免登录 —— canvas/image 无法带请求头）。
+ * local 与 cos 两种驱动都从这里出流：小程序的 canvas 2d 受 downloadFile 合法域名
+ * 白名单限制，统一走 API 域名后白名单只需配一个。
+ * 旧路由 /assets/local 保留兼容已发出的 URL。
+ */
+@Controller('assets/file')
+export class ProxyAssetsController {
+  constructor(private readonly cos: CosService) {}
+
+  @Get()
+  async file(@Query('token') token: string) {
+    const stream = await this.cos.streamByToken(token);
+    return new StreamableFile(stream.stream, { type: stream.type });
+  }
+}
+
 @Controller('assets')
 @UseGuards(AuthGuard)
 export class AssetsController {

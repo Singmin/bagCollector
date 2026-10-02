@@ -53,13 +53,33 @@ const focusField = ref('');
 /* 品牌 / 店铺：填写式输入；保存时按名称找同名展架，没有就自动创建（数据模型仍落到 shelfId） */
 const shelves = ref<Shelf[]>([]);
 const brand = ref('');
-/* 手动抠图（2026-09-29 抠图改用户可选）：提交全幅裁剪触发后端抠图任务，
-   跳到处理页等待，完成后自动重定向回本页（此时 processingStatus 已 READY，按钮随之隐藏） */
+/* 抠图按钮（自动抠图）显隐判据是「有没有抠图结果（cutoutImageUrl）」而不是 processingStatus ——
+   裁剪（/crop，只裁剪）之后状态也是 READY，若按状态判断按钮会永久消失（Bug）。
+   裁剪按钮始终在「空闲态」展示：包括已抠图之后也能再裁（/crop 会顺带重新抠图，保持透明图与展示图对齐）。 */
+const matted = computed(() => !!item.value?.cutoutImageUrl);
+const idle = (status: string | undefined) =>
+  status === 'AWAITING_CROP' || status === 'READY' || status === 'FAILED';
+const canMatte = computed(() => !!item.value && !matted.value && idle(item.value?.processingStatus));
+const canCrop = computed(() => !!item.value && idle(item.value?.processingStatus));
 const matting = ref(false);
-async function startMatting() {
-  if (matting.value) return; matting.value = true;
+/* 抠图要花钱，先让用户确认一次（避免误触 / 试玩）。抠过也能再裁，所以文案不再说「不能再裁剪」 */
+const MATTING_CONFIRM = '每张图片仅自动抠图一次（按次计费）。确认现在抠图？之后仍可在「裁剪旋转」里按新构图重新抠图。';
+/* 抠图要花钱，先让用户确认一次（避免误触 / 试玩） */
+function startMatting() {
+  if (matting.value || !canMatte.value) return;
+  uni.showModal({
+    title: '自动抠图（仅一次）',
+    content: MATTING_CONFIRM,
+    confirmText: '开始抠图',
+    cancelText: '再想想',
+    success: (result) => { if (result.confirm) void submitMatting(); }
+  });
+}
+async function submitMatting() {
+  matting.value = true;
   try {
-    await dataService.crop(id.value, { x: 0, y: 0, width: 1, height: 1, rotation: 0 });
+    /* 抠图走独立端点：参数全省，后端沿用已保存的裁剪参数（没裁过则全幅），画面不会被重置 */
+    await dataService.matte(id.value);
     uni.redirectTo({ url: `/package-editor/pages/processing/index?id=${id.value}&stage=matting` });
   } catch (error) {
     uni.showToast({ title: error instanceof Error ? error.message : '抠图启动失败', icon: 'none' });
@@ -73,7 +93,11 @@ async function load() {
       dataService.shelves(),
       dataService.collectibles('limit=1')
     ]);
-    if (!nextItem.displayImageUrl) throw new Error('收藏缺少展示图');
+    /* 首次完善信息发生在首次裁剪之前（AWAITING_CROP）：流水线此时只产出标准图，
+       展示图要等裁剪提交后才生成 —— 回退用标准图占位，不再直接报错把页面挡死。
+       只有连标准图都没有（如资产丢失）才算异常。 */
+    if (!nextItem.displayImageUrl && !nextItem.standardImageUrl) throw new Error('收藏缺少展示图');
+    if (!nextItem.displayImageUrl) nextItem.displayImageUrl = nextItem.standardImageUrl;
     item.value = nextItem; shelves.value = nextShelves; name.value = nextItem.name === '未命名纸袋' ? '' : nextItem.name;
     /* 编号 = 自有收藏总数（含本条，列表按 addedAt desc，本条最新即最大号） */
     collectNo.value = `NO.${String(Math.max(1, page.totalCount)).padStart(3, '0')}`;
@@ -81,6 +105,15 @@ async function load() {
     notes.value = nextItem.notes; tagList.value = nextItem.tags.slice(0, 30); tagDraft.value = '';
     brand.value = nextItem.shelfName ?? '';
   } catch (error) { loadError.value = error instanceof Error ? error.message : '收藏信息加载失败'; }
+}
+/* 裁剪旋转：跳转裁剪页（提交后由后端 sharp 重新出图，回本页刷新） */
+function openCrop() {
+  uni.navigateTo({ url: `/package-editor/pages/crop/index?id=${id.value}` });
+}
+/* 高级调色：与「裁剪旋转」完全复用同一页面（不再有单独的「仅调色」模式）——
+   裁剪页已常驻调色滑杆，单独模式只会让两个入口长得像两个页面，且少掉比例/旋转能力 */
+function openColor() {
+  uni.navigateTo({ url: `/package-editor/pages/crop/index?id=${id.value}` });
 }
 async function save() {
   /* 不用 disabled 属性控制按钮（微信内置 wx-button[disabled] 样式会盖掉黑底），
@@ -114,11 +147,23 @@ function goBack() { uni.navigateBack({ delta: 1 }); }
   <view class="page metadata-page"><nav-bar title="完善信息" back />
     <view v-if="loadError" class="error">{{ loadError }}</view>
     <view v-else-if="item" class="preview"><image :src="item.displayImageUrl" mode="aspectFit" /></view>
-    <!-- 抠图按钮（方案 C）：图区与表单之间的整行描边胶囊，未抠图（AWAITING_CROP）时展示，抠过隐藏 -->
-    <button v-if="!loadError && item && item.processingStatus === 'AWAITING_CROP'" class="matting-button" :disabled="matting" @tap="startMatting">
-      <image class="matting-button__icon" src="/static/figma/cutout-black.svg" mode="aspectFit" />
-      <text>{{ matting ? '提交中…' : '自动抠图' }}</text>
-    </button>
+    <!-- 三个独立入口（不再混在一起）：裁剪旋转 / 高级调色 / 自动抠图 —— 文案统一四字，等宽一行更齐。
+         前两者始终展示（含已抠图之后，已抠图再裁/调色会按当前构图重新生成抠图）；
+         自动抠图常驻展示：已抠过时置为「已抠图」完成态并禁用（不再隐藏，避免三按钮宽度跳动） -->
+    <view v-if="!loadError" class="entry-row">
+      <button v-if="canCrop" class="entry-button" @tap="openCrop">
+        <image class="entry-button__icon" src="/static/figma/crop-black.svg" mode="aspectFit" />
+        <text class="entry-button__label">裁剪旋转</text>
+      </button>
+      <button v-if="canCrop" class="entry-button" @tap="openColor">
+        <image class="entry-button__icon" src="/static/figma/color-black.svg" mode="aspectFit" />
+        <text class="entry-button__label">高级调色</text>
+      </button>
+      <button v-if="canCrop" class="entry-button" :class="{ 'is-done': matted }" :disabled="matted || matting" @tap="startMatting">
+        <image class="entry-button__icon" src="/static/figma/cutout-black.svg" mode="aspectFit" />
+        <text class="entry-button__label">{{ matted ? '已抠图' : matting ? '提交中…' : '自动抠图' }}</text>
+      </button>
+    </view>
     <!-- 表单结构与样式复用编辑半窗的「下划线·纸感」版式（styles/edit-form.css） -->
     <view v-if="!loadError && item" class="form-card">
       <!-- 编号/入库时长只读条：编号自动生成不可改；收藏日期单独占一行可点修改 -->
@@ -192,10 +237,21 @@ function goBack() { uni.navigateBack({ delta: 1 }); }
 .ef-readout__k { display: block; color: #a8a49d; font-size: var(--wc-font-footnote); font-weight: 700; line-height: 1.2; letter-spacing: .8rpx; white-space: nowrap; }/* 图区：与编辑半窗 .detail-artwork 同款 —— 无底色、透明居中 aspectFit + 柔影（2026-09-29 去棕底/虚线框）；
    .page 内边距已清零，这里自带 30rpx 左右边距 */
 .preview { position: relative; margin: 0 30rpx; height: 306rpx; display: flex; align-items: center; justify-content: center; }.preview image { width: 100%; height: 269rpx; filter: drop-shadow(0 7rpx 18rpx rgba(0, 0, 0, .18)); }
-/* 抠图按钮（方案 C）：图区与表单之间的整行描边胶囊，黑图标 + 黑字 */
-.matting-button { width: calc(100% - 60rpx); margin: 26rpx 30rpx 6rpx; height: 88rpx; display: flex; align-items: center; justify-content: center; gap: 12rpx; border: 2rpx solid rgba(20, 20, 20, .16); border-radius: 44rpx; background: transparent; color: #141414; font-size: var(--wc-font-description); font-weight: 650; }
-.matting-button__icon { width: 34rpx; height: 34rpx; }
-.matting-button[disabled] { opacity: .5; }
+/* 三个入口并排一行：等宽描边胶囊（原整行纵向堆叠 → 一行三等分，每个约 220rpx），图标 + 文字横排居中。
+   底部 32rpx 是按钮行与下方表单之间的呼吸位（原仅 6rpx + 表单自带 6rpx，太挤） */
+.entry-row { display: flex; gap: 14rpx; margin: 26rpx 30rpx 32rpx; }
+.entry-button { flex: 1 1 0; min-width: 0; height: 88rpx; margin: 0; padding: 0 8rpx; display: flex; align-items: center; justify-content: center; gap: 10rpx; border: 2rpx solid rgba(20, 20, 20, .16); border-radius: 44rpx; background: transparent; color: #141414; font-size: var(--wc-font-footnote); font-weight: 650; }
+/* 三个图标同一套线性规格：24 viewBox / fill:none / stroke #141414 / stroke-width 2 / 圆角端点 ——
+   样式、视觉大小与笔画粗细因此完全一致（实心 path 的笔画粗细由图形本身决定，无法保证一致，故改用描边）；
+   统一 32rpx 呈现 */
+.entry-button__icon { flex: 0 0 auto; width: 32rpx; height: 32rpx; }
+/* 文字过长时省略，避免四字标签在窄屏把等分胶囊撑破 */
+.entry-button__label { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.entry-button[disabled] { opacity: .5; }
+/* 已抠图 → 完成态：灰字 + 淡边框 + 图标压暗，且不可点。
+   必须写在 [disabled] 之后覆盖它的 opacity —— 否则整个胶囊会被刷淡成「不可用」观感 */
+.entry-button.is-done, .entry-button.is-done[disabled] { border-color: rgba(20,20,20,.10); color: #b3afa8; background: transparent; opacity: 1; }
+.entry-button.is-done .entry-button__icon { opacity: .45; }
 /* 表单区：复用编辑半窗版式 —— 字段直接坐在页面底色上（无白卡包裹），
    行结构/下划线/chip 全部来自 styles/edit-form.css，与半窗逐像素同款 */
 .form-card { margin: 0 40rpx; padding: 6rpx 10rpx 30rpx; }

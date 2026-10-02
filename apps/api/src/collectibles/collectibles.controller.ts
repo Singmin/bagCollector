@@ -1,5 +1,5 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Query, UseGuards } from '@nestjs/common';
-import { createCollectibleSchema, cropSchema, updateCollectibleSchema } from '@bagcollect/contracts';
+import { createCollectibleSchema, cropSchema, matteSchema, updateCollectibleSchema } from '@bagcollect/contracts';
 import { AuthGuard } from '../auth/auth.guard.js';
 import { CurrentUser, type AuthUser } from '../common/current-user.js';
 import { parseBody } from '../common/zod.js';
@@ -46,9 +46,17 @@ export class CollectiblesController {
     return this.collectibles.update(user.userId, id, parseBody(updateCollectibleSchema, body));
   }
 
+  /* 语义拆分：/crop 只裁剪（不调万象、不产抠图），/matte 只抠图（沿用已保存裁剪参数）。
+     裁剪页提交走 /crop，编辑页「自动抠图」按钮走 /matte —— 后端同事请勿把两者再合并回一个端点 */
   @Post(':id/crop')
   crop(@CurrentUser() user: AuthUser, @Param('id') id: string, @Body() body: unknown) {
     return this.collectibles.crop(user.userId, id, parseBody(cropSchema, body));
+  }
+
+  @Post(':id/matte')
+  matte(@CurrentUser() user: AuthUser, @Param('id') id: string, @Body() body: unknown) {
+    /* body 允许为空对象 / 缺省：抠图默认沿用已保存的裁剪参数 */
+    return this.collectibles.matte(user.userId, id, parseBody(matteSchema, body ?? {}));
   }
 
   @Delete(':id')

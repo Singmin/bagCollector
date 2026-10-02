@@ -519,7 +519,12 @@ const markShow = ref(false);
 const markItem = ref<Collectible | null>(null);
 function markFromDetail() {
   const item = detailItem.value; if (!item) return;
-  /* 已标记 → 弹删除确认，可撤回标记 */
+  /* 靶心点击语义与右上角图标（isOwnedDetail）严格一致 ——
+     旧版只认 justMarkedMap（仅记录本次会话刚标记的心愿条目），导致「我的」收藏条目
+     明明显示红环「已拥有」，点下去却拉起「标记已有」半窗再建一条重复收藏。
+     · 心愿条目本次刚标记 → 删掉标记时创建的那条收藏（撤回标记，详情卡保持打开）
+     · 本来就是「我的」收藏 → 走与长按删除同一套 confirmRemove（关详情 / 出列表 / 展架件数 −1）
+     · 心愿条目且未标记 → 拉起「标记已有」半窗 */
   const createdId = justMarkedMap.value.get(item.id);
   if (createdId) {
     return void uni.showModal({
@@ -539,6 +544,7 @@ function markFromDetail() {
       }
     });
   }
+  if (!isWishDetail.value) return void confirmRemove(item);
   markItem.value = item as Collectible;
   markShow.value = true;
 }
@@ -873,13 +879,11 @@ onHide(() => { closeDetail(); closeSettings(); if (markShow.value) markShow.valu
 /* 分享：转发给朋友 / 分享到朋友圈 */
 onShareAppMessage(() => ({
   title: '袋袋集 · 我的纸袋收藏架',
-  path: '/pages/library/index',
-  imageUrl: '/static/figma/bags/bag-01.png'
+  path: '/pages/library/index'
 }));
 onShareTimeline(() => ({
   title: '袋袋集 · 我的纸袋收藏架',
-  query: '',
-  imageUrl: '/static/figma/bags/bag-01.png'
+  query: ''
 }));
 /* 设置半窗（自首页迁入）：上滑进入、下滑收起；底栏是框架层压不住，打开期间整条隐藏 */
 const settingsShow = ref(false);
@@ -951,7 +955,9 @@ function onScrollToLower() { void loadMore(); }
         />
         <text v-if="searchText" class="search-clear" @tap="clearSearch">×</text>
       </view>
-      <button v-if="segment === 'mine'" class="mode-button" hover-class="is-pressed" :hover-stay-time="80" :aria-label="displayMode === 'shelf' ? '切换为宫格展示' : '切换为展架展示'" @tap="toggleMode">
+      <!-- 切换钮心愿袋段不显示，但保留占位（visibility:hidden）——
+           否则该段搜索框失去右侧兄弟后整行塌高、宽度拉通，与「我的」段 UI 不一致 -->
+      <button class="mode-button" :class="{ 'is-ghost': segment !== 'mine' }" hover-class="is-pressed" :hover-stay-time="80" :aria-label="displayMode === 'shelf' ? '切换为宫格展示' : '切换为展架展示'" @tap="toggleMode">
         <image :src="displayMode === 'shelf' ? '/static/figma/grid.svg' : '/static/figma/shelf.svg'" mode="aspectFit" />
         <text>{{ displayMode === 'shelf' ? '宫格' : '展架' }}</text>
       </button>
@@ -1465,6 +1471,9 @@ function onScrollToLower() { void loadMore(); }
 .mode-button { flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8rpx; min-width: 0; margin: 0; padding: 14rpx 22rpx; border: 2rpx solid rgba(255,255,255,.75); border-radius: 24rpx; background: rgba(255,255,255,.6); box-shadow: inset 0 2rpx 0 rgba(255,255,255,.8); color: #77736d; font-size: 20rpx; font-weight: 400; line-height: 1.1; transition: transform .18s ease, box-shadow .18s ease; }
 /* 按压反馈：对齐 H5 .header-settings:active scale(.94) */
 .mode-button.is-pressed { transform: scale(.94); box-shadow: inset 0 2rpx 0 rgba(255,255,255,.8); }
+/* 心愿袋段：隐藏但保留占位 —— 行高与搜索框宽度因此与「我的」段逐像素一致；
+   visibility:hidden 不响应点击，无需额外禁用 */
+.mode-button.is-ghost { visibility: hidden; }
 .mode-button image { display: block; width: 44rpx; height: 44rpx; }
 /* letter-spacing 会在末字后多出 2rpx 空隙，负 margin 抵消，让可见字形与 icon 同轴 */
 .mode-button text { letter-spacing: 2rpx; margin-right: -2rpx; }

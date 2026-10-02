@@ -28,9 +28,12 @@ watch(() => props.show, (visible) => {
     tagList.value = props.item!.tags.slice(0, 30);
     tagDraft.value = '';
     notes.value = props.item!.notes;
-    const first = shelves.value[0];
-    shelfId.value = first?.id ?? '';
-    shelfText.value = first?.name ?? '';
+    /* 品牌/名称：自动填充官方袋子的原有品牌信息（ownerName，如「瑞幸咖啡」）。
+       若它正好与某个展架同名则选中该展架；否则留待用户改或走后端默认展架 */
+    const brand = props.item!.ownerName ?? '';
+    const match = shelves.value.find((shelf) => shelf.name === brand);
+    shelfId.value = match?.id ?? '';
+    shelfText.value = brand || shelves.value[0]?.name || '';
     shelfOpen.value = false;
   })();
 });
@@ -71,20 +74,21 @@ function removeTag(tag: string) {
 }
 async function save() {
   const source = props.item;
+  /* 品牌/名称非必填：与展架同名则归入该展架；不同名 / 留空时省略 shelfId，
+     后端自动归入默认展架（品牌文字本身不会丢失——名称与标签才是收藏的主信息） */
   const shelf = shelves.value.find((current) => current.id === shelfId.value);
   const nameVal = name.value.trim();
   if (!nameVal) return void uni.showToast({ title: '请填写名称', icon: 'none' });
-  if (!shelf) return void uni.showToast({ title: '请选择分类', icon: 'none' });
   if (!source || saving.value) return;
   saving.value = true;
   try {
     commitTags();
     /* 标记已有 = 拥有这只官方袋子，必须走认领接口：它会建好收藏并把官方图片复制到用户名下
        （走 POST /collectibles 只会得到一条没有图、且永远停在 UPLOADING 的记录，收藏架看不到）。
-       半窗里改过的名称 / 分类 / 标签 / 备注作为覆盖值传给后端。 */
+       半窗里改过的名称 / 标签 / 备注作为覆盖值传给后端；品牌与展架同名时才传 shelfId。 */
     const { collectibleId } = await dataService.claimOfficialBag(source.id, {
       name: nameVal,
-      shelfId: shelf.id,
+      ...(shelf ? { shelfId: shelf.id } : {}),
       notes: notes.value.trim(),
       tags: [...tagList.value]
     });
@@ -129,11 +133,11 @@ function close() { emit('close'); }
           <view class="ef-val"><input class="ef-input" :class="{ 'is-focus': focusField === 'name' }" v-model="name" placeholder="给它起个名字" maxlength="24" placeholder-class="ef-placeholder" @focus="focusField = 'name'" @blur="focusField = ''" /></view>
         </view>
         <view class="ef-row">
-          <text class="ef-key">分类</text>
+          <text class="ef-key">品牌/名称</text>
           <view class="ef-val">
-            <input class="ef-input" :class="{ 'is-focus': focusField === 'shelf' }" :value="shelfText" placeholder="选一个分类" placeholder-class="ef-placeholder" @focus="focusField = 'shelf'; shelfOpen = true" @blur="focusField = ''; hideSuggestSoon()" @input="onShelfInput" />
+            <input class="ef-input" :class="{ 'is-focus': focusField === 'shelf' }" :value="shelfText" placeholder="已按原信息填好，可修改" placeholder-class="ef-placeholder" @focus="focusField = 'shelf'; shelfOpen = true" @blur="focusField = ''; hideSuggestSoon()" @input="onShelfInput" />
             <view v-if="shelfOpen && shelfSuggest.length" class="ef-suggest">
-              <text class="ef-suggest__hint">选择分类</text>
+              <text class="ef-suggest__hint">选择展架分类</text>
               <view v-for="row in shelfSuggest" :key="row.id" class="ef-suggest__item" hover-class="is-hover" :hover-stay-time="80" @tap="pickShelf(row)">
                 <text class="ef-suggest__label">{{ row.name }}</text>
               </view>

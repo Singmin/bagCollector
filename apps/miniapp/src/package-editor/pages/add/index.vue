@@ -3,7 +3,6 @@ import { ref } from 'vue';
 import { onLoad } from '@dcloudio/uni-app';
 import type { Collectible, Shelf, UploadPolicy } from '../../../types';
 import { api, authorizedHeaders } from '../../../services/http';
-import { USE_MOCK } from '../../../services/mock-data';
 import { dataService } from '../../../services/data';
 
 const systemInfo = uni.getSystemInfoSync();
@@ -27,7 +26,20 @@ const errorMessage = ref('');
 // 原图直传在慢网下要几十秒，而服务端最终只保留最长边 4096 的版本，
 // 所以超过阈值就先在本地压一次。阈值以下的照片不动，避免无谓的重编码损失。
 const COMPRESS_THRESHOLD_BYTES = 1_500_000;
-const COMPRESS_QUALITY = 85;
+const COMPRESS_QUALITY = 80;
+/* 长边压到 2048：展示图（DISPLAY）产出的上限就是 2048px，原图再大也用不上，
+   纯粹拖慢上传与 worker 的解码/编码（手机原图普遍 3000~4000px） */
+const COMPRESS_MAX_EDGE = 2048;
+
+function imageInfo(path: string) {
+  return new Promise<{ width: number; height: number }>((resolve) => {
+    uni.getImageInfo({
+      src: path,
+      success: (result) => resolve({ width: result.width, height: result.height }),
+      fail: () => resolve({ width: 0, height: 0 })
+    });
+  });
+}
 
 function contentType(path: string) {
   const extension = path.split('.').pop()?.toLocaleLowerCase();
@@ -44,14 +56,22 @@ function fileSize(path: string) {
   });
 }
 
-function compress(path: string) {
+function compress(path: string, size?: { width: number; height: number }) {
   return new Promise<string>((resolve) => {
-    uni.compressImage({
+    /* compressedWidth/Height 是微信扩展参数（uni 类型未覆盖），按长边等比缩到上限 */
+    const options: Record<string, unknown> = {
       src: path,
       quality: COMPRESS_QUALITY,
-      success: (result) => resolve(result.tempFilePath || path),
+      success: (result: { tempFilePath?: string }) => resolve(result.tempFilePath || path),
       fail: () => resolve(path)
-    });
+    };
+    const longEdge = size ? Math.max(size.width, size.height) : 0;
+    if (longEdge > COMPRESS_MAX_EDGE) {
+      const scale = COMPRESS_MAX_EDGE / longEdge;
+      options.compressedWidth = Math.round(size!.width * scale);
+      options.compressedHeight = Math.round(size!.height * scale);
+    }
+    uni.compressImage(options as never);
   });
 }
 
@@ -63,8 +83,9 @@ async function prepareUpload(path: string) {
   } catch {
     return path;
   }
-  if (originalSize <= COMPRESS_THRESHOLD_BYTES) return path;
-  const compressed = await compress(path);
+  const info = await imageInfo(path);
+  if (originalSize <= COMPRESS_THRESHOLD_BYTES && Math.max(info.width, info.height) <= COMPRESS_MAX_EDGE) return path;
+  const compressed = await compress(path, info);
   if (compressed === path) return path;
   try {
     const compressedSize = await fileSize(compressed);
@@ -99,13 +120,22 @@ async function uploadSource(path: string, policy: UploadPolicy) {
   });
 }
 
-/* 下一跳：规范化已完成（AWAITING_CROP/READY）时直接进编辑页 ——
-   连续两次 redirectTo 会让页面栈底层的首页闪现（「先回首页再开编辑页」的根因），
-   只在确实需要等后端处理时才落处理页 */
-function nextStepUrl(collectible: Collectible) {
-  return collectible.processingStatus === 'AWAITING_CROP' || collectible.processingStatus === 'READY'
-    ? `/package-editor/pages/metadata/index?id=${collectible.id}`
-    : `/package-editor/pages/processing/index?id=${collectible.id}&stage=normalize`;
+/* ── 规范化等待（处理页的轻量替身）──
+   uploads/complete 后 worker 异步把原图转成标准图（AWAITING_CROP/READY），
+   旧流程跳独立「处理中」状态页；改为本页弹加载 toast 原地等待，完成后直接进完善信息。
+   轮询 1s 一次，上限 30s —— 超时按失败收场，避免 loading 永远挂着 */
+const POLL_INTERVAL_MS = 1000;
+const PROCESS_TIMEOUT_MS = 30_000;
+function sleep(ms: number) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+async function waitForProcessing(id: string) {
+  const deadline = Date.now() + PROCESS_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const item = await dataService.collectible(id);
+    if (item.processingStatus === 'AWAITING_CROP' || item.processingStatus === 'READY') return;
+    if (item.processingStatus === 'FAILED') throw new Error(item.processingError || '图片处理失败，请重新拍摄');
+    await sleep(POLL_INTERVAL_MS);
+  }
+  throw new Error('图片处理超时，请稍后在收藏架查看');
 }
 
 async function submit(sourcePath: string) {
@@ -123,13 +153,6 @@ async function submit(sourcePath: string) {
   try {
     const path = await prepareUpload(sourcePath);
     compressing.value = false;
-    /* Mock 模式没有存储后端（policy.uploadUrl 为空，uploadFile 必失败）：
-       跳过 policy / upload / complete 三步，直接用本地临时图充当缩略图与展示图 */
-    if (USE_MOCK) {
-      const collectible = await dataService.createCollectible({ name: '未命名纸袋', shelfId: await targetShelfId(), thumbnailUrl: path, displayImageUrl: path });
-      uni.redirectTo({ url: nextStepUrl(collectible) });
-      return;
-    }
     const size = await fileSize(path);
     const collectible = await dataService.createCollectible({ name: '未命名纸袋', shelfId: await targetShelfId() });
     const sourceName = path.split('/').pop() || `paper-bag-${Date.now()}.jpg`;
@@ -147,7 +170,9 @@ async function submit(sourcePath: string) {
       method: 'POST',
       data: { assetId: policy.assetId, collectibleId: collectible.id, key: policy.key }
     });
-    uni.redirectTo({ url: nextStepUrl(collectible) });
+    /* 原地等待规范化完成：反馈交给页面状态行「正在处理图片」，不弹 loading 蒙层 */
+    await waitForProcessing(collectible.id);
+    uni.redirectTo({ url: `/package-editor/pages/metadata/index?id=${collectible.id}` });
   } catch (error) {
     compressing.value = false;
     errorMessage.value = error instanceof Error ? error.message : '照片处理失败';
@@ -240,7 +265,7 @@ onLoad(() => {
       <view class="guide-frame" />
       <view v-if="uploading" class="upload-mask">
         <view class="upload-spinner" />
-        <text>{{ compressing ? '正在压缩照片' : progress < 100 ? `正在上传 ${progress}%` : '正在启动自动抠图' }}</text>
+        <text>{{ compressing ? '正在压缩照片' : progress < 100 ? `正在上传 ${progress}%` : '正在处理图片' }}</text>
       </view>
     </view>
 

@@ -243,7 +243,10 @@ export class OfficialBagsService {
     await this.queues.add(
       'official-claim',
       { officialBagId: bag.id, userId, collectibleId },
-      `official-claim:${userId}:${bag.id}`
+      /* jobId 必须带 collectibleId（每次认领唯一）：旧版用 userId+bagId，
+         「标记 → 删除 → 再标记」时旧任务还留在失败保留区，同 id 新任务被
+         BullMQ 去重吞掉 —— 重新认领的收藏永远等不到图片复制，卡在 NORMALIZING */
+      `official-claim:${collectibleId}:${bag.id}`
     );
     return { collectibleId, processingStatus: ProcessingStatus.NORMALIZING as ProcessingStatus };
   }

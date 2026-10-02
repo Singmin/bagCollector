@@ -23,7 +23,7 @@ export class AssetsService {
     });
     const first = (kind: AssetKind) => assets.find((asset) => asset.kind === kind);
     const entries = await Promise.all(
-      [AssetKind.THUMBNAIL, AssetKind.DISPLAY, AssetKind.STANDARD].map(async (kind) => {
+      [AssetKind.THUMBNAIL, AssetKind.DISPLAY, AssetKind.STANDARD, AssetKind.CUTOUT].map(async (kind) => {
         const asset = first(kind);
         return [kind, asset ? await this.cos.signedUrl(asset.objectKey) : undefined] as const;
       })

@@ -14,6 +14,7 @@ import {
 import {
   cleanup,
   closeProcessor,
+  cropImage,
   failProcessing,
   matImage,
   normalizeImage,
@@ -53,6 +54,7 @@ const worker = new Worker(
     const data = job.data as ProcessingJobData;
     try {
       if (job.name === 'normalize') await normalizeImage(data);
+      else if (job.name === 'crop') await cropImage(data);
       else if (job.name === 'matting') await matImage(data);
       else throw new Error(`Unknown image job: ${job.name}`);
     } catch (error) {

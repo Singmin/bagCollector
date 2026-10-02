@@ -1,4 +1,5 @@
-export type ProcessingStatus = 'UPLOADING' | 'NORMALIZING' | 'AWAITING_CROP' | 'MATTING' | 'READY' | 'FAILED';
+/* 与后端 Prisma 枚举一一对应：CROPPING = 裁剪任务进行中，MATTING = 抠图任务进行中 */
+export type ProcessingStatus = 'UPLOADING' | 'NORMALIZING' | 'AWAITING_CROP' | 'CROPPING' | 'MATTING' | 'READY' | 'FAILED';
 export type ShelfTheme = 'SAGE' | 'AMBER' | 'SKY' | 'ROSE' | 'GRAPHITE';
 
 export interface AuthTokens {
@@ -27,6 +28,9 @@ export interface CollectibleSummary {
   updatedAt: string;
   /** 发现页 feed 条目的主人昵称（官方精选时为品牌名）；自己的收藏没有该字段 */
   ownerName?: string;
+  /** 仅 feed / 心愿袋条目返回：当前用户已认领该官方袋子时，值为认领生成的收藏 id。
+      陈列页据此恢复「标记已有」已标记态（再点弹删除确认）——服务端持久真值，刷新不丢 */
+  myCollectibleId?: string;
 }
 
 export interface Collectible extends CollectibleSummary {
@@ -35,6 +39,19 @@ export interface Collectible extends CollectibleSummary {
   processingError?: string;
   displayImageUrl?: string;
   standardImageUrl?: string;
+  /** 抠图结果（透明 PNG）：有值表示已经抠过图，编辑页据此隐藏「自动抠图」按钮 */
+  cutoutImageUrl?: string;
+  /** 已保存的裁剪参数（裁剪页提交后回传；抠图时原样带上，避免把画面重置成全幅） */
+  crop?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    rotation: number;
+    brightness?: number;
+    contrast?: number;
+    saturation?: number;
+  };
 }
 
 export interface CollectiblePage {

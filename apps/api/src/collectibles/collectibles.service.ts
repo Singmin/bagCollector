@@ -1,6 +1,6 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { AssetKind, AssetStatus, JobStatus, JobType, ProcessingStatus, Prisma } from '@prisma/client';
-import type { CropInput } from '@bagcollect/contracts';
+import type { CropInput, MatteInput } from '@bagcollect/contracts';
 import { ApiError } from '../common/api-error.js';
 import { QueueService } from '../common/queue.service.js';
 import { PrismaService } from '../database/prisma.service.js';
@@ -48,6 +48,23 @@ export class CollectiblesService {
       ...(urls.THUMBNAIL ? { thumbnailUrl: urls.THUMBNAIL } : {}),
       ...(urls.DISPLAY ? { displayImageUrl: urls.DISPLAY } : {}),
       ...(urls.STANDARD ? { standardImageUrl: urls.STANDARD } : {}),
+      /* 抠图结果：有值表示已抠过图，编辑页据此隐藏「自动抠图」按钮（裁剪不产出该资产） */
+      ...(urls.CUTOUT ? { cutoutImageUrl: urls.CUTOUT } : {}),
+      /* 已保存的裁剪参数：编辑页「自动抠图」要原样回传，否则会把用户裁好的画面重置成全幅 */
+      ...(collectible.cropX !== null
+        ? {
+            crop: {
+              x: collectible.cropX,
+              y: collectible.cropY ?? 0,
+              width: collectible.cropWidth ?? 1,
+              height: collectible.cropHeight ?? 1,
+              rotation: collectible.cropRotation ?? 0,
+              ...(collectible.cropBrightness !== null ? { brightness: collectible.cropBrightness } : {}),
+              ...(collectible.cropContrast !== null ? { contrast: collectible.cropContrast } : {}),
+              ...(collectible.cropSaturation !== null ? { saturation: collectible.cropSaturation } : {})
+            }
+          }
+        : {}),
       addedAt: collectible.addedAt.toISOString(),
       updatedAt: collectible.updatedAt.toISOString()
     };
@@ -200,22 +217,136 @@ export class CollectiblesService {
     return this.detail(userId, id);
   }
 
-  private async enqueueMatting(userId: string, id: string, crop: CropInput) {
+  /* 只有「空闲」状态才允许再发起一次处理：AWAITING_CROP 是首次，READY / FAILED 可重跑；
+     正在处理中（UPLOADING / NORMALIZING / CROPPING / MATTING）一律拒绝 */
+  private assertIdle(status: ProcessingStatus, conflictMessage: string) {
+    const idle: ProcessingStatus[] = [
+      ProcessingStatus.AWAITING_CROP,
+      ProcessingStatus.READY,
+      ProcessingStatus.FAILED
+    ];
+    if (!idle.includes(status)) throw new ApiError('CONFLICT', conflictMessage, HttpStatus.CONFLICT);
+  }
+
+  /* 重跑（READY / FAILED 之后再提交）递增版本号：产物写到新版本，
+     不然同名对象被覆盖、签名 URL 不变，前端可能还在读旧图 */
+  private nextVersion(collectible: { processingStatus: ProcessingStatus; processingVersion: number }) {
+    return collectible.processingStatus === ProcessingStatus.AWAITING_CROP
+      ? collectible.processingVersion
+      : collectible.processingVersion + 1;
+  }
+
+  /* 成本闸门：抠图按次计费（万象），每张图只允许成功抠一次。
+     判据是「有没有可用的 CUTOUT 资产」，而不是状态 —— 状态会被后续裁剪改写。
+     仅在 READY（上一次已成功跑完）时把闸门拉死；FAILED 允许重试，避免一次网络抖动就废掉整张图 */
+  private async assertNotMatted(userId: string, collectibleId: string, conflictMessage: string) {
+    const cutout = await this.prisma.imageAsset.findFirst({
+      where: {
+        userId,
+        collectibleId,
+        kind: AssetKind.CUTOUT,
+        status: AssetStatus.AVAILABLE
+      },
+      select: { id: true }
+    });
+    if (cutout) throw new ApiError('CONFLICT', conflictMessage, HttpStatus.CONFLICT);
+  }
+
+  private cropFields(crop: Partial<CropInput>) {
+    return {
+      cropX: crop.x ?? 0,
+      cropY: crop.y ?? 0,
+      cropWidth: crop.width ?? 1,
+      cropHeight: crop.height ?? 1,
+      cropRotation: crop.rotation ?? 0,
+      cropBrightness: crop.brightness ?? null,
+      cropContrast: crop.contrast ?? null,
+      cropSaturation: crop.saturation ?? null
+    };
+  }
+
+  /** POST /collectibles/:id/crop —— 裁剪：按裁剪参数重新出图（展示图 / 缩略图）。
+   *  该图已抠过时（rematte）会顺带重新抠图，保持透明图与新展示图对齐；
+   *  此举不消耗每日配额（同一张图只计一次万象扣费，配额在 /matte 入口计），也不会被成本闸门拦截。 */
+  private async enqueueCrop(userId: string, id: string, crop: CropInput) {
+    const collectible = await this.prisma.collectible.findFirst({ where: { id, userId } });
+    if (!collectible) throw new ApiError('NOT_FOUND', '收藏不存在', HttpStatus.NOT_FOUND);
+    this.assertIdle(collectible.processingStatus, '图片尚未准备好裁剪');
+    /* 已抠图的图再次裁剪：必须重新抠图，否则新展示图与旧透明图构图上失配。
+       不拦截、不计配额 —— worker 据 rematte 走「裁剪 + 重新抠图」流水线 */
+    const rematte = await this.hasCutout(userId, id);
+    const version = this.nextVersion(collectible);
+    const idempotencyKey = `crop:${id}:v${version}`;
+    const job = await this.prisma.$transaction(async (transaction) => {
+      await transaction.collectible.update({
+        where: { id },
+        data: {
+          processingStatus: ProcessingStatus.CROPPING,
+          processingError: null,
+          processingVersion: version,
+          ...this.cropFields(crop)
+        }
+      });
+      return transaction.processingJob.upsert({
+        where: { idempotencyKey },
+        create: { userId, collectibleId: id, type: JobType.CROP, status: JobStatus.QUEUED, idempotencyKey },
+        update: { status: JobStatus.QUEUED, errorMessage: null }
+      });
+    });
+    await this.queues.add('crop', { processingJobId: job.id, collectibleId: id, userId, version, rematte }, idempotencyKey);
+    return { jobId: job.id, processingStatus: ProcessingStatus.CROPPING };
+  }
+
+  /** 该图是否已有可用的抠图结果（CUTOUT 资产）。抠图按次计费，凭此判定「是否已抠过」 */
+  private async hasCutout(userId: string, collectibleId: string) {
+    const cutout = await this.prisma.imageAsset.findFirst({
+      where: { userId, collectibleId, kind: AssetKind.CUTOUT, status: AssetStatus.AVAILABLE },
+      select: { id: true }
+    });
+    return !!cutout;
+  }
+
+  /** POST /collectibles/:id/matte —— 抠图：沿用已保存的裁剪参数（从未裁剪过则全幅），
+      override 可只覆盖其中几个字段。配额按次计，与裁剪无关 */
+  private async enqueueMatting(userId: string, id: string, override: MatteInput) {
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
     const [collectible, user, todayJobs] = await Promise.all([
       this.prisma.collectible.findFirst({ where: { id, userId } }),
       this.prisma.user.findUnique({ where: { id: userId } }),
-      this.prisma.processingJob.count({ where: { userId, type: JobType.MATTING, createdAt: { gte: startOfDay } } })
+      /* 配额只计「已成功 + 进行中」的抠图，失败的不计入——
+         否则一次万象抖动就会吃掉当日名额、还挡住重试（P1 修复）。
+         同一张图不会并发两次（assertIdle 拦 MATTING），故 QUEUED/RUNNING 不会重复计数 */
+      this.prisma.processingJob.count({
+        where: {
+          userId,
+          type: JobType.MATTING,
+          createdAt: { gte: startOfDay },
+          status: { in: [JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.SUCCEEDED] }
+        }
+      })
     ]);
     if (!collectible || !user) throw new ApiError('NOT_FOUND', '收藏不存在', HttpStatus.NOT_FOUND);
-    if (collectible.processingStatus !== ProcessingStatus.AWAITING_CROP) {
-      throw new ApiError('CONFLICT', '图片尚未准备好裁剪', HttpStatus.CONFLICT);
+    this.assertIdle(collectible.processingStatus, '图片尚未准备好抠图');
+    /* 每张图只允许抠一次（万象按次计费）：已成功抠过就直接拒绝，不再重复扣费 */
+    if (collectible.processingStatus === ProcessingStatus.READY) {
+      await this.assertNotMatted(userId, id, '这张图片已经抠过图了，每张图片仅支持抠图一次');
     }
     if (todayJobs >= user.dailyMattingQuota) {
       throw new ApiError('QUOTA_EXCEEDED', '今日自动抠图次数已用完', HttpStatus.TOO_MANY_REQUESTS);
     }
-    const version = collectible.processingVersion;
+    const version = this.nextVersion(collectible);
+    /* 抠图不能凭空改变画面：优先用请求里给的字段，其次用上次保存的裁剪参数，都没有才按全幅 */
+    const crop = {
+      x: override.x ?? collectible.cropX ?? 0,
+      y: override.y ?? collectible.cropY ?? 0,
+      width: override.width ?? collectible.cropWidth ?? 1,
+      height: override.height ?? collectible.cropHeight ?? 1,
+      rotation: override.rotation ?? collectible.cropRotation ?? 0,
+      brightness: override.brightness ?? collectible.cropBrightness ?? undefined,
+      contrast: override.contrast ?? collectible.cropContrast ?? undefined,
+      saturation: override.saturation ?? collectible.cropSaturation ?? undefined
+    };
     const idempotencyKey = `matting:${id}:v${version}`;
     const job = await this.prisma.$transaction(async (transaction) => {
       await transaction.collectible.update({
@@ -224,11 +355,7 @@ export class CollectiblesService {
           processingStatus: ProcessingStatus.MATTING,
           processingError: null,
           processingVersion: version,
-          cropX: crop.x,
-          cropY: crop.y,
-          cropWidth: crop.width,
-          cropHeight: crop.height,
-          cropRotation: crop.rotation
+          ...this.cropFields(crop)
         }
       });
       return transaction.processingJob.upsert({
@@ -242,7 +369,11 @@ export class CollectiblesService {
   }
 
   crop(userId: string, id: string, crop: CropInput) {
-    return this.enqueueMatting(userId, id, crop);
+    return this.enqueueCrop(userId, id, crop);
+  }
+
+  matte(userId: string, id: string, override: MatteInput) {
+    return this.enqueueMatting(userId, id, override);
   }
 
   async remove(userId: string, id: string) {

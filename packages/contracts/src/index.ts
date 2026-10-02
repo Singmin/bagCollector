@@ -17,24 +17,47 @@ export type ProcessingStatus = (typeof processingStatuses)[number];
 export type OfficialBagStatus = (typeof officialBagStatuses)[number];
 export type OfficialProcessStatus = (typeof officialProcessStatuses)[number];
 
-export const cropSchema = z
-  .object({
-    x: z.number().min(0).max(1),
-    y: z.number().min(0).max(1),
-    width: z.number().min(0.05).max(1),
-    height: z.number().min(0.05).max(1),
-    rotation: z.union([z.literal(0), z.literal(90), z.literal(180), z.literal(270)])
-  })
-  .superRefine((crop, context) => {
-    if (crop.x + crop.width > 1.000001) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ['width'], message: '裁剪区域超出图片右侧' });
-    }
-    if (crop.y + crop.height > 1.000001) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ['height'], message: '裁剪区域超出图片底部' });
-    }
-  });
+/* 裁剪几何 + 调色：只描述「怎么裁」，不含「要不要抠图」——
+   抠图是独立端点（POST /collectibles/:id/matte），两个动作互不夹带 */
+const cropGeometry = z.object({
+  x: z.number().min(0).max(1),
+  y: z.number().min(0).max(1),
+  width: z.number().min(0.05).max(1),
+  height: z.number().min(0.05).max(1),
+  /* P1：自由角度矫正 —— 不再限定 90° 步进，允许任意角度（-180~360） */
+  rotation: z.number().min(-180).max(360),
+  /* P2：调色（可选，缺省 1 = 不调整）；预览在小程序端用 CSS filter，落盘由 worker 的 sharp 处理 */
+  brightness: z.number().min(0.5).max(2).optional(),
+  contrast: z.number().min(0.5).max(2).optional(),
+  saturation: z.number().min(0).max(3).optional()
+});
+
+const inBounds = (crop: { x: number; y: number; width: number; height: number }, context: z.RefinementCtx) => {
+  if (crop.x + crop.width > 1.000001) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['width'], message: '裁剪区域超出图片右侧' });
+  }
+  if (crop.y + crop.height > 1.000001) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['height'], message: '裁剪区域超出图片底部' });
+  }
+};
+
+/** POST /collectibles/:id/crop —— 只按裁剪参数重新出图（不做抠图） */
+export const cropSchema = cropGeometry.superRefine(inBounds);
+
+/** POST /collectibles/:id/matte —— 抠图。参数全部可省：
+    省略时沿用上次保存的裁剪参数，从来没有裁剪记录则按全幅处理；
+    也允许只覆盖其中几个字段（例如只调旋转再抠一次） */
+export const matteSchema = cropGeometry.partial().superRefine((crop, context) => {
+  if (crop.x !== undefined && crop.width !== undefined && crop.x + crop.width > 1.000001) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['width'], message: '裁剪区域超出图片右侧' });
+  }
+  if (crop.y !== undefined && crop.height !== undefined && crop.y + crop.height > 1.000001) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['height'], message: '裁剪区域超出图片底部' });
+  }
+});
 
 export type CropInput = z.infer<typeof cropSchema>;
+export type MatteInput = z.infer<typeof matteSchema>;
 
 export const createShelfSchema = z.object({
   name: z.string().trim().min(1).max(30),
@@ -145,6 +168,9 @@ export interface CollectibleSummaryDto {
   updatedAt: string;
   /** 发现页 feed / 心愿袋条目的主人昵称（官方精选时为品牌名）；用户自己的收藏没有该字段。 */
   ownerName?: string;
+  /** 仅 feed / 心愿袋条目返回：当前用户已认领该官方袋子时，值为认领生成的收藏 id。
+      小程序据此恢复「标记已有」的已标记状态（含撤回标记所需的删除目标），不再依赖页面内存。 */
+  myCollectibleId?: string;
 }
 
 export interface CollectiblePageDto {

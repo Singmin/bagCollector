@@ -14,13 +14,33 @@ const loadError = ref('');
 /* 发现页数据源 = 官方精选 feed（别人的纸袋，带 ownerName 与完整标签/备注） */
 const items = ref<Collectible[]>([]);
 const totalCount = ref(0);
+/* 精选上新：一次取全（后端上限已放宽到 1000，官方袋子为后台人工录入，量级有限）。
+   超过 1000 条时游标翻页仍会继续追加剩余（loadMore / scrolltolower 保留作兜底）。
+   翻页只追加不清空，避免主展位跳回第一张。后端 feed 支持 cursor 游标翻页。 */
+const FEED_PAGE_SIZE = 1000;
+const nextCursor = ref<string | null>(null);
+const loadingMore = ref(false);
+const hasMore = computed(() => Boolean(nextCursor.value));
 const thumbnailUrls = ref<Record<string, string>>({});
 const failedThumbnails = ref<Record<string, boolean>>({});
 /* 心愿袋：已在心愿袋的纸袋 id 集合 */
 const wishlistIds = ref<Set<string>>(new Set());
-/* 已「标记已有」的 feed 条目 → 创建的收藏 id（本页内存态）：标记与心愿互斥；
-   再次点击「标记已有」时凭收藏 id 弹删除确认，可撤回标记 */
-const markedMap = ref<Map<string, string>>(new Map());
+/* 已「标记已有」的 feed 条目 → 创建的收藏 id：标记与心愿互斥；
+   再次点击「标记已有」时凭收藏 id 弹删除确认，可撤回标记。
+   用普通对象而非 Map —— 小程序端对象属性的响应式最可靠，模板里可直接取用判断图标态 */
+const markedMap = ref<Record<string, string>>({});
+/* 以服务端为准恢复标记状态：feed 条目带 myCollectibleId（我认领过 → 收藏 id）。
+   之前是纯页面内存态，重进页面/重编译即丢 —— 再点「标记已有」会重新走认领，
+   被后端 409「你已经拥有过这个袋子」挡下，用户看起来就是「点了出问题」。
+   反向同样处理：服务端没有认领记录的（已撤回）把本地残留也清掉。 */
+function syncClaimState(list: Collectible[]) {
+  const next = { ...markedMap.value };
+  for (const item of list) {
+    if (item.myCollectibleId) next[item.id] = item.myCollectibleId;
+    else delete next[item.id];
+  }
+  markedMap.value = next;
+}
 
 /* 自定义导航（与全部收藏页同一套对齐方式）：
    标题顶部 = 胶囊按钮顶部；设置钮在头部文档流内，与标题块垂直居中。 */
@@ -78,6 +98,35 @@ const heroFacts = computed(() => {
 // 轮心 = 杆心 44.02px = 80rpx，咬口 7.5px = 14rpx，卡宽 106px = 193rpx，重叠 12px = 22rpx。
 const RACK_DY = [0, 13, 25, 13] as const;
 
+/* ── 挂袋区虚拟列表 ──
+   卡宽 --rack-card-w 160rpx、相邻重叠 --rack-overlap 20rpx → 水平步进恒为 140rpx，
+   于是第 i 张的 left 可精确推算为 i × 140rpx，具备做虚拟列表的前提。
+   只渲染视口附近若干张（前后各留 VIRTUAL_BUFFER 张缓冲），两侧用占位撑起总宽度，
+   避免一次渲染上百个「悬挂动画 + 图片」的卡片节点拖垮首屏与滚动帧率。
+   ⚠ stepPx 依赖屏幕宽度，必须在 setup 期间用 getSystemInfoSync 取准。 */
+const CARD_STEP_RPX = 140; // --rack-card-w(160) − --rack-overlap(20)
+const VIRTUAL_BUFFER = 3;
+const railWindowWidth = uni.getSystemInfoSync().windowWidth || 375;
+const stepPx = (CARD_STEP_RPX * railWindowWidth) / 750;
+const visibleCount = Math.ceil(railWindowWidth / stepPx) + 2;
+const visibleStart = ref(0);
+const visibleEnd = ref(visibleCount + VIRTUAL_BUFFER);
+
+function updateVisibleRange(scrollLeft: number) {
+  const start = Math.max(0, Math.floor(scrollLeft / stepPx) - VIRTUAL_BUFFER);
+  visibleStart.value = start;
+  visibleEnd.value = Math.min(items.value.length, start + visibleCount + VIRTUAL_BUFFER * 2);
+}
+
+/* 渲染窗口内的卡片，并携带原始 index —— 悬挂错落（RACK_DY）与轻晃动画延迟都按原索引取，
+   若改用窗口内的偏移索引，窗口滑动时整排的错落节奏会跟着乱跳。 */
+const visibleSlots = computed(() =>
+  items.value.slice(visibleStart.value, visibleEnd.value).map((item, offset) => ({ item, index: visibleStart.value + offset }))
+);
+/* 两侧占位宽度：撑住 scroll-view 的总宽，保证滚动条长度与位置和不做虚拟列表时一致 */
+const leadSpace = computed(() => visibleStart.value * CARD_STEP_RPX);
+const tailSpace = computed(() => Math.max(0, items.value.length - visibleEnd.value) * CARD_STEP_RPX);
+
 function shortDate(value: string) { return formattedDate(value).slice(5).replace('/', '.'); }
 function isHero(item: CollectibleSummary) { return heroItem.value?.id === item.id; }
 function openLibrary() { uni.switchTab({ url: '/pages/library/index' }); }
@@ -109,13 +158,16 @@ function load() {
   refreshPromise = (async () => {
     try {
       /* feed = 官方精选纸袋上新；心愿袋状态一并拉取（标记/取消心愿后要保持同步） */
-      const [page, wish] = await Promise.all([dataService.feed('limit=9'), dataService.wishlist()]);
+      const [page, wish] = await Promise.all([dataService.feed(`limit=${FEED_PAGE_SIZE}`), dataService.wishlist()]);
       assertRenderable(page.items);
-      /* feed 接口声明返回摘要，但 mock 与真实后端都带完整字段（见下方 selectHero 注释），
+      /* feed 接口声明返回摘要，但后端实际带完整字段（见下方 selectHero 注释），
          这里统一按完整条目使用 —— 与旧的逐处 as 转换等价，只收敛到一个出口。 */
       const feedItems = page.items as unknown as Collectible[];
       items.value = feedItems;
       totalCount.value = page.totalCount;
+      nextCursor.value = page.nextCursor;
+      syncClaimState(feedItems);
+      updateVisibleRange(0); // 首屏数据到位后立即建立渲染窗口
       initialized.value = true;
       wishlistIds.value = new Set(wish.map((item) => item.id));
       hydrateThumbnails(feedItems);
@@ -134,6 +186,32 @@ function load() {
     }
   })().finally(() => { refreshPromise = undefined; });
   return refreshPromise;
+}
+
+/* 滑到挂袋区末尾自动加载下一页：只追加到列表尾部，不动主展位（避免翻页时主卡跳回第一张）。
+   cursor 来自上一页响应，为空即已到末页；连续触发由 loadingMore 拦住，失败只提示不清空列表。 */
+async function loadMore() {
+  if (loadingMore.value || !nextCursor.value) return;
+  loadingMore.value = true;
+  try {
+    const page = await dataService.feed(`limit=${FEED_PAGE_SIZE}&cursor=${encodeURIComponent(nextCursor.value)}`);
+    assertRenderable(page.items);
+    const appended = page.items as unknown as Collectible[];
+    /* 去重兜底：并发刷新时后端可能返回列表里已有的条目 */
+    const known = new Set(items.value.map((item) => item.id));
+    const fresh = appended.filter((item) => !known.has(item.id));
+    if (fresh.length) {
+      items.value = [...items.value, ...fresh];
+      hydrateThumbnails(fresh);
+      syncClaimState(fresh);
+    }
+    nextCursor.value = page.nextCursor;
+    updateVisibleRange(railLastLeft); // 追加后按当前滚动位置重算窗口
+  } catch (error) {
+    uni.showToast({ title: error instanceof Error ? error.message : '加载更多失败', icon: 'none' });
+  } finally {
+    loadingMore.value = false;
+  }
 }
 
 /* 日期与「入库时长」已抽到 services/format.ts（formattedDate / daysAgoText），
@@ -171,7 +249,7 @@ function isWished(id: string) { return wishlistIds.value.has(id); }
 
 async function toggleWish(item: Collectible) {
   /* 互斥：已标记已有的纸袋不能再进心愿袋（文案压到 9 字，微信 toast 一行放得下） */
-  if (markedMap.value.has(item.id)) return void uni.showToast({ title: '已标记，无需心愿袋', icon: 'none' });
+  if (markedMap.value[item.id]) return void uni.showToast({ title: '已标记，无需心愿袋', icon: 'none' });
   if (wishToggling) return;
   wishToggling = true;
   try {
@@ -200,8 +278,8 @@ async function toggleWish(item: Collectible) {
 const markShow = ref(false);
 const markItem = ref<Collectible | null>(null);
 function openMark(item: Collectible) {
-  /* 已标记 → 弹删除确认，可撤回标记 */
-  const createdId = markedMap.value.get(item.id);
+  /* 已标记 → 弹删除确认，可撤回标记（撤回后靶心图标同步回到未标记态） */
+  const createdId = markedMap.value[item.id];
   if (createdId) {
     return void uni.showModal({
       title: '删除这条收藏？',
@@ -212,7 +290,7 @@ function openMark(item: Collectible) {
         if (!result.confirm) return;
         try {
           await dataService.removeCollectible(createdId);
-          markedMap.value.delete(item.id);
+          delete markedMap.value[item.id];
           uni.showToast({ title: '已从收藏架移除', icon: 'none' });
         } catch (error) {
           uni.showToast({ title: error instanceof Error ? error.message : '移除失败', icon: 'none' });
@@ -228,7 +306,7 @@ function closeMark() {
 }
 function onMarkSaved(source: Collectible, createdId: string) {
   /* 组件已落库并（如在心愿袋）自动移出；这里同步本地互斥与心愿状态 */
-  markedMap.value.set(source.id, createdId);
+  markedMap.value[source.id] = createdId;
   if (wishlistIds.value.has(source.id)) {
     const next = new Set(wishlistIds.value);
     next.delete(source.id);
@@ -255,6 +333,8 @@ let railReleaseTimer: ReturnType<typeof setTimeout> | undefined;
 
 function onRailScroll(event: Event) {
   const scrollLeft = (event as unknown as { detail?: { scrollLeft?: number } }).detail?.scrollLeft ?? 0;
+  /* 虚拟列表窗口要每帧跟随（必须放在下面的 80ms 节流之前），否则快速滑动时会露出空白缺口 */
+  updateVisibleRange(scrollLeft);
   const now = Date.now();
   const elapsed = now - railLastAt;
   if (railLastAt && elapsed < 80) return;
@@ -302,13 +382,11 @@ onHide(() => {
 /* 分享：转发给朋友 / 分享到朋友圈（封面用袋子图，5:4 内自动裁切） */
 onShareAppMessage(() => ({
   title: '袋袋集 · 收集每一个纸袋的故事',
-  path: '/pages/showcase/index',
-  imageUrl: '/static/figma/bags/bag-04.png'
+  path: '/pages/showcase/index'
 }));
 onShareTimeline(() => ({
   title: '袋袋集 · 收集每一个纸袋的故事',
-  query: '',
-  imageUrl: '/static/figma/bags/bag-04.png'
+  query: ''
 }));
 /* 顶部标题区固定后，下拉刷新迁移到内容区 scroll-view */
 const refresherTriggered = ref(false);
@@ -358,7 +436,7 @@ async function onRefresherRefresh() {
             <image class="hero-quick__icon" :src="isWished(heroItem.id) ? '/static/figma/heart-active.svg' : '/static/figma/heart.svg'" mode="aspectFit" />
           </view>
           <view class="hero-quick__btn" hover-class="is-pressed" :hover-stay-time="80" @tap.stop="openMark(heroItem)">
-            <image class="hero-quick__icon" src="/static/figma/target.svg" mode="aspectFit" />
+            <image class="hero-quick__icon" :src="markedMap[heroItem.id] ? '/static/figma/target-marked.svg' : '/static/figma/target.svg'" mode="aspectFit" />
           </view>
         </view>
 
@@ -394,33 +472,39 @@ async function onRefresherRefresh() {
           <view class="glass-glow" />
           <view class="corner-glow" />
 
-          <view class="back-inner">
-            <text v-if="heroNo" class="back-eyebrow">{{ heroNo }}</text>
-            <text class="back-name">{{ heroItem.name }}</text>
-            <text class="back-brand">{{ heroItem.ownerName ?? '官方精选' }}</text>
-            <view class="back-divider" />
-            <view class="back-facts">
-              <view v-for="row in heroFacts" :key="row.label" class="back-facts__row">
-                <text class="back-facts__key">{{ row.label }}</text>
-                <text class="back-facts__value">{{ row.value }}</text>
+          <!-- 背面内容超出卡片高度时，在卡内上下滚动。
+               ⚠ enhanced 必须开：show-scrollbar 是「增强特性属性」，只在 enhanced 为 true 时生效，
+               只写 show-scrollbar="false" 卡片右侧仍会冒出一条竖向滚动条（与详情页 detail-scroll 同坑）。
+               不加 @tap.stop —— 点击背面（非按钮区）仍需冒泡到 flip-face--back 翻回正面 -->
+          <scroll-view class="back-scroll" scroll-y enhanced :show-scrollbar="false">
+            <view class="back-inner">
+              <text v-if="heroNo" class="back-eyebrow">{{ heroNo }}</text>
+              <text class="back-name">{{ heroItem.name }}</text>
+              <text class="back-brand">{{ heroItem.ownerName ?? '官方精选' }}</text>
+              <view class="back-divider" />
+              <view class="back-facts">
+                <view v-for="row in heroFacts" :key="row.label" class="back-facts__row">
+                  <text class="back-facts__key">{{ row.label }}</text>
+                  <text class="back-facts__value">{{ row.value }}</text>
+                </view>
+              </view>
+              <view v-if="heroTags.length" class="back-tags">
+                <text v-for="tag in heroTags" :key="tag"># {{ tag }}</text>
+              </view>
+              <text v-if="heroNote" class="back-note">{{ heroNote }}</text>
+              <!-- 发现页操作：加入/取消心愿袋 + 标记已有（收进我的收藏并核对信息） -->
+              <view class="back-actions">
+                <button class="back-action" :class="{ 'is-on': isWished(heroItem.id) }" @tap.stop="toggleWish(heroItem)">
+                  <image class="back-action__icon" :src="isWished(heroItem.id) ? '/static/figma/heart-active.svg' : '/static/figma/heart.svg'" mode="aspectFit" />
+                  <text>{{ isWished(heroItem.id) ? '已在心愿袋' : '加入心愿袋' }}</text>
+                </button>
+                <button class="back-action" :class="{ 'back-action--primary': !markedMap[heroItem.id] }" @tap.stop="openMark(heroItem)">
+                  <image class="back-action__icon" :src="markedMap[heroItem.id] ? '/static/figma/target-marked.svg' : '/static/figma/target-white.svg'" mode="aspectFit" />
+                  <text>{{ markedMap[heroItem.id] ? '已拥有' : '标记已有' }}</text>
+                </button>
               </view>
             </view>
-            <view v-if="heroTags.length" class="back-tags">
-              <text v-for="tag in heroTags" :key="tag"># {{ tag }}</text>
-            </view>
-            <text v-if="heroNote" class="back-note">{{ heroNote }}</text>
-            <!-- 发现页操作：加入/取消心愿袋 + 标记已有（收进我的收藏并核对信息） -->
-            <view class="back-actions">
-              <button class="back-action" :class="{ 'is-on': isWished(heroItem.id) }" @tap.stop="toggleWish(heroItem)">
-                <image class="back-action__icon" :src="isWished(heroItem.id) ? '/static/figma/heart-active.svg' : '/static/figma/heart.svg'" mode="aspectFit" />
-                <text>{{ isWished(heroItem.id) ? '已在心愿袋' : '加入心愿袋' }}</text>
-              </button>
-              <button class="back-action back-action--primary" @tap.stop="openMark(heroItem)">
-                <image class="back-action__icon" src="/static/figma/target-white.svg" mode="aspectFit" />
-                <text>标记已有</text>
-              </button>
-            </view>
-          </view>
+          </scroll-view>
         </view>
       </view>
 
@@ -442,7 +526,8 @@ async function onRefresherRefresh() {
         <text class="stage-count">今日上新 · {{ todayCount }} 件</text>
         <button class="recent-all" @tap="openLibrary">我的收藏架 <image class="recent-all-arrow" src="/static/figma/arrow-right.svg" mode="aspectFit" /></button>
       </view>
-      <scroll-view class="recent-scroll" scroll-x :show-scrollbar="false" @scroll="onRailScroll">
+      <!-- 滑到最右端自动加载下一页（游标翻页，只追加不清空） -->
+      <scroll-view class="recent-scroll" scroll-x :show-scrollbar="false" @scroll="onRailScroll" @scrolltolower="loadMore">
         <view class="recent-scene">
           <!-- 亚克力展示杆：半透杆身 + 两端银钢夹块 + 外伸螺纹杆 + 朱红圆球头 -->
           <view class="rack-cable" aria-hidden="true">
@@ -455,23 +540,25 @@ async function onRefresherRefresh() {
             <view class="rack-knob rack-knob--r" />
           </view>
           <view class="recent-row">
+            <!-- 虚拟列表左占位：撑出窗口之前那些卡片的宽度，保证滚动位置与总长不变 -->
+            <view v-if="leadSpace" class="rail-spacer" :style="{ width: `${leadSpace}rpx` }" />
             <button
-              v-for="(item, index) in items"
-              :key="item.id"
+              v-for="slot in visibleSlots"
+              :key="slot.item.id"
               class="recent-item"
-              :class="{ 'is-active': isHero(item) }"
-              @tap="pickItem(item)"
+              :class="{ 'is-active': isHero(slot.item) }"
+              @tap="pickItem(slot.item)"
             >
               <view
                 class="rail-hang"
-                :class="[index % 2 === 0 ? 'hang-tilt-right' : 'hang-tilt-left', kickedId === item.id ? 'is-kicking' : '']"
-                :style="{ animationDelay: `${(index % 4) * -1.3}s, 0s` }"
+                :class="[slot.index % 2 === 0 ? 'hang-tilt-right' : 'hang-tilt-left', kickedId === slot.item.id ? 'is-kicking' : '']"
+                :style="{ animationDelay: `${(slot.index % 4) * -1.3}s, 0s` }"
               >
                 <!-- 拖动这一排时的滞后摆动挂在这一层，与上层的轻晃 / 轻点摆动互不干扰 -->
                 <view
                   class="rail-swing"
                   :class="{ 'is-releasing': railReleasing }"
-                  :style="{ transform: `rotate(${railTilt}deg)`, '--dy': `${RACK_DY[index % RACK_DY.length]}rpx` }"
+                  :style="{ transform: `rotate(${railTilt}deg)`, '--dy': `${RACK_DY[slot.index % RACK_DY.length]}rpx` }"
                 >
                   <!-- 滑环：轮心压杆心（轮心 = 旋转轴），吊线从轮心垂到夹具顶 -->
                   <view class="rack-clip">
@@ -491,34 +578,39 @@ async function onRefresherRefresh() {
                     <view class="rack-screw rack-screw--br" />
                     <view class="rack-photo">
                       <image
-                        v-if="thumbnailUrls[item.id] && !failedThumbnails[item.id]"
-                        :src="thumbnailUrls[item.id]"
+                        v-if="thumbnailUrls[slot.item.id] && !failedThumbnails[slot.item.id]"
+                        :src="thumbnailUrls[slot.item.id]"
                         mode="aspectFit"
                         lazy-load
-                        @error="failedThumbnails[item.id] = true"
+                        @error="failedThumbnails[slot.item.id] = true"
                       />
                       <view v-else class="recent-placeholder" />
                     </view>
-                    <view v-if="isTodayNew(item)" class="rack-new">New!</view>
+                    <view v-if="isTodayNew(slot.item)" class="rack-new">New!</view>
                     <!-- 心愿袋按钮：点按加入/取消，不影响轻点送主卡位 -->
                     <view
                       class="card-wish"
-                      :class="{ 'is-on': isWished(item.id) }"
+                      :class="{ 'is-on': isWished(slot.item.id) }"
                       hover-class="is-pressed"
                       :hover-stay-time="80"
-                      @tap.stop="toggleWish(item)"
+                      @tap.stop="toggleWish(slot.item)"
                     >♥</view>
                   </view>
                   <view class="rail-meta">
-                    <text class="rail-name">{{ item.name }}</text>
-                    <text class="rail-info">{{ item.ownerName ?? '官方精选' }} · {{ shortDate(item.addedAt) }}</text>
+                    <text class="rail-name">{{ slot.item.name }}</text>
+                    <text class="rail-info">{{ slot.item.ownerName ?? '官方精选' }} · {{ shortDate(slot.item.addedAt) }}</text>
                   </view>
                 </view>
               </view>
             </button>
+            <!-- 虚拟列表右占位：撑出窗口之后剩余卡片的宽度 -->
+            <view v-if="tailSpace" class="rail-spacer" :style="{ width: `${tailSpace}rpx` }" />
           </view>
         </view>
       </scroll-view>
+      <!-- 翻页状态：只在加载中 / 翻过页且已到底时出现，单页不打扰 -->
+      <text v-if="loadingMore" class="rail-status">正在加载更多…</text>
+      <text v-else-if="!hasMore && items.length > FEED_PAGE_SIZE" class="rail-status">已经到底啦 · 共 {{ items.length }} 件</text>
       <text class="rack-hint">↤ 左右滑动 · 轻点在上方查看 ↦</text>
     </view>
       </view>
@@ -646,7 +738,11 @@ async function onRefresherRefresh() {
    name 19px；brand 11px；divider 11px；facts gap 6px、dt 9.5px、dd 10.5px；
    tags gap 5px、9.5px、padding 4px 9px；note 10px、padding 8px 10px。
    字号按 1px=2rpx（375 屏基准，见正面说明）── */
-.back-inner { position: relative; z-index: 3; height: 100%; display: flex; flex-direction: column; padding: 29rpx 33rpx 25rpx; overflow: hidden; }
+/* 背面滚动区：撑满卡片，内容超高时在卡内上下滚（滚动条已由 enhanced + show-scrollbar 关闭） */
+.back-scroll { position: relative; z-index: 3; height: 100%; }
+/* 原 height:100% + overflow:hidden 会把超高内容直接裁掉且滚不动；
+   改为 min-height:100%（内容少时仍撑满，观感不变）+ 自然高度，超出部分交给外层 scroll-view */
+.back-inner { display: flex; flex-direction: column; min-height: 100%; padding: 29rpx 33rpx 25rpx; }
 .back-eyebrow { color: #77736d; font-size: 20rpx; font-weight: 700; line-height: 1.2; letter-spacing: 3rpx; }
 /* 背面字段与正面对齐：名称 19px/700 同 .front-caption__title，
    品牌行 24rpx #8d877c 同 .front-caption__sub（2026-09-29 用户要求两面对齐） */
@@ -711,6 +807,9 @@ async function onRefresherRefresh() {
 /* 轻叠 -12px（后压前）；--lift 给选中上提 4px=7rpx */
 .recent-item { --lift: 0rpx; width: var(--rack-card-w); flex: 0 0 var(--rack-card-w); margin: 0; padding: 0; overflow: visible; background: transparent; text-align: center; }
 .recent-item + .recent-item { margin-left: calc(-1 * var(--rack-overlap)); }
+/* 虚拟列表占位：只撑宽度、不占高度（1rpx 不影响 inline-flex 行的垂直排布），
+   宽度由行内样式按「窗口外卡片数 × 140rpx」给出，滚动总长与不做虚拟列表时完全一致 */
+.rail-spacer { flex: 0 0 auto; height: 1rpx; }
 .recent-item.is-active { --lift: 7rpx; z-index: 3; }
 .rail-hang { position: relative; transform-origin: 50% calc(-1 * var(--hang-origin)); }
 /* ── 拖动这一排时的滞后摆动层 ──
@@ -854,6 +953,8 @@ async function onRefresherRefresh() {
 .recent-item.is-active .rail-name { color: #8a5a10; }
 /* 与大卡片「轻点翻面 · 查看详情」（.flip-hint）字号/颜色/字距完全一致 */
 .rack-hint { display: block; padding: 2rpx 36rpx 0; color: #c0bab1; font-size: 20rpx; line-height: 1.2; letter-spacing: .5rpx; text-align: center; }
+/* 挂袋区翻页状态（加载中 / 已到底）：与 .rack-hint 同版式，颜色略深以示区分 */
+.rail-status { display: block; padding: 12rpx 36rpx 0; color: #a8a49d; font-size: 20rpx; line-height: 1.2; letter-spacing: .5rpx; text-align: center; }
 
 /* ── 发现页：心愿袋按钮 / 主卡操作区（标记已有半窗壳层复用 styles/edit-form.css）── */
 /* 挂卡心愿按钮：右上角小圆钮，空心灰 → 实心红（已在心愿袋） */

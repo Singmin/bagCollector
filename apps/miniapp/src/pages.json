@@ -1,14 +1,14 @@
 {
   "pages": [
-    { "path": "pages/showcase/index", "style": { "navigationStyle": "custom", "enablePullDownRefresh": true } },
-    { "path": "pages/library/index", "style": { "navigationStyle": "custom", "enablePullDownRefresh": true, "onReachBottomDistance": 240 } }
+    { "path": "pages/showcase/index", "style": { "navigationStyle": "custom", "disableScroll": true } },
+    { "path": "pages/library/index", "style": { "navigationStyle": "custom", "disableScroll": true, "onReachBottomDistance": 240 } }
   ],
   "subPackages": [
     {
       "root": "package-editor",
       "pages": [
         { "path": "pages/add/index", "style": { "navigationStyle": "custom", "disableScroll": true } },
-        { "path": "pages/crop/index", "style": { "disableScroll": true } },
+        { "path": "pages/crop/index", "style": { "navigationStyle": "custom", "disableScroll": true } },
         { "path": "pages/processing/index", "style": { "navigationBarTitleText": "自动抠图" } },
         { "path": "pages/metadata/index", "style": { "navigationStyle": "custom" } }
       ]

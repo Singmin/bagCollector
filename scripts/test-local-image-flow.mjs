@@ -82,9 +82,12 @@ try {
   if (!standard.ok || !(standard.headers.get('content-type') || '').startsWith('image/')) {
     throw new Error(`Standard image URL failed: ${standard.status}`);
   }
+  // /crop 只裁剪（不调万象），/matte 沿用上面保存的全幅裁剪参数做抠图 —— 两条流水线分开
   await request(`/collectibles/${collectibleId}/crop`, {
     method: 'POST', body: JSON.stringify({ x: 0, y: 0, width: 1, height: 1, rotation: 0 })
   });
+  await waitForStatus('READY');
+  await request(`/collectibles/${collectibleId}/matte`, { method: 'POST', body: '{}' });
   const ready = await waitForStatus('READY');
   const display = await fetch(ready.displayImageUrl);
   if (!display.ok || !(display.headers.get('content-type') || '').startsWith('image/')) {
