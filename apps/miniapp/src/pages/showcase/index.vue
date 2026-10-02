@@ -86,6 +86,35 @@ const heroFacts = computed(() => {
 // 轮心 = 杆心 44.02px = 80rpx，咬口 7.5px = 14rpx，卡宽 106px = 193rpx，重叠 12px = 22rpx。
 const RACK_DY = [0, 13, 25, 13] as const;
 
+/* ── 挂袋区虚拟列表 ──
+   卡宽 --rack-card-w 160rpx、相邻重叠 --rack-overlap 20rpx → 水平步进恒为 140rpx，
+   于是第 i 张的 left 可精确推算为 i × 140rpx，具备做虚拟列表的前提。
+   只渲染视口附近若干张（前后各留 VIRTUAL_BUFFER 张缓冲），两侧用占位撑起总宽度，
+   避免一次渲染上百个「悬挂动画 + 图片」的卡片节点拖垮首屏与滚动帧率。
+   ⚠ stepPx 依赖屏幕宽度，必须在 setup 期间用 getSystemInfoSync 取准。 */
+const CARD_STEP_RPX = 140; // --rack-card-w(160) − --rack-overlap(20)
+const VIRTUAL_BUFFER = 3;
+const railWindowWidth = uni.getSystemInfoSync().windowWidth || 375;
+const stepPx = (CARD_STEP_RPX * railWindowWidth) / 750;
+const visibleCount = Math.ceil(railWindowWidth / stepPx) + 2;
+const visibleStart = ref(0);
+const visibleEnd = ref(visibleCount + VIRTUAL_BUFFER);
+
+function updateVisibleRange(scrollLeft: number) {
+  const start = Math.max(0, Math.floor(scrollLeft / stepPx) - VIRTUAL_BUFFER);
+  visibleStart.value = start;
+  visibleEnd.value = Math.min(items.value.length, start + visibleCount + VIRTUAL_BUFFER * 2);
+}
+
+/* 渲染窗口内的卡片，并携带原始 index —— 悬挂错落（RACK_DY）与轻晃动画延迟都按原索引取，
+   若改用窗口内的偏移索引，窗口滑动时整排的错落节奏会跟着乱跳。 */
+const visibleSlots = computed(() =>
+  items.value.slice(visibleStart.value, visibleEnd.value).map((item, offset) => ({ item, index: visibleStart.value + offset }))
+);
+/* 两侧占位宽度：撑住 scroll-view 的总宽，保证滚动条长度与位置和不做虚拟列表时一致 */
+const leadSpace = computed(() => visibleStart.value * CARD_STEP_RPX);
+const tailSpace = computed(() => Math.max(0, items.value.length - visibleEnd.value) * CARD_STEP_RPX);
+
 function shortDate(value: string) { return formattedDate(value).slice(5).replace('/', '.'); }
 function isHero(item: CollectibleSummary) { return heroItem.value?.id === item.id; }
 function openLibrary() { uni.switchTab({ url: '/pages/library/index' }); }
@@ -125,6 +154,7 @@ function load() {
       items.value = feedItems;
       totalCount.value = page.totalCount;
       nextCursor.value = page.nextCursor;
+      updateVisibleRange(0); // 首屏数据到位后立即建立渲染窗口
       initialized.value = true;
       wishlistIds.value = new Set(wish.map((item) => item.id));
       hydrateThumbnails(feedItems);
@@ -162,6 +192,7 @@ async function loadMore() {
       hydrateThumbnails(fresh);
     }
     nextCursor.value = page.nextCursor;
+    updateVisibleRange(railLastLeft); // 追加后按当前滚动位置重算窗口
   } catch (error) {
     uni.showToast({ title: error instanceof Error ? error.message : '加载更多失败', icon: 'none' });
   } finally {
@@ -288,6 +319,8 @@ let railReleaseTimer: ReturnType<typeof setTimeout> | undefined;
 
 function onRailScroll(event: Event) {
   const scrollLeft = (event as unknown as { detail?: { scrollLeft?: number } }).detail?.scrollLeft ?? 0;
+  /* 虚拟列表窗口要每帧跟随（必须放在下面的 80ms 节流之前），否则快速滑动时会露出空白缺口 */
+  updateVisibleRange(scrollLeft);
   const now = Date.now();
   const elapsed = now - railLastAt;
   if (railLastAt && elapsed < 80) return;
@@ -495,23 +528,25 @@ async function onRefresherRefresh() {
             <view class="rack-knob rack-knob--r" />
           </view>
           <view class="recent-row">
+            <!-- 虚拟列表左占位：撑出窗口之前那些卡片的宽度，保证滚动位置与总长不变 -->
+            <view v-if="leadSpace" class="rail-spacer" :style="{ width: `${leadSpace}rpx` }" />
             <button
-              v-for="(item, index) in items"
-              :key="item.id"
+              v-for="slot in visibleSlots"
+              :key="slot.item.id"
               class="recent-item"
-              :class="{ 'is-active': isHero(item) }"
-              @tap="pickItem(item)"
+              :class="{ 'is-active': isHero(slot.item) }"
+              @tap="pickItem(slot.item)"
             >
               <view
                 class="rail-hang"
-                :class="[index % 2 === 0 ? 'hang-tilt-right' : 'hang-tilt-left', kickedId === item.id ? 'is-kicking' : '']"
-                :style="{ animationDelay: `${(index % 4) * -1.3}s, 0s` }"
+                :class="[slot.index % 2 === 0 ? 'hang-tilt-right' : 'hang-tilt-left', kickedId === slot.item.id ? 'is-kicking' : '']"
+                :style="{ animationDelay: `${(slot.index % 4) * -1.3}s, 0s` }"
               >
                 <!-- 拖动这一排时的滞后摆动挂在这一层，与上层的轻晃 / 轻点摆动互不干扰 -->
                 <view
                   class="rail-swing"
                   :class="{ 'is-releasing': railReleasing }"
-                  :style="{ transform: `rotate(${railTilt}deg)`, '--dy': `${RACK_DY[index % RACK_DY.length]}rpx` }"
+                  :style="{ transform: `rotate(${railTilt}deg)`, '--dy': `${RACK_DY[slot.index % RACK_DY.length]}rpx` }"
                 >
                   <!-- 滑环：轮心压杆心（轮心 = 旋转轴），吊线从轮心垂到夹具顶 -->
                   <view class="rack-clip">
@@ -531,31 +566,33 @@ async function onRefresherRefresh() {
                     <view class="rack-screw rack-screw--br" />
                     <view class="rack-photo">
                       <image
-                        v-if="thumbnailUrls[item.id] && !failedThumbnails[item.id]"
-                        :src="thumbnailUrls[item.id]"
+                        v-if="thumbnailUrls[slot.item.id] && !failedThumbnails[slot.item.id]"
+                        :src="thumbnailUrls[slot.item.id]"
                         mode="aspectFit"
                         lazy-load
-                        @error="failedThumbnails[item.id] = true"
+                        @error="failedThumbnails[slot.item.id] = true"
                       />
                       <view v-else class="recent-placeholder" />
                     </view>
-                    <view v-if="isTodayNew(item)" class="rack-new">New!</view>
+                    <view v-if="isTodayNew(slot.item)" class="rack-new">New!</view>
                     <!-- 心愿袋按钮：点按加入/取消，不影响轻点送主卡位 -->
                     <view
                       class="card-wish"
-                      :class="{ 'is-on': isWished(item.id) }"
+                      :class="{ 'is-on': isWished(slot.item.id) }"
                       hover-class="is-pressed"
                       :hover-stay-time="80"
-                      @tap.stop="toggleWish(item)"
+                      @tap.stop="toggleWish(slot.item)"
                     >♥</view>
                   </view>
                   <view class="rail-meta">
-                    <text class="rail-name">{{ item.name }}</text>
-                    <text class="rail-info">{{ item.ownerName ?? '官方精选' }} · {{ shortDate(item.addedAt) }}</text>
+                    <text class="rail-name">{{ slot.item.name }}</text>
+                    <text class="rail-info">{{ slot.item.ownerName ?? '官方精选' }} · {{ shortDate(slot.item.addedAt) }}</text>
                   </view>
                 </view>
               </view>
             </button>
+            <!-- 虚拟列表右占位：撑出窗口之后剩余卡片的宽度 -->
+            <view v-if="tailSpace" class="rail-spacer" :style="{ width: `${tailSpace}rpx` }" />
           </view>
         </view>
       </scroll-view>
@@ -758,6 +795,9 @@ async function onRefresherRefresh() {
 /* 轻叠 -12px（后压前）；--lift 给选中上提 4px=7rpx */
 .recent-item { --lift: 0rpx; width: var(--rack-card-w); flex: 0 0 var(--rack-card-w); margin: 0; padding: 0; overflow: visible; background: transparent; text-align: center; }
 .recent-item + .recent-item { margin-left: calc(-1 * var(--rack-overlap)); }
+/* 虚拟列表占位：只撑宽度、不占高度（1rpx 不影响 inline-flex 行的垂直排布），
+   宽度由行内样式按「窗口外卡片数 × 140rpx」给出，滚动总长与不做虚拟列表时完全一致 */
+.rail-spacer { flex: 0 0 auto; height: 1rpx; }
 .recent-item.is-active { --lift: 7rpx; z-index: 3; }
 .rail-hang { position: relative; transform-origin: 50% calc(-1 * var(--hang-origin)); }
 /* ── 拖动这一排时的滞后摆动层 ──
