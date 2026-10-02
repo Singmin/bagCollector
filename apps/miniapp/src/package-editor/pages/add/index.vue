@@ -26,7 +26,20 @@ const errorMessage = ref('');
 // 原图直传在慢网下要几十秒，而服务端最终只保留最长边 4096 的版本，
 // 所以超过阈值就先在本地压一次。阈值以下的照片不动，避免无谓的重编码损失。
 const COMPRESS_THRESHOLD_BYTES = 1_500_000;
-const COMPRESS_QUALITY = 85;
+const COMPRESS_QUALITY = 80;
+/* 长边压到 2048：展示图（DISPLAY）产出的上限就是 2048px，原图再大也用不上，
+   纯粹拖慢上传与 worker 的解码/编码（手机原图普遍 3000~4000px） */
+const COMPRESS_MAX_EDGE = 2048;
+
+function imageInfo(path: string) {
+  return new Promise<{ width: number; height: number }>((resolve) => {
+    uni.getImageInfo({
+      src: path,
+      success: (result) => resolve({ width: result.width, height: result.height }),
+      fail: () => resolve({ width: 0, height: 0 })
+    });
+  });
+}
 
 function contentType(path: string) {
   const extension = path.split('.').pop()?.toLocaleLowerCase();
@@ -43,14 +56,22 @@ function fileSize(path: string) {
   });
 }
 
-function compress(path: string) {
+function compress(path: string, size?: { width: number; height: number }) {
   return new Promise<string>((resolve) => {
-    uni.compressImage({
+    /* compressedWidth/Height 是微信扩展参数（uni 类型未覆盖），按长边等比缩到上限 */
+    const options: Record<string, unknown> = {
       src: path,
       quality: COMPRESS_QUALITY,
-      success: (result) => resolve(result.tempFilePath || path),
+      success: (result: { tempFilePath?: string }) => resolve(result.tempFilePath || path),
       fail: () => resolve(path)
-    });
+    };
+    const longEdge = size ? Math.max(size.width, size.height) : 0;
+    if (longEdge > COMPRESS_MAX_EDGE) {
+      const scale = COMPRESS_MAX_EDGE / longEdge;
+      options.compressedWidth = Math.round(size!.width * scale);
+      options.compressedHeight = Math.round(size!.height * scale);
+    }
+    uni.compressImage(options as never);
   });
 }
 
@@ -62,8 +83,9 @@ async function prepareUpload(path: string) {
   } catch {
     return path;
   }
-  if (originalSize <= COMPRESS_THRESHOLD_BYTES) return path;
-  const compressed = await compress(path);
+  const info = await imageInfo(path);
+  if (originalSize <= COMPRESS_THRESHOLD_BYTES && Math.max(info.width, info.height) <= COMPRESS_MAX_EDGE) return path;
+  const compressed = await compress(path, info);
   if (compressed === path) return path;
   try {
     const compressedSize = await fileSize(compressed);
