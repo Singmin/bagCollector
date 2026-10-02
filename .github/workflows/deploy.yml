@@ -61,14 +61,20 @@ jobs:
       - name: Build & push API/Worker image
         run: |
           IMAGE="$TCR_IMAGE_PREFIX/bagcollect-api:$GITHUB_SHA"
-          docker build --target api -f infra/Dockerfile --tag "$IMAGE" .
+          docker build \
+            --target api -f infra/Dockerfile --tag "$IMAGE" . \
+            --cache-from type=gha,scope=api \
+            --cache-to type=gha,scope=api,mode=max
           docker push "$IMAGE"
           echo "API_IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
       - name: Build & push Admin image
         run: |
           IMAGE="$TCR_IMAGE_PREFIX/bagcollect-admin:$GITHUB_SHA"
-          docker build --target admin -f infra/Dockerfile --tag "$IMAGE" .
+          docker build \
+            --target admin -f infra/Dockerfile --tag "$IMAGE" . \
+            --cache-from type=gha,scope=admin \
+            --cache-to type=gha,scope=admin,mode=max
           docker push "$IMAGE"
           echo "ADMIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
