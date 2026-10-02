@@ -1,7 +1,7 @@
 {
   "pages": [
-    { "path": "pages/showcase/index", "style": { "navigationStyle": "custom", "enablePullDownRefresh": true } },
-    { "path": "pages/library/index", "style": { "navigationStyle": "custom", "enablePullDownRefresh": true, "onReachBottomDistance": 240 } }
+    { "path": "pages/showcase/index", "style": { "navigationStyle": "custom", "disableScroll": true } },
+    { "path": "pages/library/index", "style": { "navigationStyle": "custom", "disableScroll": true, "onReachBottomDistance": 240 } }
   ],
   "subPackages": [
     {
