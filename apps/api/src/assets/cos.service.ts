@@ -138,10 +138,36 @@ export class CosService {
 
   signedUrl(key: string, expires = 600): Promise<string> {
     this.assertConfigured();
+    /* 防御：API_PUBLIC_URL 仍是默认 localhost（服务器漏配）时，代理 URL 客户端不可达，
+       回退 COS 直链 —— <image> 组件不受合法域名校验，至少列表/详情图不受影响；
+       配置正确后自动切回统一代理（canvas 合法域名只需配 API 一个） */
+    if (/\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(this.config.API_PUBLIC_URL)) {
+      return this.cosSignedUrl(key, expires);
+    }
     const token = this.localToken(key, Date.now() + expires * 1_000);
-    /* local 与 cos 统一走 API 域名代理（canvas 合法域名只需配 API 一个）；
-       万象抠图所需的 COS 签名 URL 在 worker 的 object-store 里单独生成，不经此处 */
+    /* local 与 cos 统一走 API 域名代理；万象抠图所需的 COS 签名 URL
+       在 worker 的 object-store 里单独生成，不经此处 */
     return Promise.resolve(`${this.config.API_PUBLIC_URL}/api/assets/file?token=${encodeURIComponent(token)}`);
+  }
+
+  /** 原生 COS 签名 URL（代理方案的回退路径）。 */
+  private cosSignedUrl(key: string, expires: number): Promise<string> {
+    return new Promise((resolve, reject) => {
+      this.client.getObjectUrl(
+        {
+          Bucket: this.config.COS_BUCKET,
+          Region: this.config.COS_REGION,
+          Key: key,
+          Sign: true,
+          Expires: expires,
+          ...(this.config.COS_PUBLIC_HOST ? { Domain: this.config.COS_PUBLIC_HOST } : {})
+        },
+        (error, data) => {
+          if (error) reject(error);
+          else resolve(data.Url);
+        }
+      );
+    });
   }
 
   headObject(key: string): Promise<{ contentLength: number; contentType?: string }> {
