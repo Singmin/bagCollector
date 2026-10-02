@@ -1,20 +1,9 @@
 name: Build and deploy
 
-# 部署链路（2026-10-02 重构）：
-#   verify（复用 ci.yml）→ CI Runner 上构建 api/admin 镜像并推送 TCR
-#   → SSH 到服务器：仅登录 TCR + 拉取镜像 + 切容器（不再在服务器上构建）。
-#
-# 为什么不在服务器上构建：生产服务器是小内存机器，api（sharp/prisma）与
-# admin（React 完整构建）的现场 docker build 曾把宿主机拖到假死 —— 表现为
-# ping 通但所有端口超时，整站不可达（2026-10-02 事故）。
-# TCR 个人版与腾讯云服务器同厂商，大陆地域默认走内网拉取，几秒到几十秒。
-#
-# 一次性前置条件（缺一则 build-push 阶段明确报错指引）：
-#   1. 腾讯云「容器镜像服务 TCR 个人版」开通，创建命名空间（如 newdawntech）
-#   2. GitHub Secrets：TCR_USERNAME（腾讯云账号 ID）、TCR_PASSWORD（访问凭证）、
-#      TCR_IMAGE_PREFIX（如 ccr.ccs.tencentyun.com/newdawntech）
-#   3. 服务器 .env.deploy 设置 API_PUBLIC_URL=https://bagcollect.newdawntech.cn
-#      （图片统一代理依赖它，默认值 localhost 会让代理 URL 指向错误地址）
+# main 分支每次合并：先跑完整验证（复用 ci.yml），再把已验证 commit 的源码传到
+# 生产服务器，在服务器本地构建镜像并部署。源码只有几 MB，避免 GitHub 海外 Runner
+# 向国内镜像仓库推送百 MB 镜像时长期卡在 exporting to image。
+# 手动触发（workflow_dispatch）走同一条链路，只是不需要新的 commit。
 on:
   push:
     branches: [main]
@@ -34,61 +23,8 @@ jobs:
   verify:
     uses: ./.github/workflows/ci.yml
 
-  build-push:
-    needs: [verify]
-    runs-on: ubuntu-latest
-    env:
-      TCR_USERNAME: ${{ secrets.TCR_USERNAME }}
-      TCR_PASSWORD: ${{ secrets.TCR_PASSWORD }}
-      TCR_IMAGE_PREFIX: ${{ secrets.TCR_IMAGE_PREFIX }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Check TCR configuration
-        run: |
-          if [ -z "$TCR_USERNAME" ] || [ -z "$TCR_PASSWORD" ] || [ -z "$TCR_IMAGE_PREFIX" ]; then
-            echo "::error::缺少 TCR 配置。请在 GitHub Secrets 配置三项：" >&2
-            echo "  TCR_USERNAME      —— 腾讯云账号 ID（TCR 个人版登录用户名）" >&2
-            echo "  TCR_PASSWORD      —— TCR 访问凭证密码（控制台「访问凭证」页生成）" >&2
-            echo "  TCR_IMAGE_PREFIX  —— 镜像地址前缀，如 ccr.ccs.tencentyun.com/<命名空间>" >&2
-            echo "开通指引：腾讯云控制台 → 容器镜像服务（个人版，免费）→ 创建命名空间。" >&2
-            exit 1
-          fi
-
-      - name: Login to TCR
-        run: echo "$TCR_PASSWORD" | docker login "${TCR_IMAGE_PREFIX%%/*}" -u "$TCR_USERNAME" --password-stdin
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      # 用 buildx（docker-container 驱动）构建：只有它支持 type=gha 缓存。
-      # 原生 docker build 会静默忽略 gha 缓存参数，导致每轮全量重建+全量跨境重传。
-      - name: Build & push API/Worker image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: infra/Dockerfile
-          target: api
-          push: true
-          provenance: false
-          tags: ${{ secrets.TCR_IMAGE_PREFIX }}/bagcollect-api:${{ github.sha }}
-          cache-from: type=gha,scope=api
-          cache-to: type=gha,scope=api,mode=max
-
-      - name: Build & push Admin image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: infra/Dockerfile
-          target: admin
-          push: true
-          provenance: false
-          tags: ${{ secrets.TCR_IMAGE_PREFIX }}/bagcollect-admin:${{ github.sha }}
-          cache-from: type=gha,scope=admin
-          cache-to: type=gha,scope=admin,mode=max
-
   deploy:
-    needs: [verify, build-push]
+    needs: [verify]
     runs-on: ubuntu-latest
     environment: production
     steps:
@@ -146,13 +82,21 @@ jobs:
           done
           if [ "$scanned" -ne 1 ]; then
             echo "::error::ssh-keyscan 连续 3 次失败：TCP 能连通但 SSH 握手无响应（$DEPLOY_HOST:$DEPLOY_PORT）" >&2
+            echo "===== SSH 详细握手诊断（看卡在哪一步）=====" >&2
+            timeout 90 ssh -vv -o ConnectTimeout=45 -o BatchMode=yes \
+              -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" exit 2>&1 | tail -n 60 >&2 || true
+            echo "===== 诊断结束。常见原因 =====" >&2
+            echo "  1. 服务器上 sshd 未监听该端口：ss -tlnp | grep -E 'sshd|:22|:$DEPLOY_PORT'" >&2
+            echo "  2. fail2ban / 宝塔 SSH 防护 / 云安全组件拦截了海外 IP（GitHub Runner 每次都是不同海外共享 IP，'刚才能连现在不能'多为这类拦截）" >&2
+            echo "  3. 该端口实际是端口映射/转发到了其他机器" >&2
             exit 1
           fi
           echo "主机指纹采集成功"
 
       - name: Copy verified source to the server
-        # 源码包仅用于把最新的 infra/deploy.sh、docker-compose.yml、Dockerfile 同步到
-        # 服务器（应用本身不再在服务器构建）。git archive 只包含已跟踪文件。
+        # git archive 只包含当前 commit 的已跟踪文件，不会把本机 .env、密钥、node_modules
+        # 或工作区未提交文件带到服务器。每次 run 使用独立目录，重跑不会混入旧源码。
+        # 用 Runner 自带的 OpenSSH 而非 scp-action：报错信息完整，失败快速可见。
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
@@ -162,7 +106,9 @@ jobs:
           KEY="$HOME/.ssh/deploy_key"
           COMMON="-i $KEY -o ConnectTimeout=45 -o BatchMode=yes -o StrictHostKeyChecking=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
           ARCHIVE="bagcollect-source-${GITHUB_SHA}.tar.gz"
-          timeout 60 ssh $COMMON -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$TARGET_DIR'"
+          echo "===== 1/3 远程建目录 ====="
+          timeout 60 ssh $COMMON -v -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$TARGET_DIR'"
+          echo "===== 2/3 上传源码包（-v 详细握手日志见 stderr；海外→国内链路偶发卡死，最多重试 3 次每次 10 分钟）====="
           uploaded=0
           for attempt in 1 2 3; do
             echo "--- scp 第 $attempt 次尝试 ---"
@@ -170,23 +116,24 @@ jobs:
               uploaded=1
               break
             fi
-            echo "scp 第 $attempt 次失败，5 秒后重试"
+            echo "scp 第 $attempt 次失败（10 分钟超时或中断），5 秒后重试"
             sleep 5
           done
           [ "$uploaded" -eq 1 ] || { echo "::error::scp 连续 3 次上传失败" >&2; exit 1; }
-          echo "源码包已上传：$TARGET_DIR/$ARCHIVE"
+          echo "===== 3/3 校验文件完整性 ====="
+          timeout 60 ssh $COMMON -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "test -s '$TARGET_DIR/$ARCHIVE' && echo '源码包已上传并通过完整性检查：$TARGET_DIR/$ARCHIVE'"
 
-      - name: Pull images & switch containers on the server
-        # 服务器只做：同步 infra 脚本 → 登录 TCR → 指向本次镜像 → deploy.sh
-        # （备份 → 拉取 → 迁移 → 切容器 → 健康检查 → 失败自动恢复上一组镜像）。
-        # 全程 nohup 脱离会话 + 轮询状态文件，SSH 断线不中断部署。
+      - name: Build and deploy fixed source SHA on the server
+        # 首次服务器构建需要拉基础镜像并安装依赖；后续命中 Docker BuildKit 缓存会快很多。
+        # 海外 Runner -> 国内服务器的 SSH 链路偶发「Timeout, server not responding」
+        # （exit 255，连接被掐断）。构建在服务器上通过 nohup 脱离会话运行，不会因此中断，
+        # 所以这里允许断线重连：只要后台任务还没写状态文件，重连后继续轮询等结果，
+        # 不重复启动构建；其余退出码视为真实部署失败，立即终止。
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          TCR_USERNAME: ${{ secrets.TCR_USERNAME }}
-          TCR_PASSWORD: ${{ secrets.TCR_PASSWORD }}
-          TCR_IMAGE_PREFIX: ${{ secrets.TCR_IMAGE_PREFIX }}
         run: |
           attempt=0
           max_attempts=6
@@ -208,37 +155,36 @@ jobs:
             STATUS_FILE="/tmp/bagcollect-deploy-${{ github.run_id }}-${{ github.run_attempt }}.status"
             LAUNCHED_FILE="$STATUS_FILE.launched"
 
+            # 只在第一次连接时解压并启动后台构建；重连时直接跳到轮询，
+            # 避免把同一个 commit 的构建启动两遍。
             if [ ! -f "$STATUS_FILE" ] && [ ! -f "$LAUNCHED_FILE" ]; then
               [ -f "$ARCHIVE" ] || { echo "找不到源码包：$ARCHIVE" >&2; exit 1; }
               mkdir -p "$RELEASE_DIR"
               tar -xzf "$ARCHIVE" -C "$RELEASE_DIR"
-              # 同步最新的 infra 脚本/编排到部署目录（应用镜像不在服务器构建，无需源码全部）
-              cp "$RELEASE_DIR/infra/deploy.sh" "$DEPLOY_DIR/infra/deploy.sh"
-              cp "$RELEASE_DIR/infra/docker-compose.yml" "$DEPLOY_DIR/infra/docker-compose.yml"
               rm -f "$LOG" "$STATUS_FILE" "$LAUNCHED_FILE"
               nohup sh -c '
                 status=0
                 env \
                   BAGCOLLECT_DEPLOY_DIR="$2" \
-                  API_IMAGE="${{ secrets.TCR_IMAGE_PREFIX }}/bagcollect-api:${{ github.sha }}" \
-                  ADMIN_IMAGE="${{ secrets.TCR_IMAGE_PREFIX }}/bagcollect-admin:${{ github.sha }}" \
-                  TCR_USERNAME="${{ secrets.TCR_USERNAME }}" \
-                  TCR_PASSWORD="${{ secrets.TCR_PASSWORD }}" \
-                  sh "$3/infra/deploy.sh" || status=$?
+                  BAGCOLLECT_RELEASE_DIR="$3" \
+                  BAGCOLLECT_IMAGE_TAG="$4" \
+                  sh "$3/infra/build-and-deploy.sh" || status=$?
                 printf "%s\n" "$status" > "$1.tmp"
                 mv "$1.tmp" "$1"
-              ' sh "$STATUS_FILE" "$DEPLOY_DIR" "$RELEASE_DIR" \
+              ' sh "$STATUS_FILE" "$DEPLOY_DIR" "$RELEASE_DIR" "${{ github.sha }}" \
                 </dev/null >"$LOG" 2>&1 &
               touch "$LAUNCHED_FILE"
-              echo "已在服务器后台启动部署（TCR 拉取模式），日志：$LOG"
+              echo "已在服务器后台启动构建/部署，日志：$LOG"
             else
-              echo "检测到之前的后台部署，继续跟进（不重复启动）"
+              echo "检测到之前的后台构建，继续跟进（不重复启动）"
             fi
 
-            for i in $(seq 1 180); do
+            # 构建和部署都脱离 SSH 会话。即使连接中断，服务器仍会继续完成；
+            # 每分钟回显一次末尾日志，GitHub 页面不会再长时间看起来像卡死。
+            for i in $(seq 1 260); do
               [ ! -f "$STATUS_FILE" ] || break
               if [ $((i % 3)) -eq 0 ]; then
-                echo "--- 服务器部署仍在进行（最近日志）---"
+                echo "--- 服务器构建/部署仍在进行（最近日志）---"
                 tail -n 12 "$LOG" || true
               fi
               sleep 20
@@ -251,7 +197,7 @@ jobs:
             status=$(cat "$STATUS_FILE")
             tail -n 80 "$LOG"
             if [ "$status" -ne 0 ]; then
-              echo "服务器部署失败（exit $status），完整日志见 $LOG" >&2
+              echo "服务器构建/部署失败（exit $status），完整日志见 $LOG" >&2
               exit 1
             fi
             grep -q "部署完成" "$LOG" || { echo "未在日志中找到『部署完成』标记" >&2; exit 1; }
@@ -262,8 +208,10 @@ jobs:
             if [ "$rc" -eq 0 ]; then
               break
             fi
+            # 255：SSH 连接被掐断；124：单次连接等待上限。两种情况下服务器后台
+            # 构建仍在跑，重连跟进即可。其余退出码是真实的部署失败，直接终止。
             if [ "$attempt" -lt "$max_attempts" ] && { [ "$rc" -eq 255 ] || [ "$rc" -eq 124 ]; }; then
-              echo "SSH 连接中断（exit $rc），服务器后台部署未受影响；30 秒后重连跟进" >&2
+              echo "SSH 连接中断（exit $rc），服务器后台构建未受影响；30 秒后重连跟进" >&2
               sleep 30
               continue
             fi
