@@ -184,9 +184,13 @@ export async function processOfficialImage(data: OfficialProcessJobData) {
  * 存储计入用户配额（upsertAssetRecord 内部带配额校验），产出后即 READY。
  */
 export async function claimOfficialBag(data: OfficialClaimJobData) {
-  const collectible = await prisma.collectible.findFirstOrThrow({
+  /* 认领可能已在任务排队期间被撤回（删除收藏会连带删认领记录）——
+     此时无事可做，静默完成；不能 throw，否则 failOfficialClaim 对已删记录
+     再 update 也会崩，任务反复失败占住队列（还会让同 id 的新任务被去重吞掉） */
+  const collectible = await prisma.collectible.findFirst({
     where: { id: data.collectibleId, userId: data.userId }
   });
+  if (!collectible) return;
   const images = await prisma.officialBagImage.findMany({
     where: {
       officialBagId: data.officialBagId,
@@ -259,7 +263,9 @@ export async function reconcileStuckOfficialProcessing(stuckBefore: Date) {
 
 export async function failOfficialClaim(data: OfficialClaimJobData, error: unknown) {
   const message = error instanceof Error ? error.message.slice(0, 500) : '同步到收藏夹失败';
-  await prisma.collectible.update({
+  /* updateMany：收藏可能已在排队期间被删除——update 对不存在的记录会 throw，
+     把失败处理本身炸掉，任务进入无意义的反复重试 */
+  await prisma.collectible.updateMany({
     where: { id: data.collectibleId },
     data: { processingStatus: ProcessingStatus.FAILED, processingError: message }
   });
