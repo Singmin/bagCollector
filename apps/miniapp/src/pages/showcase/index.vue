@@ -25,10 +25,22 @@ const thumbnailUrls = ref<Record<string, string>>({});
 const failedThumbnails = ref<Record<string, boolean>>({});
 /* 心愿袋：已在心愿袋的纸袋 id 集合 */
 const wishlistIds = ref<Set<string>>(new Set());
-/* 已「标记已有」的 feed 条目 → 创建的收藏 id（本页内存态）：标记与心愿互斥；
+/* 已「标记已有」的 feed 条目 → 创建的收藏 id：标记与心愿互斥；
    再次点击「标记已有」时凭收藏 id 弹删除确认，可撤回标记。
    用普通对象而非 Map —— 小程序端对象属性的响应式最可靠，模板里可直接取用判断图标态 */
 const markedMap = ref<Record<string, string>>({});
+/* 以服务端为准恢复标记状态：feed 条目带 myCollectibleId（我认领过 → 收藏 id）。
+   之前是纯页面内存态，重进页面/重编译即丢 —— 再点「标记已有」会重新走认领，
+   被后端 409「你已经拥有过这个袋子」挡下，用户看起来就是「点了出问题」。
+   反向同样处理：服务端没有认领记录的（已撤回）把本地残留也清掉。 */
+function syncClaimState(list: Collectible[]) {
+  const next = { ...markedMap.value };
+  for (const item of list) {
+    if (item.myCollectibleId) next[item.id] = item.myCollectibleId;
+    else delete next[item.id];
+  }
+  markedMap.value = next;
+}
 
 /* 自定义导航（与全部收藏页同一套对齐方式）：
    标题顶部 = 胶囊按钮顶部；设置钮在头部文档流内，与标题块垂直居中。 */
@@ -154,6 +166,7 @@ function load() {
       items.value = feedItems;
       totalCount.value = page.totalCount;
       nextCursor.value = page.nextCursor;
+      syncClaimState(feedItems);
       updateVisibleRange(0); // 首屏数据到位后立即建立渲染窗口
       initialized.value = true;
       wishlistIds.value = new Set(wish.map((item) => item.id));
@@ -190,6 +203,7 @@ async function loadMore() {
     if (fresh.length) {
       items.value = [...items.value, ...fresh];
       hydrateThumbnails(fresh);
+      syncClaimState(fresh);
     }
     nextCursor.value = page.nextCursor;
     updateVisibleRange(railLastLeft); // 追加后按当前滚动位置重算窗口

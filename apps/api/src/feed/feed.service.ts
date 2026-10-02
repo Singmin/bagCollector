@@ -52,7 +52,7 @@ export class FeedService {
    * （卡背面要展示标签与备注），shelf 字段留空、ownerName = 品牌名。
    * 心愿条目与 feed 同 id（都是袋子 id），详情卡靠 GET /collectibles/:id 兜底打开。
    */
-  private toFeedItem(bag: BagWithBrand, urlFor: ImageUrlResolver): CollectibleDto {
+  private toFeedItem(bag: BagWithBrand, urlFor: ImageUrlResolver, myCollectibleId?: string): CollectibleDto {
     const thumbnail = urlFor(bag.id, AssetKind.THUMBNAIL);
     const display = urlFor(bag.id, AssetKind.DISPLAY);
     return {
@@ -66,13 +66,26 @@ export class FeedService {
       ownerName: bag.brand?.name ?? '官方精选',
       ...(thumbnail ? { thumbnailUrl: thumbnail } : {}),
       ...(display ? { displayImageUrl: display } : {}),
+      /* 当前用户已认领该袋子 → 带回认领生成的收藏 id：
+         小程序据此恢复「标记已有」已标记态（撤回标记时按这个 id 删除收藏） */
+      ...(myCollectibleId ? { myCollectibleId } : {}),
       addedAt: (bag.publishedAt ?? bag.createdAt).toISOString(),
       updatedAt: bag.updatedAt.toISOString()
     };
   }
 
+  /** 批量查当前用户的认领记录（袋子 id → 认领生成的收藏 id），避免逐袋子查询（N+1）。 */
+  private async myClaims(userId: string, bagIds: string[]): Promise<Map<string, string>> {
+    if (!bagIds.length) return new Map();
+    const claims = await this.prisma.officialClaim.findMany({
+      where: { userId, officialBagId: { in: bagIds } },
+      select: { officialBagId: true, collectibleId: true }
+    });
+    return new Map(claims.map((claim) => [claim.officialBagId, claim.collectibleId]));
+  }
+
   /** 发现页「纸袋上新」：官方精选 feed，排序与官方袋子列表一致（sortOrder 大者靠前）。 */
-  async feed(query: { search?: string; cursor?: string; limit?: number }): Promise<CollectiblePageDto> {
+  async feed(userId: string, query: { search?: string; cursor?: string; limit?: number }): Promise<CollectiblePageDto> {
     /* 上限 1000：官方袋子是后台人工录入的精选内容，量级天然有限；
        小程序侧要求展示数量不受限制（虚拟列表渲染，一次取全不翻页）。
        仍保留上限而非完全放开，防止异常调用拖垮 findMany。 */
@@ -103,8 +116,9 @@ export class FeedService {
     const hasMore = items.length > limit;
     const page = hasMore ? items.slice(0, limit) : items;
     const urlFor = await this.imageUrls(page.map((bag) => bag.id));
+    const claims = await this.myClaims(userId, page.map((bag) => bag.id));
     return {
-      items: page.map((bag) => this.toFeedItem(bag, urlFor)),
+      items: page.map((bag) => this.toFeedItem(bag, urlFor, claims.get(bag.id))),
       nextCursor: hasMore ? page.at(-1)?.id ?? null : null,
       totalCount
     };
@@ -118,7 +132,8 @@ export class FeedService {
       include: { officialBag: { include: { brand: true } } }
     });
     const urlFor = await this.imageUrls(entries.map((entry) => entry.officialBagId));
-    return entries.map((entry) => this.toFeedItem(entry.officialBag, urlFor));
+    const claims = await this.myClaims(userId, entries.map((entry) => entry.officialBagId));
+    return entries.map((entry) => this.toFeedItem(entry.officialBag, urlFor, claims.get(entry.officialBagId)));
   }
 
   async addWishlist(userId: string, bagId: string) {

@@ -28,6 +28,9 @@ export interface CollectibleSummary {
   updatedAt: string;
   /** 发现页 feed 条目的主人昵称（官方精选时为品牌名）；自己的收藏没有该字段 */
   ownerName?: string;
+  /** 仅 feed / 心愿袋条目返回：当前用户已认领该官方袋子时，值为认领生成的收藏 id。
+      陈列页据此恢复「标记已有」已标记态（再点弹删除确认）——服务端持久真值，刷新不丢 */
+  myCollectibleId?: string;
 }
 
 export interface Collectible extends CollectibleSummary {

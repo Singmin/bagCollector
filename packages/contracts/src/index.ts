@@ -168,6 +168,9 @@ export interface CollectibleSummaryDto {
   updatedAt: string;
   /** 发现页 feed / 心愿袋条目的主人昵称（官方精选时为品牌名）；用户自己的收藏没有该字段。 */
   ownerName?: string;
+  /** 仅 feed / 心愿袋条目返回：当前用户已认领该官方袋子时，值为认领生成的收藏 id。
+      小程序据此恢复「标记已有」的已标记状态（含撤回标记所需的删除目标），不再依赖页面内存。 */
+  myCollectibleId?: string;
 }
 
 export interface CollectiblePageDto {
