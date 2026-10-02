@@ -73,7 +73,10 @@ export class FeedService {
 
   /** 发现页「纸袋上新」：官方精选 feed，排序与官方袋子列表一致（sortOrder 大者靠前）。 */
   async feed(query: { search?: string; cursor?: string; limit?: number }): Promise<CollectiblePageDto> {
-    const limit = Math.min(Math.max(query.limit ?? 30, 1), 100);
+    /* 上限 1000：官方袋子是后台人工录入的精选内容，量级天然有限；
+       小程序侧要求展示数量不受限制（虚拟列表渲染，一次取全不翻页）。
+       仍保留上限而非完全放开，防止异常调用拖垮 findMany。 */
+    const limit = Math.min(Math.max(query.limit ?? 30, 1), 1000);
     const search = query.search?.trim();
     const where = {
       ...VISIBLE_BAG,
