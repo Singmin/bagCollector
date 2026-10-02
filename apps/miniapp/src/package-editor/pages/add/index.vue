@@ -98,13 +98,22 @@ async function uploadSource(path: string, policy: UploadPolicy) {
   });
 }
 
-/* 下一跳：规范化已完成（AWAITING_CROP/READY）时直接进编辑页 ——
-   连续两次 redirectTo 会让页面栈底层的首页闪现（「先回首页再开编辑页」的根因），
-   只在确实需要等后端处理时才落处理页 */
-function nextStepUrl(collectible: Collectible) {
-  return collectible.processingStatus === 'AWAITING_CROP' || collectible.processingStatus === 'READY'
-    ? `/package-editor/pages/metadata/index?id=${collectible.id}`
-    : `/package-editor/pages/processing/index?id=${collectible.id}&stage=normalize`;
+/* ── 规范化等待（处理页的轻量替身）──
+   uploads/complete 后 worker 异步把原图转成标准图（AWAITING_CROP/READY），
+   旧流程跳独立「处理中」状态页；改为本页弹加载 toast 原地等待，完成后直接进完善信息。
+   轮询 1s 一次，上限 30s —— 超时按失败收场，避免 loading 永远挂着 */
+const POLL_INTERVAL_MS = 1000;
+const PROCESS_TIMEOUT_MS = 30_000;
+function sleep(ms: number) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+async function waitForProcessing(id: string) {
+  const deadline = Date.now() + PROCESS_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const item = await dataService.collectible(id);
+    if (item.processingStatus === 'AWAITING_CROP' || item.processingStatus === 'READY') return;
+    if (item.processingStatus === 'FAILED') throw new Error(item.processingError || '图片处理失败，请重新拍摄');
+    await sleep(POLL_INTERVAL_MS);
+  }
+  throw new Error('图片处理超时，请稍后在收藏架查看');
 }
 
 async function submit(sourcePath: string) {
@@ -139,8 +148,13 @@ async function submit(sourcePath: string) {
       method: 'POST',
       data: { assetId: policy.assetId, collectibleId: collectible.id, key: policy.key }
     });
-    uni.redirectTo({ url: nextStepUrl(collectible) });
+    /* 原地等待规范化完成（toast + 蒙层），不再跳处理页 */
+    uni.showLoading({ title: '正在处理图片…', mask: true });
+    await waitForProcessing(collectible.id);
+    uni.hideLoading();
+    uni.redirectTo({ url: `/package-editor/pages/metadata/index?id=${collectible.id}` });
   } catch (error) {
+    uni.hideLoading();
     compressing.value = false;
     errorMessage.value = error instanceof Error ? error.message : '照片处理失败';
     filePath.value = '';
