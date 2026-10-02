@@ -955,7 +955,9 @@ function onScrollToLower() { void loadMore(); }
         />
         <text v-if="searchText" class="search-clear" @tap="clearSearch">×</text>
       </view>
-      <button v-if="segment === 'mine'" class="mode-button" hover-class="is-pressed" :hover-stay-time="80" :aria-label="displayMode === 'shelf' ? '切换为宫格展示' : '切换为展架展示'" @tap="toggleMode">
+      <!-- 切换钮心愿袋段不显示，但保留占位（visibility:hidden）——
+           否则该段搜索框失去右侧兄弟后整行塌高、宽度拉通，与「我的」段 UI 不一致 -->
+      <button class="mode-button" :class="{ 'is-ghost': segment !== 'mine' }" hover-class="is-pressed" :hover-stay-time="80" :aria-label="displayMode === 'shelf' ? '切换为宫格展示' : '切换为展架展示'" @tap="toggleMode">
         <image :src="displayMode === 'shelf' ? '/static/figma/grid.svg' : '/static/figma/shelf.svg'" mode="aspectFit" />
         <text>{{ displayMode === 'shelf' ? '宫格' : '展架' }}</text>
       </button>
@@ -1469,6 +1471,9 @@ function onScrollToLower() { void loadMore(); }
 .mode-button { flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8rpx; min-width: 0; margin: 0; padding: 14rpx 22rpx; border: 2rpx solid rgba(255,255,255,.75); border-radius: 24rpx; background: rgba(255,255,255,.6); box-shadow: inset 0 2rpx 0 rgba(255,255,255,.8); color: #77736d; font-size: 20rpx; font-weight: 400; line-height: 1.1; transition: transform .18s ease, box-shadow .18s ease; }
 /* 按压反馈：对齐 H5 .header-settings:active scale(.94) */
 .mode-button.is-pressed { transform: scale(.94); box-shadow: inset 0 2rpx 0 rgba(255,255,255,.8); }
+/* 心愿袋段：隐藏但保留占位 —— 行高与搜索框宽度因此与「我的」段逐像素一致；
+   visibility:hidden 不响应点击，无需额外禁用 */
+.mode-button.is-ghost { visibility: hidden; }
 .mode-button image { display: block; width: 44rpx; height: 44rpx; }
 /* letter-spacing 会在末字后多出 2rpx 空隙，负 margin 抵消，让可见字形与 icon 同轴 */
 .mode-button text { letter-spacing: 2rpx; margin-right: -2rpx; }
