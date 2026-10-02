@@ -204,6 +204,25 @@ function takePhoto() {
 
 function chooseFromAlbum() {
   if (capturing.value || uploading.value) return;
+  /* 开发者工具模拟器对 chooseMedia 支持不完善（点击后不弹文件框、success/fail 均不回调），
+     devtools 环境回退到 chooseImage（工具内会弹本地文件选择框），真机仍走 chooseMedia */
+  if (isDevtools) {
+    uni.chooseImage({
+      count: 1,
+      sizeType: ['original'],
+      sourceType: ['album'],
+      success: (result) => {
+        const path = result.tempFilePaths?.[0];
+        if (path) void submit(path).catch((error) => {
+          errorMessage.value = error instanceof Error ? error.message : '相册选图失败';
+        });
+      },
+      fail: (error) => {
+        if (!error.errMsg?.includes('cancel')) errorMessage.value = error.errMsg || '相册打开失败';
+      }
+    });
+    return;
+  }
   uni.chooseMedia({
     count: 1,
     mediaType: ['image'],
