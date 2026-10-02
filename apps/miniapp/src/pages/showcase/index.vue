@@ -14,10 +14,10 @@ const loadError = ref('');
 /* 发现页数据源 = 官方精选 feed（别人的纸袋，带 ownerName 与完整标签/备注） */
 const items = ref<Collectible[]>([]);
 const totalCount = ref(0);
-/* 精选上新游标翻页：滑到横向挂袋区末尾自动追加下一页。
-   后端 limit 允许 1~100（默认 30），这里每页取 9 —— 与原先首页一次展示的条数一致；
+/* 精选上新：一次取到后端上限 100 条，不再按小页分页展示（后端 limit 允许 1~100）。
+   官方袋子超过 100 条时，游标翻页仍会继续追加剩余（loadMore / scrolltolower 保留作兜底）。
    翻页只追加不清空，避免主展位跳回第一张。mock 与真实后端都支持 cursor。 */
-const FEED_PAGE_SIZE = 9;
+const FEED_PAGE_SIZE = 100;
 const nextCursor = ref<string | null>(null);
 const loadingMore = ref(false);
 const hasMore = computed(() => Boolean(nextCursor.value));
