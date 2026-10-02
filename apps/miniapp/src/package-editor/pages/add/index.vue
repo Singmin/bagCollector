@@ -170,13 +170,10 @@ async function submit(sourcePath: string) {
       method: 'POST',
       data: { assetId: policy.assetId, collectibleId: collectible.id, key: policy.key }
     });
-    /* 原地等待规范化完成（toast + 蒙层），不再跳处理页 */
-    uni.showLoading({ title: '正在处理图片…', mask: true });
+    /* 原地等待规范化完成：反馈交给页面状态行「正在处理图片」，不弹 loading 蒙层 */
     await waitForProcessing(collectible.id);
-    uni.hideLoading();
     uni.redirectTo({ url: `/package-editor/pages/metadata/index?id=${collectible.id}` });
   } catch (error) {
-    uni.hideLoading();
     compressing.value = false;
     errorMessage.value = error instanceof Error ? error.message : '照片处理失败';
     filePath.value = '';
