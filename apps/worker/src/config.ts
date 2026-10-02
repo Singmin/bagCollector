@@ -64,15 +64,13 @@ const schema = z
     WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(8).default(2)
   })
   .superRefine((value, context) => {
-    // 抠图是 Worker 唯一的产出路径，而万象只能读 COS 上的对象。
-    // 用 local 存储时裁剪图写在磁盘上，万象拿不到它，所以这里在启动阶段就拦下来，
-    // 而不是等第一张图处理到一半才失败。
-    if (value.STORAGE_DRIVER !== 'cos') {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'Worker 的抠图走腾讯云数据万象，要求 STORAGE_DRIVER=cos：万象只能读取 COS 上的对象，本地磁盘文件它拿不到'
-      });
-    }
+    // 只有 STORAGE_DRIVER=cos 才要求 COS 凭据。
+    // local 模式用于无 COS 凭据的本地开发：object-store 的读写本来就支持本地磁盘，
+    // 因此上传 / 规范化 / 裁剪都能真实跑通，只有抠图（万象需读 COS 上的签名 URL）不可用。
+    // 原来是「local 直接拦死启动」，导致无凭据时整条图片链路都跑不起来；
+    // 现在改为允许启动，抠图任务会在 object-store.getSignedObjectUrl 处明确失败
+    // 并被 failProcessing 标记成 FAILED，不会静默产出错图。
+    if (value.STORAGE_DRIVER !== 'cos') return;
 
     if (!value.COS_SECRET_ID || !value.COS_SECRET_KEY || !value.COS_BUCKET || !value.COS_REGION) {
       context.addIssue({
