@@ -268,7 +268,7 @@ onLoad(() => {
       <view class="guide-frame" />
       <view v-if="uploading" class="upload-mask">
         <view class="upload-spinner" />
-        <text>{{ compressing ? '正在压缩照片' : progress < 100 ? `正在上传 ${progress}%` : '正在启动自动抠图' }}</text>
+        <text>{{ compressing ? '正在压缩照片' : progress < 100 ? `正在上传 ${progress}%` : '正在保存图片' }}</text>
       </view>
     </view>
 
