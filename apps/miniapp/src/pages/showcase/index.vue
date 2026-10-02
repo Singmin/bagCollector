@@ -14,6 +14,13 @@ const loadError = ref('');
 /* 发现页数据源 = 官方精选 feed（别人的纸袋，带 ownerName 与完整标签/备注） */
 const items = ref<Collectible[]>([]);
 const totalCount = ref(0);
+/* 精选上新游标翻页：滑到横向挂袋区末尾自动追加下一页。
+   后端 limit 允许 1~100（默认 30），这里每页取 9 —— 与原先首页一次展示的条数一致；
+   翻页只追加不清空，避免主展位跳回第一张。mock 与真实后端都支持 cursor。 */
+const FEED_PAGE_SIZE = 9;
+const nextCursor = ref<string | null>(null);
+const loadingMore = ref(false);
+const hasMore = computed(() => Boolean(nextCursor.value));
 const thumbnailUrls = ref<Record<string, string>>({});
 const failedThumbnails = ref<Record<string, boolean>>({});
 /* 心愿袋：已在心愿袋的纸袋 id 集合 */
@@ -110,13 +117,14 @@ function load() {
   refreshPromise = (async () => {
     try {
       /* feed = 官方精选纸袋上新；心愿袋状态一并拉取（标记/取消心愿后要保持同步） */
-      const [page, wish] = await Promise.all([dataService.feed('limit=9'), dataService.wishlist()]);
+      const [page, wish] = await Promise.all([dataService.feed(`limit=${FEED_PAGE_SIZE}`), dataService.wishlist()]);
       assertRenderable(page.items);
       /* feed 接口声明返回摘要，但 mock 与真实后端都带完整字段（见下方 selectHero 注释），
          这里统一按完整条目使用 —— 与旧的逐处 as 转换等价，只收敛到一个出口。 */
       const feedItems = page.items as unknown as Collectible[];
       items.value = feedItems;
       totalCount.value = page.totalCount;
+      nextCursor.value = page.nextCursor;
       initialized.value = true;
       wishlistIds.value = new Set(wish.map((item) => item.id));
       hydrateThumbnails(feedItems);
@@ -135,6 +143,30 @@ function load() {
     }
   })().finally(() => { refreshPromise = undefined; });
   return refreshPromise;
+}
+
+/* 滑到挂袋区末尾自动加载下一页：只追加到列表尾部，不动主展位（避免翻页时主卡跳回第一张）。
+   cursor 来自上一页响应，为空即已到末页；连续触发由 loadingMore 拦住，失败只提示不清空列表。 */
+async function loadMore() {
+  if (loadingMore.value || !nextCursor.value) return;
+  loadingMore.value = true;
+  try {
+    const page = await dataService.feed(`limit=${FEED_PAGE_SIZE}&cursor=${encodeURIComponent(nextCursor.value)}`);
+    assertRenderable(page.items);
+    const appended = page.items as unknown as Collectible[];
+    /* 去重兜底：并发刷新时后端可能返回列表里已有的条目 */
+    const known = new Set(items.value.map((item) => item.id));
+    const fresh = appended.filter((item) => !known.has(item.id));
+    if (fresh.length) {
+      items.value = [...items.value, ...fresh];
+      hydrateThumbnails(fresh);
+    }
+    nextCursor.value = page.nextCursor;
+  } catch (error) {
+    uni.showToast({ title: error instanceof Error ? error.message : '加载更多失败', icon: 'none' });
+  } finally {
+    loadingMore.value = false;
+  }
 }
 
 /* 日期与「入库时长」已抽到 services/format.ts（formattedDate / daysAgoText），
@@ -449,7 +481,8 @@ async function onRefresherRefresh() {
         <text class="stage-count">今日上新 · {{ todayCount }} 件</text>
         <button class="recent-all" @tap="openLibrary">我的收藏架 <image class="recent-all-arrow" src="/static/figma/arrow-right.svg" mode="aspectFit" /></button>
       </view>
-      <scroll-view class="recent-scroll" scroll-x :show-scrollbar="false" @scroll="onRailScroll">
+      <!-- 滑到最右端自动加载下一页（游标翻页，只追加不清空） -->
+      <scroll-view class="recent-scroll" scroll-x :show-scrollbar="false" @scroll="onRailScroll" @scrolltolower="loadMore">
         <view class="recent-scene">
           <!-- 亚克力展示杆：半透杆身 + 两端银钢夹块 + 外伸螺纹杆 + 朱红圆球头 -->
           <view class="rack-cable" aria-hidden="true">
@@ -526,6 +559,9 @@ async function onRefresherRefresh() {
           </view>
         </view>
       </scroll-view>
+      <!-- 翻页状态：只在加载中 / 翻过页且已到底时出现，单页不打扰 -->
+      <text v-if="loadingMore" class="rail-status">正在加载更多…</text>
+      <text v-else-if="!hasMore && items.length > FEED_PAGE_SIZE" class="rail-status">已经到底啦 · 共 {{ items.length }} 件</text>
       <text class="rack-hint">↤ 左右滑动 · 轻点在上方查看 ↦</text>
     </view>
       </view>
@@ -865,6 +901,8 @@ async function onRefresherRefresh() {
 .recent-item.is-active .rail-name { color: #8a5a10; }
 /* 与大卡片「轻点翻面 · 查看详情」（.flip-hint）字号/颜色/字距完全一致 */
 .rack-hint { display: block; padding: 2rpx 36rpx 0; color: #c0bab1; font-size: 20rpx; line-height: 1.2; letter-spacing: .5rpx; text-align: center; }
+/* 挂袋区翻页状态（加载中 / 已到底）：与 .rack-hint 同版式，颜色略深以示区分 */
+.rail-status { display: block; padding: 12rpx 36rpx 0; color: #a8a49d; font-size: 20rpx; line-height: 1.2; letter-spacing: .5rpx; text-align: center; }
 
 /* ── 发现页：心愿袋按钮 / 主卡操作区（标记已有半窗壳层复用 styles/edit-form.css）── */
 /* 挂卡心愿按钮：右上角小圆钮，空心灰 → 实心红（已在心愿袋） */
