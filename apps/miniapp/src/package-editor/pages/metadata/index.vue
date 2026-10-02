@@ -93,7 +93,11 @@ async function load() {
       dataService.shelves(),
       dataService.collectibles('limit=1')
     ]);
-    if (!nextItem.displayImageUrl) throw new Error('收藏缺少展示图');
+    /* 首次完善信息发生在首次裁剪之前（AWAITING_CROP）：流水线此时只产出标准图，
+       展示图要等裁剪提交后才生成 —— 回退用标准图占位，不再直接报错把页面挡死。
+       只有连标准图都没有（如资产丢失）才算异常。 */
+    if (!nextItem.displayImageUrl && !nextItem.standardImageUrl) throw new Error('收藏缺少展示图');
+    if (!nextItem.displayImageUrl) nextItem.displayImageUrl = nextItem.standardImageUrl;
     item.value = nextItem; shelves.value = nextShelves; name.value = nextItem.name === '未命名纸袋' ? '' : nextItem.name;
     /* 编号 = 自有收藏总数（含本条，列表按 addedAt desc，本条最新即最大号） */
     collectNo.value = `NO.${String(Math.max(1, page.totalCount)).padStart(3, '0')}`;
