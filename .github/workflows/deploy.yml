@@ -58,25 +58,34 @@ jobs:
       - name: Login to TCR
         run: echo "$TCR_PASSWORD" | docker login "${TCR_IMAGE_PREFIX%%/*}" -u "$TCR_USERNAME" --password-stdin
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 用 buildx（docker-container 驱动）构建：只有它支持 type=gha 缓存。
+      # 原生 docker build 会静默忽略 gha 缓存参数，导致每轮全量重建+全量跨境重传。
       - name: Build & push API/Worker image
-        run: |
-          IMAGE="$TCR_IMAGE_PREFIX/bagcollect-api:$GITHUB_SHA"
-          docker build \
-            --target api -f infra/Dockerfile --tag "$IMAGE" . \
-            --cache-from type=gha,scope=api \
-            --cache-to type=gha,scope=api,mode=max
-          docker push "$IMAGE"
-          echo "API_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/Dockerfile
+          target: api
+          push: true
+          provenance: false
+          tags: ${{ secrets.TCR_IMAGE_PREFIX }}/bagcollect-api:${{ github.sha }}
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,scope=api,mode=max
 
       - name: Build & push Admin image
-        run: |
-          IMAGE="$TCR_IMAGE_PREFIX/bagcollect-admin:$GITHUB_SHA"
-          docker build \
-            --target admin -f infra/Dockerfile --tag "$IMAGE" . \
-            --cache-from type=gha,scope=admin \
-            --cache-to type=gha,scope=admin,mode=max
-          docker push "$IMAGE"
-          echo "ADMIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/Dockerfile
+          target: admin
+          push: true
+          provenance: false
+          tags: ${{ secrets.TCR_IMAGE_PREFIX }}/bagcollect-admin:${{ github.sha }}
+          cache-from: type=gha,scope=admin
+          cache-to: type=gha,scope=admin,mode=max
 
   deploy:
     needs: [verify, build-push]
