@@ -190,6 +190,7 @@ const segment = ref<'mine' | 'wish'>('mine');
 const wishlistItems = ref<Collectible[]>([]);
 
 function removeWish(item: CollectibleSummary) {
+  if (multiTouchActive) return;
   uni.showModal({
     title: '取消心愿',
     content: `把「${item.name}」移出心愿袋？`,
@@ -591,7 +592,17 @@ function closeDetail() {
 /* ── 长按删除（展架槽 / 宫格两视图共用）──
    确认弹窗 → DELETE 接口 → 本地四处铺平：列表、展架件数、详情缓存、
    若正开着的详情卡属于它则一并关闭；markCollectionDataStale 让首页下次进入时刷新 */
+/* 多指手势（双指缩放 / 两指误触）不应触发长按删除：
+   touchstart 记录指头数，>1 指则本次交互屏蔽删除（longpress 在手指按住时触发） */
+let multiTouchActive = false;
+function onItemTouchStart(event: Event) {
+  const touches = (event as unknown as { touches?: unknown[] }).touches;
+  multiTouchActive = (touches?.length ?? 0) > 1;
+}
+function onItemTouchEnd() { multiTouchActive = false; }
+
 async function confirmRemove(item: CollectibleSummary) {
+  if (multiTouchActive) return;
   const confirmed = await new Promise<boolean>((resolve) => {
     uni.showModal({
       title: '删除收藏',
@@ -1046,7 +1057,7 @@ function onScrollToLower() {
           @touchend="snapShelf(group.id)"
         >
           <view class="shelf-items">
-            <button v-for="item in group.items" :key="item.id" class="shelf-item" @tap="open(item)" @longpress="confirmRemove(item)">
+            <button v-for="item in group.items" :key="item.id" class="shelf-item" @tap="open(item)" @longpress="confirmRemove(item)" @touchstart="onItemTouchStart" @touchend="onItemTouchEnd" @touchcancel="onItemTouchEnd">
               <image
                 v-if="thumbnailUrls[item.id] && !failedThumbnails[item.id]"
                 class="shelf-image"
@@ -1083,6 +1094,9 @@ function onScrollToLower() {
             :style="{ width: `${gridW}rpx`, height: `${gridCardH}rpx`, borderRadius: `${gridRadius}rpx` }"
             @tap="open(item)"
             @longpress="confirmRemove(item)"
+            @touchstart="onItemTouchStart"
+            @touchend="onItemTouchEnd"
+            @touchcancel="onItemTouchEnd"
           >
             <image
               v-if="thumbnailUrls[item.id] && !failedThumbnails[item.id]"
@@ -1125,6 +1139,9 @@ function onScrollToLower() {
               :style="{ width: `${gridW}rpx`, height: `${gridCardH}rpx`, borderRadius: `${gridRadius}rpx` }"
               @tap="open(item)"
               @longpress="removeWish(item)"
+              @touchstart="onItemTouchStart"
+              @touchend="onItemTouchEnd"
+              @touchcancel="onItemTouchEnd"
             >
               <image
                 v-if="item.displayImageUrl || item.thumbnailUrl"
