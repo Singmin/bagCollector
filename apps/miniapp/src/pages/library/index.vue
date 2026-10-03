@@ -201,6 +201,7 @@ const segment = ref<'mine' | 'wish'>('mine');
 const wishlistItems = ref<Collectible[]>([]);
 
 function removeWish(item: CollectibleSummary) {
+  if (multiTouchActive) return;
   uni.showModal({
     title: '取消心愿',
     content: `把「${item.name}」移出心愿袋？`,
@@ -237,6 +238,9 @@ function load(force = false) {
       nextCursor.value = page.nextCursor;
       totalCount.value = page.totalCount;
       initialized.value = true;
+      /* 新结果重新从一批开始渲染 */
+      gridRenderCount.value = GRID_STEP;
+      wishRenderCount.value = GRID_STEP;
       loadedAt = Date.now();
       loadedRevision = requestRevision;
       hydrateThumbnails(page.items);
@@ -512,13 +516,32 @@ function detailSource(): Collectible | null {
   return detailData.value && detailData.value.id === item.id ? detailData.value : (item as Collectible);
 }
 
+/* ── 心愿袋动效（方案 A）：加入=♥弹跳+小爱心飞散；取消=轻微缩回 ── */
+const wishPop = ref(false);
+const wishShrink = ref(false);
+function playWishEffect(added: boolean) {
+  if (added) {
+    wishPop.value = false;
+    nextTick(() => {
+      wishPop.value = true;
+      setTimeout(() => { wishPop.value = false; }, 560);
+    });
+    return;
+  }
+  wishShrink.value = false;
+  nextTick(() => {
+    wishShrink.value = true;
+    setTimeout(() => { wishShrink.value = false; }, 340);
+  });
+}
 async function toggleDetailWish() {
   const item = detailItem.value; if (!item) return;
-  if (isWishDetail.value) return void removeWish(item);
+  if (isWishDetail.value) { playWishEffect(false); return void removeWish(item); }
   const source = detailSource(); if (!source) return;
   try {
     await dataService.addWishlist(source.id);
     wishlistItems.value = [source, ...wishlistItems.value];
+    playWishEffect(true);
     uni.showToast({ title: '已加入心愿袋', icon: 'none' });
   } catch (error) {
     uni.showToast({ title: error instanceof Error ? error.message : '操作失败', icon: 'none' });
@@ -599,7 +622,17 @@ function closeDetail() {
 /* ── 长按删除（展架槽 / 宫格两视图共用）──
    确认弹窗 → DELETE 接口 → 本地四处铺平：列表、展架件数、详情缓存、
    若正开着的详情卡属于它则一并关闭；markCollectionDataStale 让首页下次进入时刷新 */
+/* 多指手势（双指缩放 / 两指误触）不应触发长按删除：
+   touchstart 记录指头数，>1 指则本次交互屏蔽删除（longpress 在手指按住时触发） */
+let multiTouchActive = false;
+function onItemTouchStart(event: Event) {
+  const touches = (event as unknown as { touches?: unknown[] }).touches;
+  multiTouchActive = (touches?.length ?? 0) > 1;
+}
+function onItemTouchEnd() { multiTouchActive = false; }
+
 async function confirmRemove(item: CollectibleSummary) {
+  if (multiTouchActive) return;
   const confirmed = await new Promise<boolean>((resolve) => {
     uni.showModal({
       title: '删除收藏',
@@ -783,48 +816,62 @@ function toggleMode() {
   if (displayMode.value === 'shelf') measureShelves();
 }
 
-/* ── 宫格画廊（对齐 H5 gridVars / applyGridVars）──
-   卡宽是唯一真源：大档 82px=149rpx ↔ 小档 41px=75rpx，捏合进度 t 插值派生其余尺寸。
-   列数 = 一屏放得下的列数 + 1（保证任何缩放级别都溢出，横向滚动不失效）。 */
-const GRID_W_MAX = 149;
-const GRID_W_MIN = 75;
-const MAX_GRID_RENDER = 240;
-const gridW = ref(GRID_W_MAX);
+/* ── 宫格画廊 ──
+   改为固定 4 列、不可横向滑动、不可捏合缩放：
+   卡宽由「屏宽 750rpx 放 4 列」反推，其余尺寸沿用原有比例派生（视觉口径不变）。
+   列数 = 4：4×卡宽 + 3×间距 + 2×左右留白 = 750rpx。 */
+const GRID_COLS_MAX_CARD = 4;
+const GRID_COLS_MIN_CARD = 8;
+const GRID_PAD = 24;
+const GRID_GAP = 18;
+const gridCols = ref(GRID_COLS_MAX_CARD);
 let pinchStartDist = 0;
-let pinchStartW = GRID_W_MAX;
+let pinchStartCols = GRID_COLS_MAX_CARD;
 
 function pinchDistance(touches: Array<{ x: number; y: number }>) {
   const dx = touches[0].x - touches[1].x;
   const dy = touches[0].y - touches[1].y;
   return Math.hypot(dx, dy);
 }
-
 function gridTouchStart(event: Event) {
   const touches = (event as unknown as { touches?: Array<{ x?: number; clientX?: number; y?: number; clientY?: number }> }).touches;
   if (!touches || touches.length !== 2) return;
   pinchStartDist = pinchDistance(touches.map((t) => ({ x: t.x ?? t.clientX ?? 0, y: t.y ?? t.clientY ?? 0 })));
-  pinchStartW = gridW.value;
+  pinchStartCols = gridCols.value;
 }
-
 function gridTouchMove(event: Event) {
   if (!pinchStartDist) return;
   const touches = (event as unknown as { touches?: Array<{ x?: number; clientX?: number; y?: number; clientY?: number }> }).touches;
   if (!touches || touches.length !== 2) return;
   const dist = pinchDistance(touches.map((t) => ({ x: t.x ?? t.clientX ?? 0, y: t.y ?? t.clientY ?? 0 })));
-  gridW.value = Math.round(Math.min(GRID_W_MAX, Math.max(GRID_W_MIN, (pinchStartW * dist) / pinchStartDist)));
+  /* 双指张开 = 放大 = 列数变少；捏合 = 缩小 = 列数变多 */
+  const next = Math.round(pinchStartCols / (dist / pinchStartDist));
+  gridCols.value = Math.min(GRID_COLS_MIN_CARD, Math.max(GRID_COLS_MAX_CARD, next));
 }
-
 function gridTouchEnd() { pinchStartDist = 0; }
-
-const gridRatio = computed(() => (GRID_W_MAX - gridW.value) / (GRID_W_MAX - GRID_W_MIN));
-const gridCardH = computed(() => Math.round((116 - 58 * gridRatio.value) * 1.82));
-const gridArtH = computed(() => Math.round((98 - 52 * gridRatio.value) * 1.82));
+/* 宫格改为增量渲染：首屏渲染一批，滚到底部再追加一批（避免一次性渲染上千个节点卡顿）。
+   不再有「只显示前 N 件」的硬上限 */
+const GRID_STEP = 120;
+const gridRenderCount = ref(GRID_STEP);
+const wishRenderCount = ref(GRID_STEP);
+function appendGridRender() {
+  if (segment.value === 'wish') {
+    if (wishRenderCount.value < visibleWishlist.value.length) wishRenderCount.value += GRID_STEP;
+    return;
+  }
+  if (displayMode.value === 'grid' && gridRenderCount.value < items.value.length) gridRenderCount.value += GRID_STEP;
+}
+/* 卡宽 = (屏宽 − 左右留白 − 列间距) ÷ 列数（向下取整，避免合计超出屏宽） */
+const gridW = computed(() => Math.floor((750 - 2 * GRID_PAD - (gridCols.value - 1) * GRID_GAP) / gridCols.value));
+/* 尺寸比例沿用原最大档（卡高/图高 ÷ 卡宽 = 1.416 / 1.195），随卡宽等比缩放 */
+const gridCardH = computed(() => Math.round(gridW.value * 1.4161));
+const gridArtH = computed(() => Math.round(gridW.value * 1.1946));
 const gridArtPad = computed(() => Math.round(gridW.value * 0.0732));
 const gridRadius = computed(() => Math.round(gridW.value * 0.17073));
-const gridGap = computed(() => Math.round(gridW.value * 0.10976));
-const gridPadX = computed(() => Math.round(gridW.value * 0.14634));
-const gridCols = computed(() => Math.ceil(750 / (gridW.value + gridGap.value)) + 1);
-const gridItems = computed(() => items.value.slice(0, MAX_GRID_RENDER));
+const gridGap = computed(() => GRID_GAP);
+const gridPadX = computed(() => GRID_PAD);
+const gridItems = computed(() => items.value.slice(0, gridRenderCount.value));
+const wishGridItems = computed(() => visibleWishlist.value.slice(0, wishRenderCount.value));
 const gridOverflow = computed(() => items.value.length - gridItems.value.length);
 
 /* ── 展架配色对齐 H5：按行序轮换三色（3n+1 琥珀 / 3n+2 天蓝 / 3n 鼠尾草），
@@ -906,7 +953,12 @@ async function onRefresherRefresh() {
   refresherTriggered.value = true;
   try { await load(true); } finally { refresherTriggered.value = false; }
 }
-function onScrollToLower() { void loadMore(); }
+function onScrollToLower() {
+  /* 宫格是竖向排布：到底时先把手上已加载的数据多渲染一批（增量渲染），
+     同时照常触发下一页加载 */
+  appendGridRender();
+  void loadMore();
+}
 </script>
 
 <template>
@@ -943,7 +995,9 @@ function onScrollToLower() { void loadMore(); }
     <scroll-view
       class="library-scroll"
       scroll-y
-      :refresher-enabled="true"
+      enhanced
+      :show-scrollbar="false"
+      :refresher-enabled="false"
       :refresher-triggered="refresherTriggered"
       refresher-default-style="black"
       @refresherrefresh="onRefresherRefresh"
@@ -1055,7 +1109,7 @@ function onScrollToLower() { void loadMore(); }
           @touchend="snapShelf(group.id)"
         >
           <view class="shelf-items">
-            <button v-for="item in group.items" :key="item.id" class="shelf-item" @tap="open(item)" @longpress="confirmRemove(item)">
+            <button v-for="item in group.items" :key="item.id" class="shelf-item" @tap="open(item)" @longpress="confirmRemove(item)" @touchstart="onItemTouchStart" @touchend="onItemTouchEnd" @touchcancel="onItemTouchEnd">
               <image
                 v-if="thumbnailUrls[item.id] && !failedThumbnails[item.id]"
                 class="shelf-image"
@@ -1079,11 +1133,9 @@ function onScrollToLower() { void loadMore(); }
     <!-- 宫格画廊（H5 .grid-window / .grid-stage / .collection-grid）：
          横向滚动 + 双指捏合在 82↔41px（149↔75rpx）连续插值，
          卡宽是唯一真源，卡高/间隙/圆角/内缩全部由它派生（对齐 H5 gridVars）。 -->
-    <scroll-view
+    <view
       v-else
       class="grid-window"
-      scroll-x
-      :show-scrollbar="false"
       @touchstart="gridTouchStart"
       @touchmove.stop="gridTouchMove"
       @touchend="gridTouchEnd"
@@ -1101,6 +1153,9 @@ function onScrollToLower() { void loadMore(); }
             :style="{ width: `${gridW}rpx`, height: `${gridCardH}rpx`, borderRadius: `${gridRadius}rpx` }"
             @tap="open(item)"
             @longpress="confirmRemove(item)"
+            @touchstart="onItemTouchStart"
+            @touchend="onItemTouchEnd"
+            @touchcancel="onItemTouchEnd"
           >
             <image
               v-if="thumbnailUrls[item.id] && !failedThumbnails[item.id]"
@@ -1113,9 +1168,9 @@ function onScrollToLower() { void loadMore(); }
             <view v-else class="grid-image-placeholder" />
           </button>
         </view>
-        <text v-if="gridOverflow > 0" class="grid-overflow-note" :style="{ padding: `0 ${gridPadX}rpx` }">仅显示前 {{ MAX_GRID_RENDER }} 件</text>
+        <text v-if="gridOverflow > 0" class="grid-overflow-note" :style="{ padding: `0 ${gridPadX}rpx` }">已显示 {{ gridItems.length }} / 共 {{ items.length }} 件 · 下滑加载更多</text>
       </view>
-    </scroll-view>
+    </view>
 
     <text v-if="loadingMore" class="page-loading">正在加载更多…</text>
     </template>
@@ -1130,7 +1185,9 @@ function onScrollToLower() { void loadMore(); }
         <text class="wish-empty__sub">去发现页逛逛，把喜欢的纸袋收进来</text>
         <button class="wish-empty__cta" @tap="goDiscover">去发现页</button>
       </view>
-      <scroll-view v-else class="grid-window" scroll-x :show-scrollbar="false"
+      <view
+        v-else
+        class="grid-window"
         @touchstart="gridTouchStart"
         @touchmove.stop="gridTouchMove"
         @touchend="gridTouchEnd"
@@ -1142,12 +1199,15 @@ function onScrollToLower() { void loadMore(); }
             :style="{ gridTemplateColumns: `repeat(${gridCols}, ${gridW}rpx)`, gap: `${gridGap}rpx`, padding: `0 ${gridPadX}rpx` }"
           >
             <button
-              v-for="item in visibleWishlist.slice(0, MAX_GRID_RENDER)"
+              v-for="item in wishGridItems"
               :key="item.id"
               class="grid-item grid-item--wish"
               :style="{ width: `${gridW}rpx`, height: `${gridCardH}rpx`, borderRadius: `${gridRadius}rpx` }"
               @tap="open(item)"
               @longpress="removeWish(item)"
+              @touchstart="onItemTouchStart"
+              @touchend="onItemTouchEnd"
+              @touchcancel="onItemTouchEnd"
             >
               <image
                 v-if="item.displayImageUrl || item.thumbnailUrl"
@@ -1159,9 +1219,9 @@ function onScrollToLower() { void loadMore(); }
               <view v-else class="grid-image-placeholder" />
             </button>
           </view>
-          <text v-if="visibleWishlist.length > MAX_GRID_RENDER" class="grid-overflow-note" :style="{ padding: `0 ${gridPadX}rpx` }">仅显示前 {{ MAX_GRID_RENDER }} 件</text>
+          <text v-if="visibleWishlist.length > wishGridItems.length" class="grid-overflow-note" :style="{ padding: `0 ${gridPadX}rpx` }">已显示 {{ wishGridItems.length }} / 共 {{ visibleWishlist.length }} 件 · 下滑加载更多</text>
         </view>
-      </scroll-view>
+      </view>
       <view v-if="initialized && wishlistItems.length && !visibleWishlist.length" class="wish-empty wish-empty--narrow">
         <text class="wish-empty__title">没有匹配的心愿</text>
         <text class="wish-empty__sub">换个关键词试试，或清空搜索查看全部</text>
@@ -1181,7 +1241,7 @@ function onScrollToLower() { void loadMore(); }
              靶心 红环=已拥有 / 黑◎=未拥有（点按选展架直接收进） -->
         <view class="detail-quick">
           <view v-if="isWishDetail" class="detail-quick__btn" hover-class="is-pressed" :hover-stay-time="80" @tap.stop="toggleDetailWish">
-            <image class="detail-quick__icon" src="/static/figma/heart-active.svg" mode="aspectFit" />
+            <image class="detail-quick__icon like-icon" :class="{ 'is-pop': wishPop, 'is-shrink': wishShrink }" src="/static/figma/heart-active.svg" mode="aspectFit" />
           </view>
           <view class="detail-quick__btn" hover-class="is-pressed" :hover-stay-time="80" @tap.stop="markFromDetail">
             <image class="detail-quick__icon" :src="isOwnedDetail ? '/static/figma/target-marked.svg' : '/static/figma/target.svg'" mode="aspectFit" />
@@ -1584,7 +1644,9 @@ function onScrollToLower() { void loadMore(); }
 
 /* ── 宫格画廊（H5 .grid-window / .grid-stage / .collection-grid）──
    尺寸全部由脚本按捏合进度派生（inline style），这里只留结构与静态质感。 */
-.grid-window { width: 100%; overflow: hidden; }
+/* 宫格容器撑满剩余视口：藏品少时卡片下方的空白也在容器内，
+   双指缩放挂在容器上 → 空白区域同样生效（不必碰到卡片） */
+.grid-window { width: 100%; min-height: 70vh; overflow: hidden; }
 .grid-stage { display: inline-block; min-width: 100%; padding: 24rpx 0 8rpx; }
 .collection-grid { display: grid; align-content: start; justify-content: start; }
 /* 卡面质感对齐 H5 .grid-card：冷调斜向渐变 + 1px 内白边，无外影、无光斑；
@@ -1747,4 +1809,5 @@ function onScrollToLower() { void loadMore(); }
 
 <style>
 @import '../../styles/edit-form.css';
+@import '../../styles/like-burst.css';
 </style>
