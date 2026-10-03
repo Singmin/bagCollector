@@ -1,0 +1,20 @@
+/* ── 加入心愿袋特效（方案 A）──
+   加入：♥ 图标弹性弹跳（约 500ms）
+   取消：♥ 轻微缩回（不做粒子、不加震动）
+   两处入口共用：首页大卡背面「加入心愿袋」+ 详情卡右上角 ♥ */
+
+/* 图标弹跳 / 缩回 */
+.like-icon { will-change: transform; }
+.like-icon.is-pop { animation: like-pop .5s cubic-bezier(.34, 1.56, .64, 1); }
+.like-icon.is-shrink { animation: like-shrink .32s ease-in-out; }
+@keyframes like-pop {
+  0% { transform: scale(1); }
+  26% { transform: scale(.84); }
+  58% { transform: scale(1.3); }
+  100% { transform: scale(1); }
+}
+@keyframes like-shrink {
+  0% { transform: scale(1); }
+  40% { transform: scale(.86); }
+  100% { transform: scale(1); }
+}

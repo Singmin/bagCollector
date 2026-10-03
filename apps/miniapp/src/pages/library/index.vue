@@ -505,13 +505,32 @@ function detailSource(): Collectible | null {
   return detailData.value && detailData.value.id === item.id ? detailData.value : (item as Collectible);
 }
 
+/* ── 心愿袋动效（方案 A）：加入=♥弹跳+小爱心飞散；取消=轻微缩回 ── */
+const wishPop = ref(false);
+const wishShrink = ref(false);
+function playWishEffect(added: boolean) {
+  if (added) {
+    wishPop.value = false;
+    nextTick(() => {
+      wishPop.value = true;
+      setTimeout(() => { wishPop.value = false; }, 560);
+    });
+    return;
+  }
+  wishShrink.value = false;
+  nextTick(() => {
+    wishShrink.value = true;
+    setTimeout(() => { wishShrink.value = false; }, 340);
+  });
+}
 async function toggleDetailWish() {
   const item = detailItem.value; if (!item) return;
-  if (isWishDetail.value) return void removeWish(item);
+  if (isWishDetail.value) { playWishEffect(false); return void removeWish(item); }
   const source = detailSource(); if (!source) return;
   try {
     await dataService.addWishlist(source.id);
     wishlistItems.value = [source, ...wishlistItems.value];
+    playWishEffect(true);
     uni.showToast({ title: '已加入心愿袋', icon: 'none' });
   } catch (error) {
     uni.showToast({ title: error instanceof Error ? error.message : '操作失败', icon: 'none' });
@@ -1209,7 +1228,7 @@ function onScrollToLower() {
              靶心 红环=已拥有 / 黑◎=未拥有（点按选展架直接收进） -->
         <view class="detail-quick">
           <view v-if="isWishDetail" class="detail-quick__btn" hover-class="is-pressed" :hover-stay-time="80" @tap.stop="toggleDetailWish">
-            <image class="detail-quick__icon" src="/static/figma/heart-active.svg" mode="aspectFit" />
+            <image class="detail-quick__icon like-icon" :class="{ 'is-pop': wishPop, 'is-shrink': wishShrink }" src="/static/figma/heart-active.svg" mode="aspectFit" />
           </view>
           <view class="detail-quick__btn" hover-class="is-pressed" :hover-stay-time="80" @tap.stop="markFromDetail">
             <image class="detail-quick__icon" :src="isOwnedDetail ? '/static/figma/target-marked.svg' : '/static/figma/target.svg'" mode="aspectFit" />
@@ -1775,4 +1794,5 @@ function onScrollToLower() {
 
 <style>
 @import '../../styles/edit-form.css';
+@import '../../styles/like-burst.css';
 </style>

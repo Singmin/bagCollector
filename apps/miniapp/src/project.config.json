@@ -1,9 +1,10 @@
 {
   "description": "袋袋集 私人视觉陈列柜",
   "compileType": "miniprogram",
-  "libVersion": "latest",
+  "libVersion": "2.30.4",
   "appid": "wx4fa198a998d80249",
   "projectname": "袋袋集",
+  "__usePrivacyCheck__": false,
   "setting": {
     "es6": true,
     "postcss": true,

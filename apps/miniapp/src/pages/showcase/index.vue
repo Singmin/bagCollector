@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, nextTick, ref } from 'vue';
 import { onHide, onShow, onShareAppMessage, onShareTimeline } from '@dcloudio/uni-app';
 import type { Collectible, CollectibleSummary, Shelf } from '../../types';
 import { dataService } from '../../services/data';
@@ -247,6 +247,25 @@ function pickItem(item: Collectible) {
 let wishToggling = false;
 function isWished(id: string) { return wishlistIds.value.has(id); }
 
+/* ── 心愿袋动效（方案 A）：加入=♥弹跳+小爱心飞散；取消=轻微缩回 ── */
+const wishPop = ref(false);
+const wishShrink = ref(false);
+function playWishEffect(added: boolean) {
+  if (added) {
+    wishPop.value = false;
+    nextTick(() => {
+      wishPop.value = true;
+      setTimeout(() => { wishPop.value = false; }, 560);
+    });
+    return;
+  }
+  wishShrink.value = false;
+  nextTick(() => {
+    wishShrink.value = true;
+    setTimeout(() => { wishShrink.value = false; }, 340);
+  });
+}
+
 async function toggleWish(item: Collectible) {
   /* 互斥：已标记已有的纸袋不能再进心愿袋（文案压到 9 字，微信 toast 一行放得下） */
   if (markedMap.value[item.id]) return void uni.showToast({ title: '已标记，无需心愿袋', icon: 'none' });
@@ -258,10 +277,12 @@ async function toggleWish(item: Collectible) {
       const next = new Set(wishlistIds.value);
       next.delete(item.id);
       wishlistIds.value = next;
+      playWishEffect(false);
       uni.showToast({ title: '已移出心愿袋', icon: 'none' });
     } else {
       await dataService.addWishlist(item.id);
       wishlistIds.value = new Set(wishlistIds.value).add(item.id);
+      playWishEffect(true);
       uni.showToast({ title: '已加入心愿袋', icon: 'none' });
     }
   } catch (error) {
@@ -495,7 +516,7 @@ async function onRefresherRefresh() {
               <!-- 发现页操作：加入/取消心愿袋 + 标记已有（收进我的收藏并核对信息） -->
               <view class="back-actions">
                 <button class="back-action" :class="{ 'is-on': isWished(heroItem.id) }" @tap.stop="toggleWish(heroItem)">
-                  <image class="back-action__icon" :src="isWished(heroItem.id) ? '/static/figma/heart-active.svg' : '/static/figma/heart.svg'" mode="aspectFit" />
+                  <image class="back-action__icon like-icon" :class="{ 'is-pop': wishPop, 'is-shrink': wishShrink }" :src="isWished(heroItem.id) ? '/static/figma/heart-active.svg' : '/static/figma/heart.svg'" mode="aspectFit" />
                   <text>{{ isWished(heroItem.id) ? '已在心愿袋' : '加入心愿袋' }}</text>
                 </button>
                 <button class="back-action" :class="{ 'back-action--primary': !markedMap[heroItem.id], 'is-marked': !!markedMap[heroItem.id] }" @tap.stop="openMark(heroItem)">
@@ -971,7 +992,7 @@ async function onRefresherRefresh() {
 /* 主卡背面的操作区：加入心愿袋（描边）+ 标记已有（黑色实心）。
    ⚠ 必须 position + z-index 7 高于整卡点击层 .flip-card__hit(6)，否则点击会被翻面截走 */
 .back-actions { position: relative; z-index: 7; display: flex; gap: 16rpx; margin-top: 24rpx; }
-.back-action { flex: 1 1 0; display: flex; align-items: center; justify-content: center; gap: 10rpx; height: 84rpx; margin: 0; padding: 0; border: 2rpx solid rgba(20,20,20,.18); border-radius: 42rpx; background: transparent; color: #141414; font-size: var(--wc-font-footnote); font-weight: 650; line-height: 1; }
+.back-action { position: relative; flex: 1 1 0; display: flex; align-items: center; justify-content: center; gap: 10rpx; height: 84rpx; margin: 0; padding: 0; border: 2rpx solid rgba(20,20,20,.18); border-radius: 42rpx; background: transparent; color: #141414; font-size: var(--wc-font-footnote); font-weight: 650; line-height: 1; }
 /* 按钮内小图标：心形（空心/实心红随心愿状态切换）、白色对勾 */
 .back-action__icon { flex: 0 0 30rpx; width: 30rpx; height: 30rpx; }
 .back-action.is-on { border-color: #c50405; color: #c50405; }
@@ -986,4 +1007,5 @@ async function onRefresherRefresh() {
    本页 scoped 样式里没有这些类 —— 少了这个引入半窗会裸奔（无底 sheet、无遮罩、表单无版式），
    这就是「点击标记已有 UI 不对」的根因。必须非 scoped 引入，与 library/index.vue 同款。 */
 @import '../../styles/edit-form.css';
+@import '../../styles/like-burst.css';
 </style>
