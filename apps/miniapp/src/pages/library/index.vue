@@ -1631,7 +1631,9 @@ function onScrollToLower() {
 
 /* ── 宫格画廊（H5 .grid-window / .grid-stage / .collection-grid）──
    尺寸全部由脚本按捏合进度派生（inline style），这里只留结构与静态质感。 */
-.grid-window { width: 100%; overflow: hidden; }
+/* 宫格容器撑满剩余视口：藏品少时卡片下方的空白也在容器内，
+   双指缩放挂在容器上 → 空白区域同样生效（不必碰到卡片） */
+.grid-window { width: 100%; min-height: 70vh; overflow: hidden; }
 .grid-stage { display: inline-block; min-width: 100%; padding: 24rpx 0 8rpx; }
 .collection-grid { display: grid; align-content: start; justify-content: start; }
 /* 卡面质感对齐 H5 .grid-card：冷调斜向渐变 + 1px 内白边，无外影、无光斑；
