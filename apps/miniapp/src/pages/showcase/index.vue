@@ -498,7 +498,7 @@ async function onRefresherRefresh() {
                   <image class="back-action__icon" :src="isWished(heroItem.id) ? '/static/figma/heart-active.svg' : '/static/figma/heart.svg'" mode="aspectFit" />
                   <text>{{ isWished(heroItem.id) ? '已在心愿袋' : '加入心愿袋' }}</text>
                 </button>
-                <button class="back-action" :class="{ 'back-action--primary': !markedMap[heroItem.id] }" @tap.stop="openMark(heroItem)">
+                <button class="back-action" :class="{ 'back-action--primary': !markedMap[heroItem.id], 'is-marked': !!markedMap[heroItem.id] }" @tap.stop="openMark(heroItem)">
                   <image class="back-action__icon" :src="markedMap[heroItem.id] ? '/static/figma/target-marked.svg' : '/static/figma/target-white.svg'" mode="aspectFit" />
                   <text>{{ markedMap[heroItem.id] ? '已拥有' : '标记已有' }}</text>
                 </button>
@@ -976,6 +976,8 @@ async function onRefresherRefresh() {
 .back-action__icon { flex: 0 0 30rpx; width: 30rpx; height: 30rpx; }
 .back-action.is-on { border-color: #c50405; color: #c50405; }
 .back-action--primary { border: 0; background: #141414; color: #ffffff; }
+/* 已拥有态：红字 + 红描边（与心愿袋激活态同一红 #c50405），图标本身已是红环靶心 */
+.back-action.is-marked { border-color: #c50405; color: #c50405; }
 /* 标记半窗已抽为共享组件 components/mark-sheet（含 mark-hint / detail-artwork 样式） */
 </style>
 
