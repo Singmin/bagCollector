@@ -115,6 +115,22 @@ function openCrop() {
 function openColor() {
   uni.navigateTo({ url: `/package-editor/pages/crop/index?id=${id.value}` });
 }
+/* 首次上传完成后状态停在 AWAITING_CROP（等用户裁剪）：此时只有标准图，没有展示图/缩略图，
+   而收藏架列表只返回 READY —— 用户不点「裁剪旋转/自动抠图」直接「确定添加」的话，这条收藏会永远看不到。
+   这里自动做一次全幅裁剪（x/y/w/h/rotation 全默认，画面不变，免费不占抠图配额），
+   产出展示图/缩略图并把状态推进到 READY；轮询等待就绪后再跳收藏架。 */
+const CROP_WAIT_TIMEOUT_MS = 30_000;
+const CROP_WAIT_POLL_MS = 1_000;
+async function waitForCropReady(id: string) {
+  const deadline = Date.now() + CROP_WAIT_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const current = await dataService.collectible(id);
+    if (current.processingStatus === 'READY') return;
+    if (current.processingStatus === 'FAILED') throw new Error(current.processingError || '图片处理失败');
+    await new Promise((resolve) => setTimeout(resolve, CROP_WAIT_POLL_MS));
+  }
+  throw new Error('图片处理超时，请稍后在收藏架下拉刷新');
+}
 async function save() {
   /* 不用 disabled 属性控制按钮（微信内置 wx-button[disabled] 样式会盖掉黑底），
      改为点击时校验并提示；saving 期间直接忽略重复点击 */
@@ -131,6 +147,10 @@ async function save() {
     if (!shelf) shelf = await dataService.createShelf({ name: normalizedBrand, theme: 'SAGE' });
     if (!shelves.value.some((current) => current.id === shelf!.id)) shelves.value = [...shelves.value, shelf];
     await dataService.updateCollectible(id.value, { name: normalizedName, shelfId: shelf.id, notes: notes.value.trim(), tags: [...tagList.value] });
+    if (item.value.processingStatus === 'AWAITING_CROP') {
+      await dataService.crop(id.value, { x: 0, y: 0, width: 1, height: 1, rotation: 0 });
+      await waitForCropReady(id.value);
+    }
     uni.showToast({ title: '已加入陈列柜', icon: 'success' }); setTimeout(() => uni.switchTab({ url: '/pages/library/index' }), 700);
   } catch (error) { uni.showToast({ title: error instanceof Error ? error.message : '保存失败', icon: 'none' }); saving.value = false; }
 }
@@ -236,7 +256,7 @@ function goBack() { uni.navigateBack({ delta: 1 }); }
 .ef-readout__v { display: block; margin: 0 0 9rpx; color: #3a3630; font-size: var(--wc-font-description); font-weight: 600; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ef-readout__k { display: block; color: #a8a49d; font-size: var(--wc-font-footnote); font-weight: 700; line-height: 1.2; letter-spacing: .8rpx; white-space: nowrap; }/* 图区：与编辑半窗 .detail-artwork 同款 —— 无底色、透明居中 aspectFit + 柔影（2026-09-29 去棕底/虚线框）；
    .page 内边距已清零，这里自带 30rpx 左右边距 */
-.preview { position: relative; margin: 0 30rpx; height: 306rpx; display: flex; align-items: center; justify-content: center; }.preview image { width: 100%; height: 269rpx; filter: drop-shadow(0 7rpx 18rpx rgba(0, 0, 0, .18)); }
+.preview { position: relative; margin: 0 30rpx; height: 480rpx; display: flex; align-items: center; justify-content: center; }.preview image { width: 100%; height: 440rpx; filter: drop-shadow(0 7rpx 18rpx rgba(0, 0, 0, .18)); }
 /* 三个入口并排一行：等宽描边胶囊（原整行纵向堆叠 → 一行三等分，每个约 220rpx），图标 + 文字横排居中。
    底部 32rpx 是按钮行与下方表单之间的呼吸位（原仅 6rpx + 表单自带 6rpx，太挤） */
 .entry-row { display: flex; gap: 14rpx; margin: 26rpx 30rpx 32rpx; }
