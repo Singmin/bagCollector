@@ -226,6 +226,9 @@ function load(force = false) {
       nextCursor.value = page.nextCursor;
       totalCount.value = page.totalCount;
       initialized.value = true;
+      /* 新结果重新从一批开始渲染 */
+      gridRenderCount.value = GRID_STEP;
+      wishRenderCount.value = GRID_STEP;
       loadedAt = Date.now();
       loadedRevision = requestRevision;
       hydrateThumbnails(page.items);
@@ -777,7 +780,18 @@ function toggleMode() {
    卡宽由「屏宽 750rpx 放 4 列」反推，其余尺寸沿用原有比例派生（视觉口径不变）。
    列数 = 4：4×卡宽 + 3×间距 + 2×左右留白 = 750rpx。 */
 const GRID_COLS = 4;
-const MAX_GRID_RENDER = 240;
+/* 宫格改为增量渲染：首屏渲染一批，滚到底部再追加一批（避免一次性渲染上千个节点卡顿）。
+   不再有「只显示前 N 件」的硬上限 */
+const GRID_STEP = 120;
+const gridRenderCount = ref(GRID_STEP);
+const wishRenderCount = ref(GRID_STEP);
+function appendGridRender() {
+  if (segment.value === 'wish') {
+    if (wishRenderCount.value < visibleWishlist.value.length) wishRenderCount.value += GRID_STEP;
+    return;
+  }
+  if (displayMode.value === 'grid' && gridRenderCount.value < items.value.length) gridRenderCount.value += GRID_STEP;
+}
 /* 解 4W + 3×(0.10976W) + 2×(0.14634W) = 750 → W ≈ 162rpx（比原最大档 149 更大） */
 const gridW = Math.round(750 / (GRID_COLS + (GRID_COLS - 1) * 0.10976 + 2 * 0.14634));
 
@@ -795,7 +809,8 @@ const gridRadius = Math.round(gridW * 0.17073);
 const gridGap = Math.round(gridW * 0.10976);
 const gridPadX = Math.round(gridW * 0.14634);
 const gridCols = GRID_COLS;
-const gridItems = computed(() => items.value.slice(0, MAX_GRID_RENDER));
+const gridItems = computed(() => items.value.slice(0, gridRenderCount.value));
+const wishGridItems = computed(() => visibleWishlist.value.slice(0, wishRenderCount.value));
 const gridOverflow = computed(() => items.value.length - gridItems.value.length);
 
 /* ── 展架配色对齐 H5：按行序轮换三色（3n+1 琥珀 / 3n+2 天蓝 / 3n 鼠尾草），
@@ -877,7 +892,12 @@ async function onRefresherRefresh() {
   refresherTriggered.value = true;
   try { await load(true); } finally { refresherTriggered.value = false; }
 }
-function onScrollToLower() { void loadMore(); }
+function onScrollToLower() {
+  /* 宫格是竖向排布：到底时先把手上已加载的数据多渲染一批（增量渲染），
+     同时照常触发下一页加载 */
+  appendGridRender();
+  void loadMore();
+}
 </script>
 
 <template>
@@ -1075,7 +1095,7 @@ function onScrollToLower() { void loadMore(); }
             <view v-else class="grid-image-placeholder" />
           </button>
         </view>
-        <text v-if="gridOverflow > 0" class="grid-overflow-note" :style="{ padding: `0 ${gridPadX}rpx` }">仅显示前 {{ MAX_GRID_RENDER }} 件</text>
+        <text v-if="gridOverflow > 0" class="grid-overflow-note" :style="{ padding: `0 ${gridPadX}rpx` }">已显示 {{ gridItems.length }} / 共 {{ items.length }} 件 · 下滑加载更多</text>
       </view>
     </view>
 
@@ -1099,7 +1119,7 @@ function onScrollToLower() { void loadMore(); }
             :style="{ gridTemplateColumns: `repeat(${gridCols}, ${gridW}rpx)`, gap: `${gridGap}rpx`, padding: `0 ${gridPadX}rpx` }"
           >
             <button
-              v-for="item in visibleWishlist.slice(0, MAX_GRID_RENDER)"
+              v-for="item in wishGridItems"
               :key="item.id"
               class="grid-item grid-item--wish"
               :style="{ width: `${gridW}rpx`, height: `${gridCardH}rpx`, borderRadius: `${gridRadius}rpx` }"
@@ -1116,7 +1136,7 @@ function onScrollToLower() { void loadMore(); }
               <view v-else class="grid-image-placeholder" />
             </button>
           </view>
-          <text v-if="visibleWishlist.length > MAX_GRID_RENDER" class="grid-overflow-note" :style="{ padding: `0 ${gridPadX}rpx` }">仅显示前 {{ MAX_GRID_RENDER }} 件</text>
+          <text v-if="visibleWishlist.length > wishGridItems.length" class="grid-overflow-note" :style="{ padding: `0 ${gridPadX}rpx` }">已显示 {{ wishGridItems.length }} / 共 {{ visibleWishlist.length }} 件 · 下滑加载更多</text>
         </view>
       </view>
       <view v-if="initialized && wishlistItems.length && !visibleWishlist.length" class="wish-empty wish-empty--narrow">
