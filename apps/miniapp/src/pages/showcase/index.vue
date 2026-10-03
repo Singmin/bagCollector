@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { onHide, onShow, onShareAppMessage, onShareTimeline } from '@dcloudio/uni-app';
 import type { Collectible, CollectibleSummary, Shelf } from '../../types';
 import { dataService } from '../../services/data';
@@ -138,17 +138,35 @@ function assertRenderable(nextItems: CollectibleSummary[]) {
   }
 }
 
-function hydrateThumbnails(nextItems: Collectible[]) {
-  for (const item of nextItems) {
-    void resolveCollectibleThumbnail(item).then((url) => {
-      if (!url || !items.value.some((current) => current.id === item.id && current.updatedAt === item.updatedAt)) return;
-      thumbnailUrls.value[item.id] = url;
-      delete failedThumbnails.value[item.id];
-    }).catch(() => {
-      failedThumbnails.value[item.id] = true;
-    });
-  }
+/* ── 缩略图按需下载：只下「渲染窗口 ± 缓冲」内的条目 ──
+   feed 一次取全（上限 1000 条），若对全部条目排队下载缩略图，下载通道
+   （并发有限，见 services/images.ts）会被根本看不见的图占满 —— 切到
+   「全部收藏」页时，那边首屏的图要排在上千个请求后面，页面久久不出图
+   （2026-10-03 真机实测整页约 9s）。窗口随滚动推进：新进窗口的条目才入队，
+   已入队的用 key 记住，来回滚动不重复下；失败的不记 key，下次进窗口可重试。 */
+const requestedThumbnails = new Set<string>();
+function hydrateThumbnail(item: Collectible) {
+  const key = `${item.id}:${item.updatedAt}`;
+  if (requestedThumbnails.has(key)) return;
+  requestedThumbnails.add(key);
+  void resolveCollectibleThumbnail(item).then((url) => {
+    if (!url || !items.value.some((current) => current.id === item.id && current.updatedAt === item.updatedAt)) return;
+    thumbnailUrls.value[item.id] = url;
+    delete failedThumbnails.value[item.id];
+  }).catch(() => {
+    requestedThumbnails.delete(key);
+    failedThumbnails.value[item.id] = true;
+  });
 }
+
+/* 主展位那张未必在窗口里（滚远后翻面仍要看它），单独补进本次要下的名单 */
+function hydrateVisibleThumbnails() {
+  const hero = heroItem.value;
+  const slice = items.value.slice(visibleStart.value, visibleEnd.value);
+  if (hero && !slice.some((item) => item.id === hero.id)) slice.push(hero);
+  for (const item of slice) hydrateThumbnail(item);
+}
+watch([visibleStart, visibleEnd], hydrateVisibleThumbnails);
 
 function load() {
   if (refreshPromise) return refreshPromise;
@@ -170,11 +188,12 @@ function load() {
       updateVisibleRange(0); // 首屏数据到位后立即建立渲染窗口
       initialized.value = true;
       wishlistIds.value = new Set(wish.map((item) => item.id));
-      hydrateThumbnails(feedItems);
       // 刷新后沿用当前选中的那一张，它不在列表里才退回最新一张。
       const kept = feedItems.find((item) => item.id === heroItem.value?.id);
       if (kept) heroItem.value = kept;
       else selectHero(feedItems[0] ?? null);
+      /* 等 hero 定了再取首屏那批图：沿用的旧选中可能落在窗口外，取早了会漏 */
+      hydrateVisibleThumbnails();
     } catch (error) {
       console.error(error);
       const message = error instanceof Error ? error.message : '发现加载失败';
@@ -202,11 +221,11 @@ async function loadMore() {
     const fresh = appended.filter((item) => !known.has(item.id));
     if (fresh.length) {
       items.value = [...items.value, ...fresh];
-      hydrateThumbnails(fresh);
       syncClaimState(fresh);
     }
     nextCursor.value = page.nextCursor;
     updateVisibleRange(railLastLeft); // 追加后按当前滚动位置重算窗口
+    hydrateVisibleThumbnails(); // 新追加的条目滚进窗口才会入队下载
   } catch (error) {
     uni.showToast({ title: error instanceof Error ? error.message : '加载更多失败', icon: 'none' });
   } finally {

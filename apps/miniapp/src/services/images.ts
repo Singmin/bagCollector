@@ -4,7 +4,10 @@ import type { Collectible, CollectibleSummary } from '../types';
 const downloaded = new Map<string, Promise<string>>();
 const thumbnails = new Map<string, Promise<string>>();
 const thumbnailQueue: Array<() => void> = [];
-const MAX_THUMBNAIL_DOWNLOADS = 4;
+/* 微信小程序 uni.downloadFile 的并发上限是 10，队列上限取齐平台额度。
+   2026-10-03 前是 4：真机实测每张缩略图 200~800ms（API 代理转发一跳），
+   11 张图排队要 9s 才出全；提到 10 后同一批图约三路并行跑完。 */
+const MAX_THUMBNAIL_DOWNLOADS = 10;
 let activeThumbnailDownloads = 0;
 
 function needsDownload(url?: string) {

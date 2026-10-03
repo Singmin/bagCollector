@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, getCurrentInstance, nextTick, reactive, ref } from 'vue';
-import { onLoad, onReady } from '@dcloudio/uni-app';
+import { onLoad, onReady, onUnload } from '@dcloudio/uni-app';
 import { dataService } from '../../../services/data';
 
 type Rotation = 0 | 90 | 180 | 270;
@@ -11,21 +11,22 @@ const DISPLAY_RATIO = 3 / 4;
 type RatioKey = 'r34' | 'r23' | 'free';
 const RATIOS: Record<RatioKey, number | null> = { r34: DISPLAY_RATIO, r23: 2 / 3, free: null };
 const ratioKey = ref<RatioKey>('r34');
-function selectRatio(key: RatioKey) { ratioKey.value = key; draw(); }
+function selectRatio(key: RatioKey) { ratioKey.value = key; }
 /* P1：90° 粗旋转 + 微调角度滑杆（±20°，0.5° 步进），两者相加为最终角度 */
 const fineAngle = ref(0);
 const totalAngle = computed(() => rotation.value + fineAngle.value);
-function onAngle(event: any) { fineAngle.value = Number(event.detail.value ?? event.detail); draw(); }
-/* P2：调色（预览用 canvas filter，最终由服务端 sharp 落盘，缺省 1 = 不调整） */
+function onAngle(event: any) { fineAngle.value = Number(event.detail.value ?? event.detail); }
+/* P2：调色（预览用 CSS filter，最终由服务端 sharp 落盘，缺省 1 = 不调整） */
 const brightness = ref(1); const contrast = ref(1); const saturation = ref(1);
 function onColor(key: 'brightness' | 'contrast' | 'saturation', event: any) {
   const value = Number(event.detail.value ?? event.detail);
   if (key === 'brightness') brightness.value = value;
   else if (key === 'contrast') contrast.value = value;
   else saturation.value = value;
-  draw();
 }
 const id = ref(''); const loading = ref(true); const zoomValue = ref(1); const rotation = ref<Rotation>(0); const submitting = ref(false);
+/* 加载阶段文案（真机排查用：显示当前走到哪一步） */
+const loadingStage = ref('');
 /* 该图是否已抠过图：已抠图时「同时抠图」开关失效（/matte 会 409），本次提交改走 /crop，
    worker 据 rematte 重新抠图，保证透明图与新裁剪构图对齐 */
 const matted = ref(false);
@@ -37,23 +38,61 @@ function onMatteAlong(event: any) { matteAlong.value = !!event.detail.value; }
 const useMatte = computed(() => matteAlong.value && !matted.value);
 const loadError = ref('');
 const instance = getCurrentInstance();
+/* 图片加载兜底：@load 秒回是常态（<image> 与「完善信息」页命中同一缓存），
+   iOS 偶现 @load/@error 都不触发 —— 2.5s 后用 getImageInfo 补一次；
+   getImageInfo 与 <image> 不共享缓存、网络图要完整下载，失败可能是单纯网慢，
+   再等 6s 补最后一刀，仍失败才判加载失败（用户可点重试） */
+let loadWatch: any = null;
+function clearLoadWatch() {
+  if (loadWatch) { clearTimeout(loadWatch); loadWatch = null; }
+}
+function finishLoad(width: number, height: number) {
+  Object.assign(state, { imageWidth: width, imageHeight: height });
+  loadingStage.value = ''; loading.value = false;
+}
+function failLoad(message: string) {
+  loadError.value = message; loadingStage.value = '';
+}
+function startLoadWatch(src: string, delayMs = 2500) {
+  clearLoadWatch();
+  loadWatch = setTimeout(() => {
+    if (!loading.value) return;
+    getImageInfo(src).then((info) => {
+      if (loading.value) finishLoad(info.width, info.height);
+    }).catch(() => {
+      if (!loading.value) return;
+      loadWatch = setTimeout(() => {
+        if (!loading.value) return;
+        getImageInfo(src).then((info) => {
+          if (loading.value) finishLoad(info.width, info.height);
+        }).catch(() => {
+          if (loading.value) failLoad('标准图加载失败，请点重试');
+        });
+      }, 6000);
+    });
+  }, delayMs);
+}
+/* ── 预览层状态（普通 <image> + CSS transform，不用 canvas 2d）──
+   2026-10-03：iOS 真机（真机调试/预览）canvas 2d 首次绘制必崩
+   TypeError: ... a.isMagicBrushCanvas（基础库渲染层内部错误，模拟器不复现），
+   改用 image + CSS transform 预览；裁剪坐标算法（metrics/frameRect）不变，
+   提交给服务端的仍是归一化 0~1 参数，与 canvas 版完全一致 */
 const state = reactive({
-  canvas: null as any, context: null as any, image: null as any,
-  canvasWidth: 0, canvasHeight: 0, imageWidth: 0, imageHeight: 0,
+  src: '', stageWidth: 0, stageHeight: 0, imageWidth: 0, imageHeight: 0,
   offsetX: 0, offsetY: 0, lastX: 0, lastY: 0
 });
 
-/* 取景框：画布内「满足展示比例的最大矩形」，居中（不再随屏幕比例随意变化） */
+/* 取景框：舞台内「满足展示比例的最大矩形」，居中 */
 function frameRect() {
   const ratio = RATIOS[ratioKey.value];
-  /* 原图：不锁比例，取景框铺满画布（沿用旧行为） */
-  if (ratio === null) return { x: 24, y: 46, width: state.canvasWidth - 48, height: state.canvasHeight - 92 };
+  /* 原图：不锁比例，取景框铺满舞台（沿用旧行为） */
+  if (ratio === null) return { x: 24, y: 46, width: state.stageWidth - 48, height: state.stageHeight - 92 };
   const padX = 24; const padY = 24;
-  const maxWidth = state.canvasWidth - padX * 2;
-  const maxHeight = state.canvasHeight - padY * 2;
+  const maxWidth = state.stageWidth - padX * 2;
+  const maxHeight = state.stageHeight - padY * 2;
   let width = maxWidth; let height = width / ratio;
   if (height > maxHeight) { height = maxHeight; width = height * ratio; }
-  return { x: (state.canvasWidth - width) / 2, y: (state.canvasHeight - height) / 2, width, height };
+  return { x: (state.stageWidth - width) / 2, y: (state.stageHeight - height) / 2, width, height };
 }
 
 function metrics() {
@@ -66,45 +105,110 @@ function metrics() {
   const scale = Math.max(frame.width / rotatedWidth, frame.height / rotatedHeight) * zoomValue.value;
   const drawWidth = rotatedWidth * scale; const drawHeight = rotatedHeight * scale;
   const maxX = Math.max(0, (drawWidth - frame.width) / 2); const maxY = Math.max(0, (drawHeight - frame.height) / 2);
-  state.offsetX = Math.max(-maxX, Math.min(maxX, state.offsetX)); state.offsetY = Math.max(-maxY, Math.min(maxY, state.offsetY));
-  return { frame, scale, drawWidth, drawHeight };
+  /* 纯计算，不写 state：computed 求值里带副作用（写响应式状态）会破坏依赖追踪，
+     表现为首次渲染后样式再也不更新（2026-10-03 真机/模拟器交互全失灵的根因）。
+     夹紧结果由调用方按需落回 state */
+  const offsetX = Math.max(-maxX, Math.min(maxX, state.offsetX));
+  const offsetY = Math.max(-maxY, Math.min(maxY, state.offsetY));
+  return { frame, scale, drawWidth, drawHeight, offsetX, offsetY };
 }
 
-function draw() {
-  if (!state.context || !state.image) return;
-  const ctx = state.context; const { frame, scale } = metrics();
-  ctx.clearRect(0, 0, state.canvasWidth, state.canvasHeight); ctx.save();
-  ctx.translate(state.canvasWidth / 2 + state.offsetX, state.canvasHeight / 2 + state.offsetY);
-  ctx.rotate((totalAngle.value * Math.PI) / 180);
-  /* 调色预览：canvas 2d 支持 filter 时用它（与服务端 sharp 同顺序），不支持则退化为无色预览 */
-  const supportsFilter = 'filter' in ctx;
-  if (supportsFilter) ctx.filter = `brightness(${brightness.value}) contrast(${contrast.value}) saturate(${saturation.value})`;
-  ctx.drawImage(state.image, -state.imageWidth * scale / 2, -state.imageHeight * scale / 2, state.imageWidth * scale, state.imageHeight * scale);
-  if (supportsFilter) ctx.filter = 'none';
-  ctx.restore();
-  ctx.save();
-  ctx.fillStyle = 'rgba(20,18,15,.52)'; ctx.fillRect(0, 0, state.canvasWidth, frame.y); ctx.fillRect(0, frame.y + frame.height, state.canvasWidth, state.canvasHeight - frame.y - frame.height); ctx.fillRect(0, frame.y, frame.x, frame.height); ctx.fillRect(frame.x + frame.width, frame.y, state.canvasWidth - frame.x - frame.width, frame.height);
-  ctx.strokeStyle = 'rgba(255,255,255,.95)'; ctx.lineWidth = 1.5; ctx.strokeRect(frame.x, frame.y, frame.width, frame.height); ctx.strokeStyle = 'rgba(255,255,255,.38)'; ctx.lineWidth = 1;
-  for (let index = 1; index < 3; index += 1) { const x = frame.x + frame.width * index / 3; const y = frame.y + frame.height * index / 3; ctx.beginPath(); ctx.moveTo(x, frame.y); ctx.lineTo(x, frame.y + frame.height); ctx.stroke(); ctx.beginPath(); ctx.moveTo(frame.x, y); ctx.lineTo(frame.x + frame.width, y); ctx.stroke(); }
-  ctx.restore();
+/* 把夹紧后的偏移落回 state —— 只在事件回调里调用（手势/滑杆），不在 computed 里 */
+function clampOffsets() {
+  const { offsetX, offsetY } = metrics();
+  state.offsetX = offsetX; state.offsetY = offsetY;
+}
+
+/* 图片层：宽高 = 原始尺寸 × cover 缩放，围绕舞台中心平移/旋转；
+   margin 负值负责把图片中心对到舞台中心，transform 再叠加手势偏移与角度。
+   未拿到尺寸前的占位：不能用 display:none（真机上 <image> 会不触发 @load），
+   也不能用 0×0（部分机型同样不触发），改成铺满舞台 + opacity:0，保证参与布局 */
+const imageStyle = computed(() => {
+  if (!state.stageWidth || !state.imageWidth) {
+    return 'position:absolute;left:0;top:0;width:100%;height:100%;opacity:0;pointer-events:none;';
+  }
+  const { scale, offsetX, offsetY } = metrics();
+  const width = state.imageWidth * scale; const height = state.imageHeight * scale;
+  return `width:${width}px;height:${height}px;margin-left:${-width / 2}px;margin-top:${-height / 2}px;`
+    + `transform:translate(${offsetX}px,${offsetY}px) rotate(${totalAngle.value}deg);`
+    + `filter:brightness(${brightness.value}) contrast(${contrast.value}) saturate(${saturation.value})`;
+});
+
+/* 取景框层：压暗框外用超大扩散 box-shadow（被舞台 overflow:hidden 裁掉），
+   九宫格参考线用两个 1/3 平铺的线性渐变 */
+const frameStyle = computed(() => {
+  if (!state.stageWidth || !state.imageWidth) return 'display:none';
+  const frame = frameRect();
+  return `left:${frame.x}px;top:${frame.y}px;width:${frame.width}px;height:${frame.height}px;`;
+});
+
+/* 舞台尺寸查询：普通 view 的 size 查询（无 canvas，无渲染崩溃面）。
+   真机刚跳转时可能先拿到 0，轮询重试直到非零 */
+function readStageSize(attempts = 10) {
+  return new Promise<{ width: number; height: number }>((resolve, reject) => {
+    const attempt = (left: number) => {
+      const query = uni.createSelectorQuery().in(instance?.proxy as any);
+      query.select('.crop-stage').fields({ size: true }, (field: any) => {
+        if (field && field.width > 0 && field.height > 0) return resolve({ width: field.width, height: field.height });
+        if (left <= 0) return reject(new Error('画布初始化失败'));
+        setTimeout(() => attempt(left - 1), 120);
+      }).exec();
+    };
+    attempt(attempts);
+  });
+}
+
+/* getImageInfo 的 Promise 包装：返回宽高（本身也会把图拉进本地缓存） */
+function getImageInfo(src: string) {
+  return new Promise<{ width: number; height: number }>((resolve, reject) => {
+    uni.getImageInfo({ src, success: resolve, fail: (error: any) => reject(new Error(error?.errMsg || '图片解码失败')) });
+  });
 }
 
 async function prepare() {
   try {
+    loadingStage.value = '获取图片地址';
     const item = await dataService.collectible(id.value); if (!item.standardImageUrl) throw new Error('标准图尚未生成');
     matted.value = !!item.cutoutImageUrl;
+    /* src 立即挂上 <image>：与「完善信息」页同 URL 命中同一缓存，@load 秒回即进可编辑态；
+       不用 getImageInfo 当主路径 —— 它与 <image> 不共享缓存，网络图要完整重下（真机实测卡 10s+）。
+       @load 不触发时由 startLoadWatch 兜底（2.5s → 8.5s 两刀 getImageInfo） */
+    state.src = item.standardImageUrl;
+    startLoadWatch(item.standardImageUrl);
+    loadingStage.value = '初始化画布';
     await nextTick();
-    const query = uni.createSelectorQuery().in(instance?.proxy as any);
-    query.select('#cropCanvas').fields({ node: true, size: true }, (field: any) => {
-      if (!field?.node) return void (loadError.value = '画布初始化失败');
-      const dpr = uni.getSystemInfoSync().pixelRatio; const canvas = field.node;
-      canvas.width = field.width * dpr; canvas.height = field.height * dpr;
-      const context = canvas.getContext('2d'); context.scale(dpr, dpr); const image = canvas.createImage();
-      image.onload = () => { Object.assign(state, { canvas, context, image, canvasWidth: field.width, canvasHeight: field.height, imageWidth: image.width, imageHeight: image.height, offsetX: 0, offsetY: 0 }); loading.value = false; draw(); };
-      image.onerror = () => { loadError.value = '标准图加载失败'; }; image.src = item.standardImageUrl;
-    }).exec();
-  } catch (error) { loadError.value = error instanceof Error ? error.message : '图片加载失败'; }
+    const stage = await readStageSize();
+    Object.assign(state, { stageWidth: stage.width, stageHeight: stage.height });
+  } catch (error) { clearLoadWatch(); loadError.value = error instanceof Error ? error.message : '图片加载失败'; loadingStage.value = ''; }
 }
+
+/* 出错后一键重试：清干净加载态重新走一遍 prepare */
+async function retry() {
+  if (loading.value) return;
+  loadError.value = ''; loadingStage.value = ''; loading.value = true;
+  state.imageWidth = 0; state.imageHeight = 0; state.src = '';
+  await prepare();
+}
+
+/* <image> 的 load 事件带回原始宽高：兜底路径里靠它进入可编辑态；
+   主路径（getImageInfo）已就绪时忽略 —— 部分 @load 回调不带尺寸，不能反过来把好页面打成错误 */
+function onImageLoad(event: any) {
+  clearLoadWatch();
+  if (!loading.value) return;
+  const width = event.detail?.width; const height = event.detail?.height;
+  if (!width || !height) {
+    /* 事件不带尺寸时自己补一刀 getImageInfo，别直接判死 */
+    if (!state.src) { loadError.value = '标准图解码失败，请重试'; loadingStage.value = ''; return; }
+    getImageInfo(state.src).then((info) => {
+      Object.assign(state, { imageWidth: info.width, imageHeight: info.height });
+      loadingStage.value = ''; loading.value = false;
+    }).catch(() => { loadError.value = '标准图解码失败，请重试'; loadingStage.value = ''; });
+    return;
+  }
+  Object.assign(state, { imageWidth: width, imageHeight: height });
+  loadingStage.value = ''; loading.value = false;
+}
+function onImageError() { clearLoadWatch(); if (!loading.value) return; loadError.value = '标准图加载失败'; loadingStage.value = ''; }
 
 /* 手势：单指拖动 + 双指捏合缩放。双指全程以第一帧的双触点距离为基准，
    松开任意一指即结束捏合（回到单指拖动），避免跳变 */
@@ -123,33 +227,32 @@ function touchMove(event: any) {
   if (touches.length >= 2 && pinchBase) {
     const distance = touchDistance(touches[0], touches[1]);
     zoomValue.value = Math.max(1, Math.min(3, (pinchBase.zoom * distance) / pinchBase.distance));
-    draw();
     return;
   }
-  const touch = touches[0]; if (!touch) return; state.offsetX += touch.clientX - state.lastX; state.offsetY += touch.clientY - state.lastY; state.lastX = touch.clientX; state.lastY = touch.clientY; draw();
+  const touch = touches[0]; if (!touch) return; state.offsetX += touch.clientX - state.lastX; state.offsetY += touch.clientY - state.lastY; state.lastX = touch.clientX; state.lastY = touch.clientY; clampOffsets();
 }
 function touchEnd(event: any) {
   if ((event.touches ?? []).length < 2) pinchBase = null;
 }
 
-function zoom(event: any) { zoomValue.value = Number(event.detail.value); draw(); }
-function rotate() { rotation.value = ((rotation.value + 90) % 360) as Rotation; state.offsetX = 0; state.offsetY = 0; draw(); }
+function zoom(event: any) { zoomValue.value = Number(event.detail.value); clampOffsets(); }
+function rotate() { rotation.value = ((rotation.value + 90) % 360) as Rotation; state.offsetX = 0; state.offsetY = 0; }
 /* 重置：清空全部调整（比例回默认 3:4、缩放/角度/位移/调色回初值） */
 function resetAdjust() {
   ratioKey.value = 'r34'; zoomValue.value = 1; rotation.value = 0; fineAngle.value = 0;
   state.offsetX = 0; state.offsetY = 0;
   brightness.value = 1; contrast.value = 1; saturation.value = 1;
-  draw();
 }
 async function submit() {
   if (submitting.value) return;
   /* 主按钮不用 disabled（微信内置 wx-button[disabled] 样式会盖掉黑底），改为点击时校验并提示 */
   if (loadError.value) return void uni.showToast({ title: loadError.value, icon: 'none' });
   if (loading.value) return void uni.showToast({ title: '图片加载中，请稍候', icon: 'none' });
-  /* 裁剪参数按当前画布状态实时计算：取景框相对「绘制图」的位置与占比（归一化 0~1） */
-  const { frame, drawWidth, drawHeight } = metrics();
-  const left = state.canvasWidth / 2 + state.offsetX - drawWidth / 2;
-  const top = state.canvasHeight / 2 + state.offsetY - drawHeight / 2;
+  /* 裁剪参数按当前舞台状态实时计算：取景框相对「绘制图」的位置与占比（归一化 0~1）。
+     偏移取夹紧后的值，与预览所见一致 */
+  const { frame, drawWidth, drawHeight, offsetX, offsetY } = metrics();
+  const left = state.stageWidth / 2 + offsetX - drawWidth / 2;
+  const top = state.stageHeight / 2 + offsetY - drawHeight / 2;
   const payload = {
     x: Math.max(0, (frame.x - left) / drawWidth),
     y: Math.max(0, (frame.y - top) / drawHeight),
@@ -182,14 +285,45 @@ onLoad((query) => {
   }
   id.value = query.id;
 }); onReady(() => { if (id.value) void prepare(); });
+/* 离开页面时清掉加载兜底定时器，避免回调打到已销毁的页面 */
+onUnload(() => clearLoadWatch());
 </script>
 
 <template>
   <view class="crop-page">
     <nav-bar title="裁剪旋转" back />
     <text class="hint">拖动调整位置 · 双指捏合缩放 · 滑杆微调</text>
-    <view v-if="loadError" class="load-error">{{ loadError }}</view>
-    <view v-else class="canvas-shell"><canvas id="cropCanvas" canvas-id="cropCanvas" type="2d" class="crop-canvas" disable-scroll @touchstart.stop.prevent="touchStart" @touchmove.stop.prevent="touchMove" @touchend.stop.prevent="touchEnd" @touchcancel.stop.prevent="touchEnd" /></view>
+    <view v-if="loadError" class="load-error">
+      <text class="load-error__msg">{{ loadError }}</text>
+      <view class="load-error__retry" hover-class="is-pressed" :hover-stay-time="80" @tap="retry"><text>重试</text></view>
+    </view>
+    <!-- 预览舞台：普通 <image> + CSS transform（不再用 canvas 2d，见 script 顶部说明）。
+         取景框压暗框外用超大扩散 box-shadow，由舞台 overflow:hidden 裁掉 -->
+    <view v-else class="canvas-shell">
+      <view
+        class="crop-stage"
+        disable-scroll
+        @touchstart.stop.prevent="touchStart"
+        @touchmove.stop.prevent="touchMove"
+        @touchend.stop.prevent="touchEnd"
+        @touchcancel.stop.prevent="touchEnd"
+      >
+        <image
+          v-if="state.src"
+          class="crop-image"
+          :src="state.src"
+          mode="scaleToFill"
+          :style="imageStyle"
+          @load="onImageLoad"
+          @error="onImageError"
+        />
+        <view v-if="state.imageWidth" class="crop-frame" :style="frameStyle" />
+      </view>
+      <!-- 加载蒙层必须用 v-if 而不是 v-show：v-show 编译成 hidden 属性，
+           会被本类里的 display:flex 覆盖（作者样式优先级高于 UA 的 [hidden]{display:none}），
+           表现为「图片已加载、loading 已置 false，蒙层却永远盖在图上」（2026-10-04 真机复现） -->
+      <view v-if="loading" class="canvas-loading"><view class="canvas-loading__spinner" /><text>{{ loadingStage || '正在加载图片…' }}</text></view>
+    </view>
     <!-- 比例与旋转同一行：主流修图 App 式工具条（图标在上 · 文字在下，无胶囊底，选中文字变品牌红） -->
     <view class="tools-row">
       <view class="tool" :class="{ 'is-active': ratioKey === 'r34' }" hover-class="is-pressed" :hover-stay-time="80" @tap="selectRatio('r34')">
@@ -268,23 +402,37 @@ onLoad((query) => {
 </template>
 
 <style scoped>
-/* 页面接 nav-bar 组件（与「完善信息」页同骨架：清零四周内边距，内容块自带边距，
-   底部预埋 200rpx 避让固定确认条）。画布不再铺深底，图片直接坐在页面浅底上 */
-.crop-page { min-height: 100vh; padding: 0 0 200rpx; background: #f2f3f7; color: #141414; }
+/* 页面接 nav-bar 组件（与「完善信息」页同骨架：清零四周内边距，内容块自带边距）。
+   整页 flex 纵向布局：画布 flex:1 吃掉剩余高度，确认条回到文档流（不再 fixed）——
+   之前「固定底条 + padding 预留」的方案在真机上仍会把「同时自动抠图」行压到条底下
+   （2026-10-04 真机复现），改文档流后结构上不可能再遮挡 */
+.crop-page { height: 100vh; display: flex; flex-direction: column; background: #f2f3f7; color: #141414; }
 /* 弱提示统一占位色 #b3afa8、字号走 token（原 23rpx 硬编码与全站 --wc-font-footnote 不一致） */
 .hint { display: block; padding: 4rpx 40rpx 18rpx; color: #b3afa8; font-size: var(--wc-font-footnote); }
-.load-error { margin: 10rpx 30rpx 0; padding: 28rpx 30rpx; border-radius: 32rpx; background: #fae2de; color: #943d37; font-size: var(--wc-font-footnote); }
-/* 画布容器：不再铺深底（黑底观感重、与全站浅底冲突）—— 取景框外的压暗交给 canvas 内绘制的
-   半透明遮罩（与系统相册裁剪同观感）。去掉底色后圆角失去视觉边界，这里补回纸感卡片外观
-   （白底 + 细边框 + 柔影，取值与全站 .card 一致），让「编辑区域」成为一张明确的圆角卡；
-   canvas 本身也加圆角，使内容（图片与遮罩）按圆角裁剪。高度随屏伸缩，避免矮屏挤掉确认条 */
-.canvas-shell { margin: 0 30rpx; height: 56vh; min-height: 460rpx; max-height: 800rpx; border: 1rpx solid rgba(55,47,37,.12); border-radius: 32rpx; background: #fffdf8; box-shadow: 0 20rpx 50rpx rgba(51,42,29,.07); overflow: hidden; }
-.crop-canvas { width: 100%; height: 100%; border-radius: 30rpx; }
+.load-error { margin: 10rpx 30rpx 0; padding: 28rpx 30rpx; border-radius: 32rpx; background: #fae2de; color: #943d37; font-size: var(--wc-font-footnote); display: flex; flex-direction: column; align-items: flex-start; }
+.load-error__msg { display: block; }
+.load-error__retry { margin-top: 20rpx; padding: 10rpx 36rpx; border-radius: 999rpx; background: #141414; color: #ffffff; font-size: var(--wc-font-footnote); }
+.load-error__retry.is-pressed { transform: scale(.9); opacity: .8; }
+/* 画布容器：纸感卡片外观（白底 + 细边框 + 柔影，取值与全站 .card 一致）；
+   高度走 flex:1 吃掉导航栏/工具/滑杆之外的剩余视口，矮屏自动收缩（min-height 兜底） */
+.canvas-shell { flex: 1 1 auto; min-height: 320rpx; margin: 0 30rpx; border: 1rpx solid rgba(55,47,37,.12); border-radius: 16rpx; background: #fffdf8; box-shadow: 0 20rpx 50rpx rgba(51,42,29,.07); overflow: hidden; }
+/* 舞台：图片与取景框的定位/裁剪容器；手势也挂在这一层 */
+.crop-stage { position: relative; width: 100%; height: 100%; overflow: hidden; border-radius: 16rpx; }
+/* 图片层：中心锚点在舞台中心（left/top 50% + 负 margin），宽高/位移/旋转/调色全走行内样式 */
+.crop-image { position: absolute; left: 50%; top: 50%; will-change: transform; }
+/* 取景框：白色描边 + 九宫格参考线；框外压暗靠超大扩散 box-shadow（被舞台裁掉）。
+   背景两块 1/3 平铺渐变分别在右/下边缘描 1px 线 → 正好落在 1/3 与 2/3 分割线上 */
+.crop-frame { position: absolute; box-sizing: border-box; border: 1.5px solid rgba(255,255,255,.95); pointer-events: none; box-shadow: 0 0 0 9999px rgba(20,18,15,.52); background-image: linear-gradient(to right, transparent calc(100% - 1px), rgba(255,255,255,.38) calc(100% - 1px)), linear-gradient(to bottom, transparent calc(100% - 1px), rgba(255,255,255,.38) calc(100% - 1px)); background-size: calc(100% / 3) calc(100% / 3); }
+/* 画布加载态蒙层：图片加载期间提示，避免被当成「点了没反应」 */
+.canvas-loading { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20rpx; color: #77736d; font-size: var(--wc-font-footnote); }
+.canvas-loading__spinner { width: 60rpx; height: 60rpx; border: 6rpx solid rgba(20, 20, 20, .15); border-top-color: #141414; border-radius: 50%; animation: crop-spin .9s linear infinite; }
+@keyframes crop-spin { to { transform: rotate(360deg); } }
 /* 分组容器：仅提供左右边距（组标题已去掉，语义交给滑杆左侧标签） */
-.group { margin: 0 40rpx; padding: 6rpx 0 8rpx; }
+.group { flex: 0 0 auto; margin: 0 40rpx; padding: 6rpx 0 8rpx; }
 /* 工具行：比例（3:4 / 2:3 / 原图）与旋转（旋转 90° / 重置）同排一行、等宽均分；
-   主流修图 App 式 —— 图标在上、文字在下，无胶囊底；选中项文字变品牌红 */
-.tools-row { display: flex; align-items: flex-start; margin: 26rpx 20rpx 4rpx; }
+   主流修图 App 式 —— 图标在上、文字在下，无胶囊底；选中项文字变品牌红。
+   flex-shrink:0：矮屏时只收缩画布，不挤压内容行 */
+.tools-row { flex: 0 0 auto; display: flex; align-items: flex-start; margin: 26rpx 20rpx 4rpx; }
 .tool { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 8rpx; padding: 8rpx 4rpx; }
 .tool__icon { width: 48rpx; height: 48rpx; }
 .tool__label { color: #57514a; font-size: 21rpx; line-height: 1.2; white-space: nowrap; }
@@ -297,14 +445,14 @@ onLoad((query) => {
 .slider-row__slider { margin: 0; }
 .slider-row__val { color: #a8a49d; font-size: 21rpx; text-align: right; font-variant-numeric: tabular-nums; }
 /* 抠图行：ef 行版式（左标题 + 右开关），去掉原白底卡片（与「完善信息」页"无白卡"一致） */
-.matte-row { display: flex; align-items: center; justify-content: space-between; gap: 22rpx; margin: 0 40rpx; padding: 26rpx 0 8rpx; }
+.matte-row { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 22rpx; margin: 0 40rpx; padding: 26rpx 0 8rpx; }
 .matte-row__text { display: flex; flex-direction: column; gap: 6rpx; }
 .matte-row__title { color: #141414; font-size: var(--wc-font-description); font-weight: 650; }
 .matte-row__hint { color: #a8a49d; font-size: 21rpx; }
 .matte-row--note { display: block; padding: 8rpx 0 0; }
-/* 底部确认条：固定视口底部（含安全区），补页面同色底避免长内容从条下穿透。
+/* 底部确认条：文档流内随 flex 布局永远排在内容最后（不会被任何内容遮挡），
    参照主流修图 App —— 左 ✕ 取消 / 右 ✓ 应用，圆形轻量钮取代原 87rpx 大胶囊 */
-.bottom-bar { position: fixed; z-index: 20; left: 0; right: 0; bottom: 0; padding: 12rpx 44rpx calc(env(safe-area-inset-bottom) + 12rpx); background: #f2f3f7; }
+.bottom-bar { flex: 0 0 auto; padding: 12rpx 44rpx calc(env(safe-area-inset-bottom) + 12rpx); background: #f2f3f7; }
 .confirm-row { display: flex; align-items: center; justify-content: space-between; }
 .confirm-btn { width: 88rpx; height: 88rpx; display: flex; align-items: center; justify-content: center; border-radius: 50%; }
 .confirm-btn__x { color: #141414; font-size: 40rpx; line-height: 1; }
@@ -313,4 +461,3 @@ onLoad((query) => {
 .confirm-btn__ok { color: #ffffff; font-size: 40rpx; line-height: 1; }
 .confirm-btn.is-pressed { transform: scale(.9); }
 </style>
-

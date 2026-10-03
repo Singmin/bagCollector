@@ -171,17 +171,28 @@ function loadImageAspect(id: string, url: string) {
   });
 }
 
+/* ── 缩略图分两批入队：首屏优先 ──
+   下载通道并发有限（见 services/images.ts），整页 30 张一起入队时，
+   首屏的图要和整页的图抢槽位。先下前 FIRST_SCREEN_ITEMS 张（展架视图最上面的
+   一两个展架 / 宫格从左起一屏），这一批完事（无论成败）再排其余的。
+   2026-10-03 与陈列页按需下载一起改：陈列页此前把 feed 全量 1000 条塞进同一队列，
+   切到本页时图排在千张之后，是「进页面久久不出图」的主因。 */
+const FIRST_SCREEN_ITEMS = 12;
+
+function settleThumbnail(item: CollectibleSummary) {
+  return resolveCollectibleThumbnail(item).then((url) => {
+    if (!url || !items.value.some((current) => current.id === item.id && current.updatedAt === item.updatedAt)) return;
+    thumbnailUrls.value[item.id] = url;
+    delete failedThumbnails.value[item.id];
+    loadImageAspect(item.id, url);
+  }).catch(() => {
+    failedThumbnails.value[item.id] = true;
+  });
+}
+
 function hydrateThumbnails(nextItems: CollectibleSummary[]) {
-  for (const item of nextItems) {
-    void resolveCollectibleThumbnail(item).then((url) => {
-      if (!url || !items.value.some((current) => current.id === item.id && current.updatedAt === item.updatedAt)) return;
-      thumbnailUrls.value[item.id] = url;
-      delete failedThumbnails.value[item.id];
-      loadImageAspect(item.id, url);
-    }).catch(() => {
-      failedThumbnails.value[item.id] = true;
-    });
-  }
+  void Promise.all(nextItems.slice(0, FIRST_SCREEN_ITEMS).map(settleThumbnail))
+    .then(() => Promise.all(nextItems.slice(FIRST_SCREEN_ITEMS).map(settleThumbnail)));
 }
 
 /* ── 收藏架分段：我的 / 心愿袋 ──

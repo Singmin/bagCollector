@@ -29,7 +29,7 @@ function summary(index: number, overrides: Record<string, string> = {}) {
 }
 
 describe('resolveCollectibleThumbnail', () => {
-  it('limits local HTTP thumbnail downloads to four concurrent tasks', async () => {
+  it('limits local HTTP thumbnail downloads to ten concurrent tasks', async () => {
     let active = 0;
     let maximum = 0;
     const { resolveCollectibleThumbnail } = await loadImages((options) => {
@@ -41,9 +41,9 @@ describe('resolveCollectibleThumbnail', () => {
       }, 5);
     });
 
-    await Promise.all(Array.from({ length: 9 }, (_, index) => resolveCollectibleThumbnail(summary(index))));
+    await Promise.all(Array.from({ length: 15 }, (_, index) => resolveCollectibleThumbnail(summary(index))));
 
-    expect(maximum).toBe(4);
+    expect(maximum).toBe(10);
   });
 
   it('reuses a thumbnail by collectible id and update version', async () => {

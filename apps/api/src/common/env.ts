@@ -20,6 +20,15 @@ const schema = z
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
     API_PORT: z.coerce.number().int().positive().default(3001),
     API_PUBLIC_URL: z.string().url().default('http://localhost:3001'),
+    /* 图片对外的 URL 形态：
+       proxy（默认）= API 域名代理（/api/assets/file?token=...），桶可保持私有读，
+                      但每张图都要 API 服务器中转 COS 一跳，小程序端还必须走
+                      downloadFile 限流队列（真机实测整页出图 9s 的主因）；
+       public       = 桶开放公有读，图片直接用 COS/CDN 域名（COS_PUBLIC_HOST）。
+                      URL 无签名且永不变化（key 自带 v{n} 版本），<image>/CDN/浏览器
+                      缓存长期命中；小程序拿到 https 直链后由 <image> 渲染层并发加载，
+                      不再进 downloadFile 队列。切法见 docs/IMAGE_PIPELINE.md「CDN 直连」。 */
+    ASSET_URL_MODE: z.enum(['proxy', 'public']).default('proxy'),
     STORAGE_DRIVER: z.enum(['local', 'cos']).default('local'),
     LOCAL_STORAGE_PATH: z.string().min(1).default('../../data/local-storage'),
     DATABASE_URL: z.string().min(1),

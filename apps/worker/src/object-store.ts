@@ -70,6 +70,8 @@ export function putObject(key: string, body: Buffer, contentType: string) {
         Body: body,
         ContentType: contentType,
         ContentLength: body.length,
+        /* 处理产物的 key 都带 v{n} 版本号，对象内容永不变化 —— 允许 CDN/浏览器缓存一年 */
+        CacheControl: 'public, max-age=31536000, immutable',
         ServerSideEncryption: 'AES256'
       },
       (error) => (error ? reject(error) : resolve())

@@ -108,3 +108,52 @@ READY / FAILED ─（可再次发起 /crop 或 /matte，processingVersion +1）
 5. **配额只数成功 + 进行中，失败不数。** 否则万象抖动会吃掉当日名额并挡住重试。
 6. **`/crop` 请求体参数全量必填。** worker 只读 `cropX/cropY/...`，请求体是唯一来源；`/matte` 才允许缺省（沿用已存参数或全幅）。
 7. **处理页失败别只给"删除"。** 前端 `processing` 页失败态已有"重试 / 返回编辑 / 删除"三出口；后端若改失败文案，注意 `processingError` 字段会直接透给前端展示。
+
+## 九、CDN 直连（ASSET_URL_MODE=public，2026-10-03）
+
+### 为什么要切
+
+默认 `proxy` 模式下图片 URL 是 `API_PUBLIC_URL/api/assets/file?token=...`：每张图都要
+API 服务器向 COS 拉流再转发（多一跳）；小程序端 `needsDownload()` 发现是明文 http 就只能
+走 `uni.downloadFile` 限流队列（services/images.ts），真机实测整页出图 9s。
+`public` 模式返回 `https://<COS/CDN 域名>/<key>` 直链：`<image>` 由渲染层并发加载、
+URL 永不变化（key 自带 `v{n}` 版本号）可长期命中缓存，下载队列彻底不进图片。
+
+### 代码侧（已完成）
+
+- `apps/api/src/common/env.ts`：新增 `ASSET_URL_MODE`（`proxy` | `public`，默认 `proxy`，不改配置行为不变）。
+- `apps/api/src/assets/cos.service.ts`：`signedUrl()` 在 public 模式返回
+  `publicObjectUrl(key)`（`COS_PUBLIC_HOST` 优先，留空用桶默认域名）；API 侧与 worker 侧的
+  `putObject` 均带上 `Cache-Control: public, max-age=31536000, immutable`。
+- 小程序端无需改：`needsDownload()` 对 https 直链自动返回 false。
+
+### 控制台操作单（切 public 前按序做完）
+
+1. **桶改公有读**：COS 控制台 → 存储桶 → 权限管理 → 公有读私有写。
+   key 含 userId / cuid 且桶禁止列举（默认即禁止），拿不到 key 无法遍历，泄露面可控。
+   不接受公有读就别切（public 模式无签名 URL，私有桶会全部 403）。
+2. **选图片域名**：
+   - 图省事：不配 `COS_PUBLIC_HOST`，直接用桶默认域名
+     `https://<bucket-appid>.cos.<region>.myqcloud.com`（自带 HTTPS，无需备案）；
+   - 要加速：已备案域名在 COS 控制台 → 域名与传输管理 → 添加自定义 CDN 加速域名，
+     配 HTTPS 证书（免费证书即可），DNS 按提示 CNAME 到腾讯云 CDN，然后
+     `COS_PUBLIC_HOST=https://<cdn 域名>`。CDN 缓存配置遵循源站 Cache-Control 即可。
+3. **小程序后台**（mp.weixin.qq.com → 开发管理 → 开发设置 → 服务器域名）：
+   `downloadFile 合法域名` 加上图片域名（裁剪页 canvas 2d 加载网络图受此白名单限制）。
+   `<image>` 组件本身不受白名单校验，但真机要求 https —— 两种域名方案都满足。
+4. **生产配置**：`infra/.env.deploy` 里 `ASSET_URL_MODE=public`（+ 可选 `COS_PUBLIC_HOST`），
+   重跑 `infra/deploy.sh`。
+5. **验证**：
+   - `curl -I https://<图片域名>/users/<userId>/collectibles/<id>/thumbnail/v1.webp`
+     → 200、`cache-control: public, max-age=31536000, immutable`；
+   - 小程序真机进「我的」页，Network 里图片请求应直连 COS/CDN 域名而非 `/api/assets/file`。
+
+### 注意事项
+
+- **存量对象**没有 Cache-Control 元数据（上传时才写入）。桶默认域名会按元数据回 200 无缓存头；
+  CDN 方案可在 CDN 上配「忽略源站、按后缀缓存」（.webp/.png/.jpg 30 天）。要给存量补元数据
+  需按对象 copy-in-place（`x-cos-metadata-directive: Replaced`），量大时用 COS 批量处理。
+- **万象抠图不受影响**：worker 的签名 URL（`object-store.getSignedObjectUrl`）走 COS 私有
+  接口签名，与对外的 public URL 无关，桶公有读不影响其可用性。
+- **回滚**：`ASSET_URL_MODE` 改回 `proxy` 重部署即可，代理链路原样保留。
+

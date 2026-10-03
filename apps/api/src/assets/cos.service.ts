@@ -61,6 +61,8 @@ export class CosService {
           Body: body,
           ContentType: contentType,
           ContentLength: body.length,
+          /* key 带 v{n} 版本号，对象内容永不变化 —— 允许 CDN/浏览器缓存一年 */
+          CacheControl: 'public, max-age=31536000, immutable',
           ServerSideEncryption: 'AES256'
         },
         (error) => (error ? reject(error) : resolve())
@@ -136,8 +138,25 @@ export class CosService {
     return { stream, type };
   }
 
+  /** 公有读直链：COS_PUBLIC_HOST（CDN/自定义域名）优先，留空用桶的默认域名。 */
+  private publicObjectUrl(key: string) {
+    const configured = this.config.COS_PUBLIC_HOST?.trim();
+    const host = (configured || `https://${this.config.COS_BUCKET}.cos.${this.config.COS_REGION}.myqcloud.com`)
+      .replace(/\/+$/, '');
+    const base = /^https?:\/\//.test(host) ? host : `https://${host}`;
+    return `${base}/${key.split('/').map(encodeURIComponent).join('/')}`;
+  }
+
   signedUrl(key: string, expires = 600): Promise<string> {
     this.assertConfigured();
+    /* 公有读直连（ASSET_URL_MODE=public，桶需先开放公有读）：
+       ① 少了 API→COS 的中转一跳；② URL 无签名且永不变化（key 自带 v{n} 版本），
+       <image>/CDN/浏览器缓存长期命中；③ 小程序拿到 https 直链后不再走
+       downloadFile 队列，由 <image> 渲染层并发加载。
+       仅 COS 驱动可用 —— 本地驱动没有公网域名，继续走 API 代理。 */
+    if (this.config.ASSET_URL_MODE === 'public' && !this.isLocal()) {
+      return Promise.resolve(this.publicObjectUrl(key));
+    }
     /* 防御：API_PUBLIC_URL 仍是默认 localhost（服务器漏配）时，代理 URL 客户端不可达，
        回退 COS 直链 —— <image> 组件不受合法域名校验，至少列表/详情图不受影响；
        配置正确后自动切回统一代理（canvas 合法域名只需配 API 一个） */
