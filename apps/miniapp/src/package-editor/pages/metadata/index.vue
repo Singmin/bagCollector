@@ -131,7 +131,7 @@ async function save() {
     if (!shelf) shelf = await dataService.createShelf({ name: normalizedBrand, theme: 'SAGE' });
     if (!shelves.value.some((current) => current.id === shelf!.id)) shelves.value = [...shelves.value, shelf];
     await dataService.updateCollectible(id.value, { name: normalizedName, shelfId: shelf.id, notes: notes.value.trim(), tags: [...tagList.value] });
-    uni.showToast({ title: '已加入陈列柜', icon: 'success' }); setTimeout(() => uni.switchTab({ url: '/pages/showcase/index' }), 700);
+    uni.showToast({ title: '已加入陈列柜', icon: 'success' }); setTimeout(() => uni.switchTab({ url: '/pages/library/index' }), 700);
   } catch (error) { uni.showToast({ title: error instanceof Error ? error.message : '保存失败', icon: 'none' }); saving.value = false; }
 }
 onLoad((query) => {
