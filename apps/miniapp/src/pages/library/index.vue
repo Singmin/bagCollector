@@ -984,7 +984,7 @@ function onScrollToLower() {
     <scroll-view
       class="library-scroll"
       scroll-y
-      :refresher-enabled="true"
+      :refresher-enabled="false"
       :refresher-triggered="refresherTriggered"
       refresher-default-style="black"
       @refresherrefresh="onRefresherRefresh"
