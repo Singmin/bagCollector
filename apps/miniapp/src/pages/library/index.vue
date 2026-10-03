@@ -772,47 +772,29 @@ function toggleMode() {
   if (displayMode.value === 'shelf') measureShelves();
 }
 
-/* ── 宫格画廊（对齐 H5 gridVars / applyGridVars）──
-   卡宽是唯一真源：大档 82px=149rpx ↔ 小档 41px=75rpx，捏合进度 t 插值派生其余尺寸。
-   列数 = 一屏放得下的列数 + 1（保证任何缩放级别都溢出，横向滚动不失效）。 */
-const GRID_W_MAX = 149;
-const GRID_W_MIN = 75;
+/* ── 宫格画廊 ──
+   改为固定 4 列、不可横向滑动、不可捏合缩放：
+   卡宽由「屏宽 750rpx 放 4 列」反推，其余尺寸沿用原有比例派生（视觉口径不变）。
+   列数 = 4：4×卡宽 + 3×间距 + 2×左右留白 = 750rpx。 */
+const GRID_COLS = 4;
 const MAX_GRID_RENDER = 240;
-const gridW = ref(GRID_W_MAX);
-let pinchStartDist = 0;
-let pinchStartW = GRID_W_MAX;
+/* 解 4W + 3×(0.10976W) + 2×(0.14634W) = 750 → W ≈ 162rpx（比原最大档 149 更大） */
+const gridW = Math.round(750 / (GRID_COLS + (GRID_COLS - 1) * 0.10976 + 2 * 0.14634));
 
-function pinchDistance(touches: Array<{ x: number; y: number }>) {
-  const dx = touches[0].x - touches[1].x;
-  const dy = touches[0].y - touches[1].y;
-  return Math.hypot(dx, dy);
-}
 
-function gridTouchStart(event: Event) {
-  const touches = (event as unknown as { touches?: Array<{ x?: number; clientX?: number; y?: number; clientY?: number }> }).touches;
-  if (!touches || touches.length !== 2) return;
-  pinchStartDist = pinchDistance(touches.map((t) => ({ x: t.x ?? t.clientX ?? 0, y: t.y ?? t.clientY ?? 0 })));
-  pinchStartW = gridW.value;
-}
 
-function gridTouchMove(event: Event) {
-  if (!pinchStartDist) return;
-  const touches = (event as unknown as { touches?: Array<{ x?: number; clientX?: number; y?: number; clientY?: number }> }).touches;
-  if (!touches || touches.length !== 2) return;
-  const dist = pinchDistance(touches.map((t) => ({ x: t.x ?? t.clientX ?? 0, y: t.y ?? t.clientY ?? 0 })));
-  gridW.value = Math.round(Math.min(GRID_W_MAX, Math.max(GRID_W_MIN, (pinchStartW * dist) / pinchStartDist)));
-}
 
-function gridTouchEnd() { pinchStartDist = 0; }
 
-const gridRatio = computed(() => (GRID_W_MAX - gridW.value) / (GRID_W_MAX - GRID_W_MIN));
-const gridCardH = computed(() => Math.round((116 - 58 * gridRatio.value) * 1.82));
-const gridArtH = computed(() => Math.round((98 - 52 * gridRatio.value) * 1.82));
-const gridArtPad = computed(() => Math.round(gridW.value * 0.0732));
-const gridRadius = computed(() => Math.round(gridW.value * 0.17073));
-const gridGap = computed(() => Math.round(gridW.value * 0.10976));
-const gridPadX = computed(() => Math.round(gridW.value * 0.14634));
-const gridCols = computed(() => Math.ceil(750 / (gridW.value + gridGap.value)) + 1);
+
+
+/* 尺寸比例沿用原最大档（卡高/图高 ÷ 卡宽 = 1.416 / 1.195），仅按新卡宽等比放大 */
+const gridCardH = Math.round(gridW * 1.4161);
+const gridArtH = Math.round(gridW * 1.1946);
+const gridArtPad = Math.round(gridW * 0.0732);
+const gridRadius = Math.round(gridW * 0.17073);
+const gridGap = Math.round(gridW * 0.10976);
+const gridPadX = Math.round(gridW * 0.14634);
+const gridCols = GRID_COLS;
 const gridItems = computed(() => items.value.slice(0, MAX_GRID_RENDER));
 const gridOverflow = computed(() => items.value.length - gridItems.value.length);
 
@@ -1068,16 +1050,7 @@ function onScrollToLower() { void loadMore(); }
     <!-- 宫格画廊（H5 .grid-window / .grid-stage / .collection-grid）：
          横向滚动 + 双指捏合在 82↔41px（149↔75rpx）连续插值，
          卡宽是唯一真源，卡高/间隙/圆角/内缩全部由它派生（对齐 H5 gridVars）。 -->
-    <scroll-view
-      v-else
-      class="grid-window"
-      scroll-x
-      :show-scrollbar="false"
-      @touchstart="gridTouchStart"
-      @touchmove.stop="gridTouchMove"
-      @touchend="gridTouchEnd"
-      @touchcancel="gridTouchEnd"
-    >
+    <view v-else class="grid-window">
       <view class="grid-stage">
         <view
           class="collection-grid"
@@ -1104,7 +1077,7 @@ function onScrollToLower() { void loadMore(); }
         </view>
         <text v-if="gridOverflow > 0" class="grid-overflow-note" :style="{ padding: `0 ${gridPadX}rpx` }">仅显示前 {{ MAX_GRID_RENDER }} 件</text>
       </view>
-    </scroll-view>
+    </view>
 
     <text v-if="loadingMore" class="page-loading">正在加载更多…</text>
     </template>
@@ -1119,12 +1092,7 @@ function onScrollToLower() { void loadMore(); }
         <text class="wish-empty__sub">去发现页逛逛，把喜欢的纸袋收进来</text>
         <button class="wish-empty__cta" @tap="goDiscover">去发现页</button>
       </view>
-      <scroll-view v-else class="grid-window" scroll-x :show-scrollbar="false"
-        @touchstart="gridTouchStart"
-        @touchmove.stop="gridTouchMove"
-        @touchend="gridTouchEnd"
-        @touchcancel="gridTouchEnd"
-      >
+      <view v-else class="grid-window">
         <view class="grid-stage">
           <view
             class="collection-grid"
@@ -1150,7 +1118,7 @@ function onScrollToLower() { void loadMore(); }
           </view>
           <text v-if="visibleWishlist.length > MAX_GRID_RENDER" class="grid-overflow-note" :style="{ padding: `0 ${gridPadX}rpx` }">仅显示前 {{ MAX_GRID_RENDER }} 件</text>
         </view>
-      </scroll-view>
+      </view>
       <view v-if="initialized && wishlistItems.length && !visibleWishlist.length" class="wish-empty wish-empty--narrow">
         <text class="wish-empty__title">没有匹配的心愿</text>
         <text class="wish-empty__sub">换个关键词试试，或清空搜索查看全部</text>
