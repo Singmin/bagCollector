@@ -790,7 +790,35 @@ function toggleMode() {
    改为固定 4 列、不可横向滑动、不可捏合缩放：
    卡宽由「屏宽 750rpx 放 4 列」反推，其余尺寸沿用原有比例派生（视觉口径不变）。
    列数 = 4：4×卡宽 + 3×间距 + 2×左右留白 = 750rpx。 */
-const GRID_COLS = 4;
+const GRID_COLS_MAX_CARD = 4;
+const GRID_COLS_MIN_CARD = 8;
+const GRID_PAD = 24;
+const GRID_GAP = 18;
+const gridCols = ref(GRID_COLS_MAX_CARD);
+let pinchStartDist = 0;
+let pinchStartCols = GRID_COLS_MAX_CARD;
+
+function pinchDistance(touches: Array<{ x: number; y: number }>) {
+  const dx = touches[0].x - touches[1].x;
+  const dy = touches[0].y - touches[1].y;
+  return Math.hypot(dx, dy);
+}
+function gridTouchStart(event: Event) {
+  const touches = (event as unknown as { touches?: Array<{ x?: number; clientX?: number; y?: number; clientY?: number }> }).touches;
+  if (!touches || touches.length !== 2) return;
+  pinchStartDist = pinchDistance(touches.map((t) => ({ x: t.x ?? t.clientX ?? 0, y: t.y ?? t.clientY ?? 0 })));
+  pinchStartCols = gridCols.value;
+}
+function gridTouchMove(event: Event) {
+  if (!pinchStartDist) return;
+  const touches = (event as unknown as { touches?: Array<{ x?: number; clientX?: number; y?: number; clientY?: number }> }).touches;
+  if (!touches || touches.length !== 2) return;
+  const dist = pinchDistance(touches.map((t) => ({ x: t.x ?? t.clientX ?? 0, y: t.y ?? t.clientY ?? 0 })));
+  /* 双指张开 = 放大 = 列数变少；捏合 = 缩小 = 列数变多 */
+  const next = Math.round(pinchStartCols / (dist / pinchStartDist));
+  gridCols.value = Math.min(GRID_COLS_MIN_CARD, Math.max(GRID_COLS_MAX_CARD, next));
+}
+function gridTouchEnd() { pinchStartDist = 0; }
 /* 宫格改为增量渲染：首屏渲染一批，滚到底部再追加一批（避免一次性渲染上千个节点卡顿）。
    不再有「只显示前 N 件」的硬上限 */
 const GRID_STEP = 120;
@@ -803,23 +831,15 @@ function appendGridRender() {
   }
   if (displayMode.value === 'grid' && gridRenderCount.value < items.value.length) gridRenderCount.value += GRID_STEP;
 }
-/* 解 4W + 3×(0.10976W) + 2×(0.14634W) = 750 → W ≈ 162rpx（比原最大档 149 更大） */
-const gridW = Math.round(750 / (GRID_COLS + (GRID_COLS - 1) * 0.10976 + 2 * 0.14634));
-
-
-
-
-
-
-
-/* 尺寸比例沿用原最大档（卡高/图高 ÷ 卡宽 = 1.416 / 1.195），仅按新卡宽等比放大 */
-const gridCardH = Math.round(gridW * 1.4161);
-const gridArtH = Math.round(gridW * 1.1946);
-const gridArtPad = Math.round(gridW * 0.0732);
-const gridRadius = Math.round(gridW * 0.17073);
-const gridGap = Math.round(gridW * 0.10976);
-const gridPadX = Math.round(gridW * 0.14634);
-const gridCols = GRID_COLS;
+/* 卡宽 = (屏宽 − 左右留白 − 列间距) ÷ 列数（向下取整，避免合计超出屏宽） */
+const gridW = computed(() => Math.floor((750 - 2 * GRID_PAD - (gridCols.value - 1) * GRID_GAP) / gridCols.value));
+/* 尺寸比例沿用原最大档（卡高/图高 ÷ 卡宽 = 1.416 / 1.195），随卡宽等比缩放 */
+const gridCardH = computed(() => Math.round(gridW.value * 1.4161));
+const gridArtH = computed(() => Math.round(gridW.value * 1.1946));
+const gridArtPad = computed(() => Math.round(gridW.value * 0.0732));
+const gridRadius = computed(() => Math.round(gridW.value * 0.17073));
+const gridGap = computed(() => GRID_GAP);
+const gridPadX = computed(() => GRID_PAD);
 const gridItems = computed(() => items.value.slice(0, gridRenderCount.value));
 const wishGridItems = computed(() => visibleWishlist.value.slice(0, wishRenderCount.value));
 const gridOverflow = computed(() => items.value.length - gridItems.value.length);
@@ -1081,7 +1101,14 @@ function onScrollToLower() {
     <!-- 宫格画廊（H5 .grid-window / .grid-stage / .collection-grid）：
          横向滚动 + 双指捏合在 82↔41px（149↔75rpx）连续插值，
          卡宽是唯一真源，卡高/间隙/圆角/内缩全部由它派生（对齐 H5 gridVars）。 -->
-    <view v-else class="grid-window">
+    <view
+      v-else
+      class="grid-window"
+      @touchstart="gridTouchStart"
+      @touchmove.stop="gridTouchMove"
+      @touchend="gridTouchEnd"
+      @touchcancel="gridTouchEnd"
+    >
       <view class="grid-stage">
         <view
           class="collection-grid"
@@ -1126,7 +1153,14 @@ function onScrollToLower() {
         <text class="wish-empty__sub">去发现页逛逛，把喜欢的纸袋收进来</text>
         <button class="wish-empty__cta" @tap="goDiscover">去发现页</button>
       </view>
-      <view v-else class="grid-window">
+      <view
+        v-else
+        class="grid-window"
+        @touchstart="gridTouchStart"
+        @touchmove.stop="gridTouchMove"
+        @touchend="gridTouchEnd"
+        @touchcancel="gridTouchEnd"
+      >
         <view class="grid-stage">
           <view
             class="collection-grid"
