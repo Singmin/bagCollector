@@ -32,8 +32,8 @@ export class OfficialBagsController {
   }
 
   /**
-   * 「拥有」这个袋子。body 可选：前端标记半窗允许改名 / 归类 / 改标签备注，
-   * 不传则用官方袋子自带内容并默认进「未分类」展架。
+   * 「拥有」这个袋子。body 可选：前端标记半窗允许改名 / 归类 / 改标签备注；
+   * 不传则用官方袋子自带内容，并按品牌归类（无品牌才进「未分类」）。
    */
   @Post(':id/claim')
   claim(@CurrentUser() user: AuthUser, @Param('id') id: string, @Body() body: unknown) {

@@ -12,7 +12,9 @@ import { HealthController } from './health.controller.js';
 import { JobsModule } from './jobs/jobs.module.js';
 import { OfficialBagsModule } from './official-bags/official-bags.module.js';
 import { ShelvesModule } from './shelves/shelves.module.js';
+import { SubmissionsModule } from './submissions/submissions.module.js';
 import { UploadsModule } from './uploads/uploads.module.js';
+import { UsersModule } from './users/users.module.js';
 
 @Module({
   imports: [
@@ -27,7 +29,9 @@ import { UploadsModule } from './uploads/uploads.module.js';
     JobsModule,
     AdminModule,
     OfficialBagsModule,
-    FeedModule
+    SubmissionsModule,
+    FeedModule,
+    UsersModule
   ],
   controllers: [HealthController]
 })

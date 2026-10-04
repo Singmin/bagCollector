@@ -817,9 +817,9 @@ function toggleMode() {
 }
 
 /* ── 宫格画廊 ──
-   改为固定 4 列、不可横向滑动、不可捏合缩放：
-   卡宽由「屏宽 750rpx 放 4 列」反推，其余尺寸沿用原有比例派生（视觉口径不变）。
-   列数 = 4：4×卡宽 + 3×间距 + 2×左右留白 = 750rpx。 */
+   固定 4 列起步、无横向滚动，双指捏合在 4~8 列间缩放：
+   卡宽 = (屏宽 − 左右留白 − 列间距) ÷ 列数，其余尺寸随卡宽等比派生（视觉口径不变）。
+   列数 = 4 时：4×卡宽 + 3×间距 + 2×左右留白 = 750rpx。 */
 const GRID_COLS_MAX_CARD = 4;
 const GRID_COLS_MIN_CARD = 8;
 const GRID_PAD = 24;
@@ -1137,7 +1137,7 @@ function onScrollToLower() {
       v-else
       class="grid-window"
       @touchstart="gridTouchStart"
-      @touchmove.stop="gridTouchMove"
+      @touchmove="gridTouchMove"
       @touchend="gridTouchEnd"
       @touchcancel="gridTouchEnd"
     >
@@ -1189,7 +1189,7 @@ function onScrollToLower() {
         v-else
         class="grid-window"
         @touchstart="gridTouchStart"
-        @touchmove.stop="gridTouchMove"
+        @touchmove="gridTouchMove"
         @touchend="gridTouchEnd"
         @touchcancel="gridTouchEnd"
       >

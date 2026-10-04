@@ -5,17 +5,22 @@ export const processingStatuses = [
   'UPLOADING',
   'NORMALIZING',
   'AWAITING_CROP',
+  'CROPPING',
   'MATTING',
   'READY',
   'FAILED'
 ] as const;
 export const officialBagStatuses = ['DRAFT', 'PUBLISHED', 'OFFLINE'] as const;
 export const officialProcessStatuses = ['PENDING', 'PROCESSING', 'READY', 'FAILED'] as const;
+export const submissionStatuses = ['PENDING', 'APPROVED', 'REJECTED'] as const;
+export const userStatuses = ['ACTIVE', 'SUSPENDED'] as const;
 
 export type ShelfTheme = (typeof shelfThemes)[number];
 export type ProcessingStatus = (typeof processingStatuses)[number];
 export type OfficialBagStatus = (typeof officialBagStatuses)[number];
 export type OfficialProcessStatus = (typeof officialProcessStatuses)[number];
+export type SubmissionStatus = (typeof submissionStatuses)[number];
+export type UserStatus = (typeof userStatuses)[number];
 
 /* 裁剪几何 + 调色：只描述「怎么裁」，不含「要不要抠图」——
    抠图是独立端点（POST /collectibles/:id/matte），两个动作互不夹带 */
@@ -84,7 +89,7 @@ export const updateCollectibleSchema = z.object({
 
 /**
  * 「拥有」官方袋子（发现页标记已有）。
- * 全部字段可选：不传就用官方袋子自带的名称/备注/标签，并默认进「未分类」展示架；
+ * 全部字段可选：不传就用官方袋子自带的名称/备注/标签，并按品牌归类（无品牌才进「未分类」）；
  * 前端标记半窗允许用户改名、归类、改标签备注，这几项作为覆盖值传进来。
  */
 export const claimOfficialBagSchema = z.object({
@@ -141,6 +146,38 @@ export const createBrandSchema = z.object({
 });
 
 export const updateBrandSchema = createBrandSchema.partial();
+
+/** POST /admin/submissions/:id/promote —— 把用户上传袋子纳入官方袋子。
+ *  全部字段可选：缺省沿用用户上传时的名称/备注/标签，不指定品牌则无品牌。 */
+export const promoteSubmissionSchema = z.object({
+  name: z.string().trim().min(1).max(80).optional(),
+  brandId: z.string().min(1).nullable().optional(),
+  notes: z.string().max(2000).optional(),
+  tags: z.array(z.string().trim().min(1).max(30)).max(30).optional()
+});
+
+/** POST /admin/submissions/:id/reject —— 驳回，可附审核意见。 */
+export const rejectSubmissionSchema = z.object({
+  note: z.string().max(500).optional()
+});
+
+/** PATCH /admin/users/:id/quota —— 调整单用户配额，至少传一项。 */
+export const updateUserQuotaSchema = z
+  .object({
+    storageQuotaBytes: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
+    collectibleQuota: z.number().int().min(0).max(1_000_000).optional(),
+    dailyMattingQuota: z.number().int().min(0).max(10_000).optional()
+  })
+  .refine(
+    (value) =>
+      value.storageQuotaBytes !== undefined ||
+      value.collectibleQuota !== undefined ||
+      value.dailyMattingQuota !== undefined,
+    { message: '至少指定一项要调整的配额' }
+  );
+
+export type PromoteSubmissionInput = z.infer<typeof promoteSubmissionSchema>;
+export type RejectSubmissionInput = z.infer<typeof rejectSubmissionSchema>;
 
 export interface AuthTokens {
   accessToken: string;
@@ -228,6 +265,89 @@ export interface BrandDto {
   bagCount: number;
   createdAt: string;
   updatedAt: string;
+}
+
+/** 审核后台：用户上传袋子（Collectible）的审核视图。 */
+export interface SubmissionDto {
+  /** 收藏 id。 */
+  id: string;
+  name: string;
+  notes: string;
+  tags: string[];
+  userId: string;
+  shelfName: string;
+  processingStatus: ProcessingStatus;
+  submissionStatus: SubmissionStatus;
+  reviewNote?: string;
+  /** 已纳入官方时，指向生成的官方袋子 id。 */
+  promotedBagId?: string;
+  thumbnailUrl?: string;
+  displayImageUrl?: string;
+  /** 是否已抠图（有可用 CUTOUT 资产）。 */
+  hasCutout: boolean;
+  /** 全部可用图片资产的字节数之和，供管理端展示/排序「图片大小」。 */
+  byteSize: number;
+  addedAt: string;
+  reviewedAt?: string;
+}
+
+export interface SubmissionPageDto {
+  items: SubmissionDto[];
+  nextCursor: string | null;
+  totalCount: number;
+}
+
+export type UpdateUserQuotaInput = z.infer<typeof updateUserQuotaSchema>;
+
+/** 管理后台：用户列表行。openid 脱敏展示，不落完整值给前端。 */
+export interface AdminUserSummaryDto {
+  id: string;
+  openidMasked: string;
+  hasUnionid: boolean;
+  status: UserStatus;
+  collectibleCount: number;
+  shelfCount: number;
+  storageUsedBytes: number;
+  storageQuotaBytes: number;
+  lastLoginAt: string;
+  createdAt: string;
+}
+
+export interface AdminUserPageDto {
+  items: AdminUserSummaryDto[];
+  nextCursor: string | null;
+  totalCount: number;
+}
+
+/** 管理后台：用户详情。附带配额与最近收藏（不含图片，避免列表/详情签名开销）。 */
+export interface AdminUserDetailDto extends AdminUserSummaryDto {
+  unionid?: string;
+  collectibleQuota: number;
+  dailyMattingQuota: number;
+  recentCollectibles: {
+    id: string;
+    name: string;
+    shelfName: string;
+    processingStatus: ProcessingStatus;
+    addedAt: string;
+  }[];
+}
+
+export interface AuditLogDto {
+  id: string;
+  action: string;
+  targetId?: string;
+  adminId?: string;
+  adminUsername?: string;
+  userId?: string;
+  metadata?: unknown;
+  createdAt: string;
+}
+
+export interface AuditLogPageDto {
+  items: AuditLogDto[];
+  nextCursor: string | null;
+  totalCount: number;
 }
 
 export interface ApiErrorBody {

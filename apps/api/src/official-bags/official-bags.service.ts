@@ -141,22 +141,37 @@ export class OfficialBagsService {
       });
   }
 
-  private async resolveDefaultShelf(userId: string) {
+  /** 按名称查找用户展架，找不到就新建（同名并发创建由唯一约束兜底）。 */
+  private async findOrCreateShelf(userId: string, name: string) {
+    const trimmed = name.trim();
     const existing = await this.prisma.shelf.findFirst({
-      where: { userId, name: DEFAULT_SHELF_NAME },
+      where: { userId, name: trimmed },
       orderBy: { createdAt: 'asc' }
     });
     if (existing) return existing;
     const count = await this.prisma.shelf.count({ where: { userId } });
-    return this.prisma.shelf.create({
-      data: { userId, name: DEFAULT_SHELF_NAME, theme: DEFAULT_SHELF_THEME, sortOrder: count }
-    });
+    try {
+      return await this.prisma.shelf.create({
+        data: { userId, name: trimmed, theme: DEFAULT_SHELF_THEME, sortOrder: count }
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        return this.prisma.shelf.findFirstOrThrow({ where: { userId, name: trimmed } });
+      }
+      throw error;
+    }
+  }
+
+  private resolveDefaultShelf(userId: string) {
+    return this.findOrCreateShelf(userId, DEFAULT_SHELF_NAME);
   }
 
   /**
-   * 「拥有」官方袋子：创建一条归属当前用户的 Collectible（名称/备注/标签带过去，
-   * 默认进「未分类」展示架，由用户自己归类），并排队把官方图片复制到用户名下。
-   * 同一用户对同一袋子只能拥有一次（唯一约束兜底并发）。
+   * 「拥有」官方袋子：创建一条归属当前用户的 Collectible（名称/备注/标签带过去），
+   * 并排队把官方图片复制到用户名下。同一用户对同一袋子只能拥有一次（唯一约束兜底并发）。
+   *
+   * 归类口径：袋子是什么分类（品牌）就进什么展架 —— 用户显式传了 shelfId 用用户的；
+   * 否则按官方袋子的品牌名找同名展架，找不到就新建；没有品牌才落到默认「未分类」。
    *
    * overrides：标记半窗里用户改过的名称 / 品牌展架 / 标签 / 备注；不传就用官方袋子自带内容。
    * 注意 processingStatus 起步是 NORMALIZING（图片还在后台复制），
@@ -168,7 +183,8 @@ export class OfficialBagsService {
     overrides: { name?: string; shelfId?: string; notes?: string; tags?: string[] } = {}
   ) {
     const bag = await this.prisma.officialBag.findFirst({
-      where: { id, status: OfficialBagStatus.PUBLISHED, processStatus: OfficialProcessStatus.READY }
+      where: { id, status: OfficialBagStatus.PUBLISHED, processStatus: OfficialProcessStatus.READY },
+      include: { brand: true }
     });
     if (!bag) throw new ApiError('NOT_FOUND', '袋子不存在或暂不可见', HttpStatus.NOT_FOUND);
 
@@ -191,7 +207,9 @@ export class OfficialBagsService {
 
     const shelf = overrides.shelfId
       ? await this.assertShelf(userId, overrides.shelfId)
-      : await this.resolveDefaultShelf(userId);
+      : bag.brand?.name
+        ? await this.findOrCreateShelf(userId, bag.brand.name)
+        : await this.resolveDefaultShelf(userId);
     const name = overrides.name?.trim() || bag.name;
     const notes = overrides.notes ?? bag.notes;
     const tags = overrides.tags ? this.normalizeTags(overrides.tags) : bag.tags;

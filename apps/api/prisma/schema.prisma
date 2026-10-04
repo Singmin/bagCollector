@@ -77,6 +77,13 @@ enum OfficialProcessStatus {
   FAILED
 }
 
+/* 用户上传袋子的审核状态：待审核 → 纳入官方（APPROVED）或驳回（REJECTED） */
+enum SubmissionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
 model Brand {
   id        String       @id @default(cuid())
   name      String       @unique
@@ -161,16 +168,25 @@ model Collectible {
   cropSaturation    Float?
   addedAt           DateTime         @default(now())
   updatedAt         DateTime         @updatedAt
+  // 审核后台：用户上传袋子的审核状态、审核人与「纳入官方袋子」回链
+  submissionStatus  SubmissionStatus @default(PENDING)
+  reviewNote        String?
+  reviewedById      String?
+  reviewedAt        DateTime?
+  promotedBagId     String?          @unique
   user              User             @relation(fields: [userId], references: [id], onDelete: Cascade)
   shelf             Shelf            @relation(fields: [shelfId, userId], references: [id, userId], onDelete: Restrict)
   tags              CollectibleTag[]
   imageAssets       ImageAsset[]
   processingJobs    ProcessingJob[]
+  reviewedBy        Admin?           @relation(fields: [reviewedById], references: [id], onDelete: SetNull)
+  promotedBag       OfficialBag?     @relation(fields: [promotedBagId], references: [id], onDelete: SetNull)
 
   @@unique([id, userId])
   @@index([userId, addedAt])
   @@index([userId, shelfId, shelfOrder])
   @@index([userId, processingStatus])
+  @@index([submissionStatus, addedAt])
 }
 
 model Tag {
@@ -244,8 +260,9 @@ model Admin {
   isActive     Boolean    @default(true)
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
-  auditLogs    AuditLog[]
-  officialBags OfficialBag[]
+  auditLogs             AuditLog[]
+  officialBags          OfficialBag[]
+  reviewedSubmissions   Collectible[]
 }
 
 model OfficialBag {
@@ -272,6 +289,8 @@ model OfficialBag {
   images        OfficialBagImage[]
   claims        OfficialClaim[]
   wishlistedBy  WishlistItem[]
+  /* 由哪个用户上传的袋子「纳入」而来（审核后台），一个用户袋子最多纳入一次 */
+  sourceCollectible Collectible?
 
   @@index([status, sortOrder])
 }

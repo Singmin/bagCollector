@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   App as AntdApp,
   Alert,
   Button,
   Card,
   Col,
+  DatePicker,
+  Descriptions,
   Drawer,
   Form,
   Grid,
@@ -18,6 +20,7 @@ import {
   Row,
   Select,
   Space,
+  Spin,
   Statistic,
   Switch,
   Table,
@@ -27,6 +30,7 @@ import {
 } from 'antd';
 import type { UploadFile } from 'antd';
 import {
+  AuditOutlined,
   DashboardOutlined,
   FileImageOutlined,
   LogoutOutlined,
@@ -35,6 +39,7 @@ import {
   ReloadOutlined,
   ShoppingOutlined,
   TagsOutlined,
+  TeamOutlined,
   UploadOutlined
 } from '@ant-design/icons';
 
@@ -86,6 +91,80 @@ interface Brand {
   bagCount: number;
   createdAt: string;
   updatedAt: string;
+}
+
+interface Submission {
+  id: string;
+  name: string;
+  notes: string;
+  tags: string[];
+  userId: string;
+  shelfName: string;
+  processingStatus: string;
+  submissionStatus: 'PENDING' | 'APPROVED' | 'REJECTED';
+  reviewNote?: string;
+  promotedBagId?: string;
+  thumbnailUrl?: string;
+  displayImageUrl?: string;
+  hasCutout: boolean;
+  byteSize: number;
+  addedAt: string;
+  reviewedAt?: string;
+}
+
+interface SubmissionPage {
+  items: Submission[];
+  nextCursor: string | null;
+  totalCount: number;
+}
+
+interface AdminUser {
+  id: string;
+  openidMasked: string;
+  hasUnionid: boolean;
+  status: 'ACTIVE' | 'SUSPENDED';
+  collectibleCount: number;
+  shelfCount: number;
+  storageUsedBytes: number;
+  storageQuotaBytes: number;
+  lastLoginAt: string;
+  createdAt: string;
+}
+
+interface AdminUserPage {
+  items: AdminUser[];
+  nextCursor: string | null;
+  totalCount: number;
+}
+
+interface AdminUserDetail extends AdminUser {
+  unionid?: string;
+  collectibleQuota: number;
+  dailyMattingQuota: number;
+  recentCollectibles: {
+    id: string;
+    name: string;
+    shelfName: string;
+    processingStatus: string;
+    addedAt: string;
+  }[];
+}
+
+interface AuditLog {
+  id: string;
+  action: string;
+  targetId?: string;
+  adminId?: string;
+  adminUsername?: string;
+  userId?: string;
+  metadata?: unknown;
+  createdAt: string;
+}
+
+interface AuditLogPage {
+  items: AuditLog[];
+  nextCursor: string | null;
+  totalCount: number;
 }
 
 const TOKEN_KEY = 'bagcollect:admin-token';
@@ -154,7 +233,38 @@ const jobStatusColors: Record<string, string> = {
   FAILED: 'red'
 };
 
-type PageKey = 'overview' | 'bags' | 'brands';
+const submissionStatusLabels: Record<Submission['submissionStatus'], string> = {
+  PENDING: '待审核',
+  APPROVED: '已纳入',
+  REJECTED: '已驳回'
+};
+
+const submissionStatusColors: Record<Submission['submissionStatus'], string> = {
+  PENDING: 'gold',
+  APPROVED: 'green',
+  REJECTED: 'volcano'
+};
+
+const userStatusLabels: Record<AdminUser['status'], string> = {
+  ACTIVE: '正常',
+  SUSPENDED: '已封禁'
+};
+
+const userStatusColors: Record<AdminUser['status'], string> = {
+  ACTIVE: 'green',
+  SUSPENDED: 'red'
+};
+
+/** 把处理状态归成三档：就绪 / 失败 / 处理中（上传/规范化/待裁剪/裁剪/抠图）。 */
+function processBucket(status: string): 'READY' | 'FAILED' | 'PROCESSING' {
+  if (status === 'READY') return 'READY';
+  if (status === 'FAILED') return 'FAILED';
+  return 'PROCESSING';
+}
+
+type ProcessFilter = 'ALL' | 'READY' | 'PROCESSING' | 'FAILED';
+
+type PageKey = 'overview' | 'bags' | 'brands' | 'submissions' | 'users' | 'audit';
 
 interface BagFormValues {
   name: string;
@@ -188,6 +298,22 @@ export function App() {
   const [navOpen, setNavOpen] = useState(false);
   const [brands, setBrands] = useState<Brand[]>([]);
   const [editingBrand, setEditingBrand] = useState<Brand | 'new' | null>(null);
+  const [submissions, setSubmissions] = useState<Submission[]>([]);
+  const [submissionStatusFilter, setSubmissionStatusFilter] = useState<'' | Submission['submissionStatus']>('');
+  const [submissionSearch, setSubmissionSearch] = useState('');
+  const [submissionDateRange, setSubmissionDateRange] = useState<[string, string] | null>(null);
+  const [promoting, setPromoting] = useState<Submission | null>(null);
+  const [rejecting, setRejecting] = useState<Submission | null>(null);
+  const [processFilter, setProcessFilter] = useState<ProcessFilter>('ALL');
+  const [users, setUsers] = useState<AdminUser[]>([]);
+  const [userStatusFilter, setUserStatusFilter] = useState<'' | AdminUser['status']>('');
+  const [userSearch, setUserSearch] = useState('');
+  const [userDetail, setUserDetail] = useState<AdminUserDetail | null>(null);
+  const [userDetailLoading, setUserDetailLoading] = useState(false);
+  const [editingQuotaUser, setEditingQuotaUser] = useState<AdminUserDetail | null>(null);
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [auditAction, setAuditAction] = useState('');
+  const [auditDateRange, setAuditDateRange] = useState<[string, string] | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -231,15 +357,98 @@ export function App() {
     }
   }, []);
 
+  const loadSubmissions = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const params = new URLSearchParams();
+      if (submissionStatusFilter) params.set('status', submissionStatusFilter);
+      if (submissionSearch.trim()) params.set('search', submissionSearch.trim());
+      if (submissionDateRange) {
+        params.set('from', submissionDateRange[0]);
+        params.set('to', submissionDateRange[1]);
+      }
+      params.set('limit', '100');
+      const result = await api<SubmissionPage>(`/submissions?${params.toString()}`);
+      setSubmissions(result.items);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : '加载失败');
+    } finally {
+      setLoading(false);
+    }
+  }, [submissionStatusFilter, submissionSearch, submissionDateRange]);
+
+  const visibleSubmissions = useMemo(
+    () =>
+      processFilter === 'ALL'
+        ? submissions
+        : submissions.filter((sub) => processBucket(sub.processingStatus) === processFilter),
+    [submissions, processFilter]
+  );
+
+  const loadUsers = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const params = new URLSearchParams();
+      if (userStatusFilter) params.set('status', userStatusFilter);
+      if (userSearch.trim()) params.set('search', userSearch.trim());
+      params.set('limit', '100');
+      const result = await api<AdminUserPage>(`/users?${params.toString()}`);
+      setUsers(result.items);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : '加载失败');
+    } finally {
+      setLoading(false);
+    }
+  }, [userStatusFilter, userSearch]);
+
+  const loadAuditLogs = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const params = new URLSearchParams();
+      if (auditAction.trim()) params.set('action', auditAction.trim());
+      if (auditDateRange) {
+        params.set('from', auditDateRange[0]);
+        params.set('to', auditDateRange[1]);
+      }
+      params.set('limit', '100');
+      const result = await api<AuditLogPage>(`/audit-logs?${params.toString()}`);
+      setAuditLogs(result.items);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : '加载失败');
+    } finally {
+      setLoading(false);
+    }
+  }, [auditAction, auditDateRange]);
+
+  const openUserDetail = useCallback(async (id: string): Promise<AdminUserDetail | null> => {
+    setUserDetailLoading(true);
+    try {
+      const detail = await api<AdminUserDetail>(`/users/${id}`);
+      setUserDetail(detail);
+      return detail;
+    } catch (requestError) {
+      message.error(requestError instanceof Error ? requestError.message : '加载用户详情失败');
+      return null;
+    } finally {
+      setUserDetailLoading(false);
+    }
+  }, [message]);
+
   useEffect(() => {
     if (!token) return;
     const timer = window.setTimeout(() => {
       if (page === 'overview') void load();
       else if (page === 'bags') void loadBags();
+      else if (page === 'submissions') void loadSubmissions();
+      else if (page === 'users') void loadUsers();
+      else if (page === 'audit') void loadAuditLogs();
       else void loadBrands();
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [token, page, load, loadBags, loadBrands]);
+  }, [token, page, load, loadBags, loadBrands, loadSubmissions, loadUsers, loadAuditLogs]);
 
   // 有图片在后台处理时轮询刷新，让「处理中 → 图片就绪」自动出现。
   useEffect(() => {
@@ -296,6 +505,29 @@ export function App() {
       await loadBrands();
     } catch (requestError) {
       message.error(requestError instanceof Error ? requestError.message : '删除失败');
+    }
+  }
+
+  async function reopenSubmission(submission: Submission) {
+    setError('');
+    try {
+      await api(`/submissions/${submission.id}/reopen`, { method: 'POST' });
+      message.success('已重新打开审核');
+      await loadSubmissions();
+    } catch (requestError) {
+      message.error(requestError instanceof Error ? requestError.message : '操作失败');
+    }
+  }
+
+  async function setUserStatus(id: string, status: AdminUser['status']) {
+    setError('');
+    try {
+      await api(`/users/${id}/${status === 'SUSPENDED' ? 'suspend' : 'activate'}`, { method: 'POST' });
+      message.success(status === 'SUSPENDED' ? '已封禁该用户' : '已解封该用户');
+      await loadUsers();
+      if (userDetail?.id === id) await openUserDetail(id);
+    } catch (requestError) {
+      message.error(requestError instanceof Error ? requestError.message : '操作失败');
     }
   }
 
@@ -358,13 +590,19 @@ export function App() {
   const menuItems = [
     { key: 'overview', icon: <DashboardOutlined />, label: '运行概览' },
     { key: 'brands', icon: <TagsOutlined />, label: '品牌管理' },
-    { key: 'bags', icon: <ShoppingOutlined />, label: '官方袋子库' }
+    { key: 'bags', icon: <ShoppingOutlined />, label: '官方袋子库' },
+    { key: 'submissions', icon: <FileImageOutlined />, label: '用户上传审核' },
+    { key: 'users', icon: <TeamOutlined />, label: '用户管理' },
+    { key: 'audit', icon: <AuditOutlined />, label: '审计日志' }
   ];
 
   const pageTitles: Record<PageKey, string> = {
     overview: '运行概览',
     brands: '品牌管理',
-    bags: '官方袋子库'
+    bags: '官方袋子库',
+    submissions: '用户上传审核',
+    users: '用户管理',
+    audit: '审计日志'
   };
 
   const navMenu = (
@@ -382,6 +620,9 @@ export function App() {
   const refresh = () => {
     if (page === 'overview') void load();
     else if (page === 'brands') void loadBrands();
+    else if (page === 'submissions') void loadSubmissions();
+    else if (page === 'users') void loadUsers();
+    else if (page === 'audit') void loadAuditLogs();
     else void loadBags();
   };
 
@@ -492,6 +733,414 @@ export function App() {
                   void loadBrands();
                 }}
               />
+            </>
+          ) : page === 'submissions' ? (
+            <>
+              <Card style={{ marginBottom: 16 }}>
+                <Space wrap direction={isMobile ? 'vertical' : 'horizontal'} style={{ width: isMobile ? '100%' : undefined }}>
+                  <Select<'' | Submission['submissionStatus']>
+                    value={submissionStatusFilter}
+                    onChange={setSubmissionStatusFilter}
+                    style={{ width: isMobile ? '100%' : 140 }}
+                    options={[
+                      { value: '', label: '全部状态' },
+                      { value: 'PENDING', label: '待审核' },
+                      { value: 'APPROVED', label: '已纳入' },
+                      { value: 'REJECTED', label: '已驳回' }
+                    ]}
+                  />
+                  <Select<ProcessFilter>
+                    value={processFilter}
+                    onChange={setProcessFilter}
+                    style={{ width: isMobile ? '100%' : 140 }}
+                    options={[
+                      { value: 'ALL', label: '全部图片' },
+                      { value: 'READY', label: '就绪' },
+                      { value: 'PROCESSING', label: '处理中' },
+                      { value: 'FAILED', label: '失败' }
+                    ]}
+                  />
+                  <DatePicker.RangePicker
+                    format="YYYY-MM-DD"
+                    placeholder={['开始日期', '结束日期']}
+                    style={{ width: isMobile ? '100%' : 260 }}
+                    onChange={(dates, dateStrings) => {
+                      if (dates && dates[0] && dates[1]) {
+                        setSubmissionDateRange([dateStrings[0], dateStrings[1]]);
+                      } else {
+                        setSubmissionDateRange(null);
+                      }
+                    }}
+                  />
+                  <Input.Search
+                    placeholder="搜索名称 / 标签 / 展示架"
+                    allowClear
+                    style={{ width: isMobile ? '100%' : 260 }}
+                    onSearch={setSubmissionSearch}
+                    onChange={(event) => {
+                      if (!event.target.value) setSubmissionSearch('');
+                    }}
+                  />
+                </Space>
+              </Card>
+
+              <Card title={`用户上传（${visibleSubmissions.length} 条）`}>
+                <Table<Submission>
+                  rowKey="id"
+                  dataSource={visibleSubmissions}
+                  loading={loading}
+                  pagination={false}
+                  scroll={{ x: 1100 }}
+                  columns={[
+                    {
+                      title: '图片',
+                      key: 'image',
+                      width: 84,
+                      render: (_, sub) =>
+                        sub.thumbnailUrl ? (
+                          <Image src={sub.thumbnailUrl} alt={sub.name} width={56} height={56} style={{ objectFit: 'contain' }} />
+                        ) : (
+                          <Tag>未处理</Tag>
+                        )
+                    },
+                    {
+                      title: '名称',
+                      key: 'name',
+                      sorter: (a, b) => a.name.localeCompare(b.name, 'zh'),
+                      render: (_, sub) => (
+                        <div>
+                          <Typography.Text strong>{sub.name}</Typography.Text>
+                          <div className="muted" style={{ fontSize: 12 }}>展示架：{sub.shelfName}</div>
+                          {sub.reviewNote && (
+                            <Typography.Text type="secondary" style={{ fontSize: 12 }}>意见：{sub.reviewNote}</Typography.Text>
+                          )}
+                        </div>
+                      )
+                    },
+                    {
+                      title: '标签',
+                      key: 'tags',
+                      render: (_, sub) =>
+                        sub.tags.length ? (
+                          <Space size={4} wrap>
+                            {sub.tags.map((tag) => <Tag key={tag}>{tag}</Tag>)}
+                          </Space>
+                        ) : (
+                          <span className="muted">—</span>
+                        )
+                    },
+                    {
+                      title: '审核状态',
+                      key: 'submissionStatus',
+                      width: 96,
+                      render: (_, sub) => (
+                        <Tag color={submissionStatusColors[sub.submissionStatus]}>
+                          {submissionStatusLabels[sub.submissionStatus]}
+                        </Tag>
+                      )
+                    },
+                    {
+                      title: '图片处理',
+                      key: 'process',
+                      width: 130,
+                      render: (_, sub) => (
+                        <Space size={4} wrap>
+                          <Tag color={sub.processingStatus === 'READY' ? 'green' : 'default'}>
+                            {sub.processingStatus === 'READY' ? '就绪' : sub.processingStatus}
+                          </Tag>
+                          {sub.hasCutout && <Tag color="purple">抠图</Tag>}
+                        </Space>
+                      )
+                    },
+                    {
+                      title: '图片大小',
+                      key: 'byteSize',
+                      width: 110,
+                      sorter: (a, b) => a.byteSize - b.byteSize,
+                      render: (_, sub) => (sub.byteSize > 0 ? formatBytes(sub.byteSize) : <span className="muted">—</span>)
+                    },
+                    {
+                      title: '上传时间',
+                      key: 'addedAt',
+                      width: 170,
+                      sorter: (a, b) => new Date(a.addedAt).getTime() - new Date(b.addedAt).getTime(),
+                      render: (_, sub) => new Date(sub.addedAt).toLocaleString('zh-CN')
+                    },
+                    {
+                      title: '操作',
+                      key: 'actions',
+                      width: 220,
+                      render: (_, sub) => (
+                        <Space size={4} wrap>
+                          {!sub.promotedBagId && (
+                            <Button size="small" type="primary" ghost onClick={() => setPromoting(sub)}>
+                              纳入官方
+                            </Button>
+                          )}
+                          {sub.submissionStatus === 'PENDING' && !sub.promotedBagId && (
+                            <Button size="small" onClick={() => setRejecting(sub)}>驳回</Button>
+                          )}
+                          {sub.submissionStatus === 'REJECTED' && !sub.promotedBagId && (
+                            <Button size="small" onClick={() => void reopenSubmission(sub)}>重新审核</Button>
+                          )}
+                          {sub.promotedBagId && <Tag color="green">已纳入</Tag>}
+                        </Space>
+                      )
+                    }
+                  ]}
+                />
+              </Card>
+
+              <PromoteSubmissionModal
+                submission={promoting}
+                brands={brands}
+                onClose={() => setPromoting(null)}
+                onDone={() => {
+                  setPromoting(null);
+                  void loadSubmissions();
+                }}
+              />
+              <RejectSubmissionModal
+                submission={rejecting}
+                onClose={() => setRejecting(null)}
+                onDone={() => {
+                  setRejecting(null);
+                  void loadSubmissions();
+                }}
+              />
+            </>
+          ) : page === 'users' ? (
+            <>
+              <Card style={{ marginBottom: 16 }}>
+                <Space wrap direction={isMobile ? 'vertical' : 'horizontal'} style={{ width: isMobile ? '100%' : undefined }}>
+                  <Select<'' | AdminUser['status']>
+                    value={userStatusFilter}
+                    onChange={setUserStatusFilter}
+                    style={{ width: isMobile ? '100%' : 140 }}
+                    options={[
+                      { value: '', label: '全部状态' },
+                      { value: 'ACTIVE', label: '正常' },
+                      { value: 'SUSPENDED', label: '已封禁' }
+                    ]}
+                  />
+                  <Input.Search
+                    placeholder="搜索 openid / unionid"
+                    allowClear
+                    style={{ width: isMobile ? '100%' : 260 }}
+                    onSearch={setUserSearch}
+                    onChange={(event) => {
+                      if (!event.target.value) setUserSearch('');
+                    }}
+                  />
+                </Space>
+              </Card>
+
+              <Card title={`用户（${users.length} 条）`}>
+                <Table<AdminUser>
+                  rowKey="id"
+                  dataSource={users}
+                  loading={loading}
+                  pagination={false}
+                  scroll={{ x: 1080 }}
+                  columns={[
+                    {
+                      title: '用户标识',
+                      key: 'openid',
+                      render: (_, user) => (
+                        <div>
+                          <Typography.Text strong>{user.openidMasked}</Typography.Text>
+                          {user.hasUnionid && <Tag style={{ marginLeft: 8 }}>有 unionid</Tag>}
+                        </div>
+                      )
+                    },
+                    {
+                      title: '状态',
+                      key: 'status',
+                      width: 96,
+                      render: (_, user) => <Tag color={userStatusColors[user.status]}>{userStatusLabels[user.status]}</Tag>
+                    },
+                    {
+                      title: '收藏',
+                      dataIndex: 'collectibleCount',
+                      key: 'collectibleCount',
+                      width: 80,
+                      sorter: (a, b) => a.collectibleCount - b.collectibleCount
+                    },
+                    {
+                      title: '架子',
+                      dataIndex: 'shelfCount',
+                      key: 'shelfCount',
+                      width: 80,
+                      sorter: (a, b) => a.shelfCount - b.shelfCount
+                    },
+                    {
+                      title: '存储用量',
+                      key: 'storage',
+                      width: 150,
+                      sorter: (a, b) => a.storageUsedBytes - b.storageUsedBytes,
+                      render: (_, user) => (
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                          {formatBytes(user.storageUsedBytes)} / {formatBytes(user.storageQuotaBytes)}
+                        </Typography.Text>
+                      )
+                    },
+                    {
+                      title: '最近登录',
+                      dataIndex: 'lastLoginAt',
+                      key: 'lastLoginAt',
+                      width: 170,
+                      sorter: (a, b) => new Date(a.lastLoginAt).getTime() - new Date(b.lastLoginAt).getTime(),
+                      render: (_, user) => new Date(user.lastLoginAt).toLocaleString('zh-CN')
+                    },
+                    {
+                      title: '注册时间',
+                      dataIndex: 'createdAt',
+                      key: 'createdAt',
+                      width: 170,
+                      render: (_, user) => new Date(user.createdAt).toLocaleString('zh-CN')
+                    },
+                    {
+                      title: '操作',
+                      key: 'actions',
+                      width: 220,
+                      render: (_, user) => (
+                        <Space size={4} wrap>
+                          <Button size="small" onClick={() => void openUserDetail(user.id)}>详情</Button>
+                          <Button
+                            size="small"
+                            onClick={() => {
+                              void openUserDetail(user.id).then((detail) => {
+                                if (detail) setEditingQuotaUser(detail);
+                              });
+                            }}
+                          >
+                            配额
+                          </Button>
+                          {user.status === 'ACTIVE' ? (
+                            <Popconfirm
+                              title={`确定封禁该用户？`}
+                              description="封禁后将撤销其全部登录会话"
+                              okText="封禁"
+                              okButtonProps={{ danger: true }}
+                              onConfirm={() => void setUserStatus(user.id, 'SUSPENDED')}
+                            >
+                              <Button size="small" danger>封禁</Button>
+                            </Popconfirm>
+                          ) : (
+                            <Button size="small" onClick={() => void setUserStatus(user.id, 'ACTIVE')}>解封</Button>
+                          )}
+                        </Space>
+                      )
+                    }
+                  ]}
+                />
+              </Card>
+
+              <UserDetailDrawer
+                user={userDetail}
+                loading={userDetailLoading}
+                onClose={() => setUserDetail(null)}
+                onEditQuota={() => setEditingQuotaUser(userDetail)}
+                onToggleStatus={(status) => {
+                  if (userDetail) void setUserStatus(userDetail.id, status);
+                }}
+              />
+              <UserQuotaModal
+                user={editingQuotaUser}
+                onClose={() => setEditingQuotaUser(null)}
+                onDone={async (updated) => {
+                  setEditingQuotaUser(null);
+                  await loadUsers();
+                  if (userDetail?.id === updated.id) void openUserDetail(updated.id);
+                }}
+              />
+            </>
+          ) : page === 'audit' ? (
+            <>
+              <Card style={{ marginBottom: 16 }}>
+                <Space wrap direction={isMobile ? 'vertical' : 'horizontal'} style={{ width: isMobile ? '100%' : undefined }}>
+                  <Input.Search
+                    placeholder="搜索动作（如 USER / SUBMISSION）"
+                    allowClear
+                    style={{ width: isMobile ? '100%' : 280 }}
+                    onSearch={setAuditAction}
+                    onChange={(event) => {
+                      if (!event.target.value) setAuditAction('');
+                    }}
+                  />
+                  <DatePicker.RangePicker
+                    format="YYYY-MM-DD"
+                    placeholder={['开始日期', '结束日期']}
+                    style={{ width: isMobile ? '100%' : 260 }}
+                    onChange={(dates, dateStrings) => {
+                      if (dates && dates[0] && dates[1]) {
+                        setAuditDateRange([dateStrings[0], dateStrings[1]]);
+                      } else {
+                        setAuditDateRange(null);
+                      }
+                    }}
+                  />
+                </Space>
+              </Card>
+
+              <Card title={`审计日志（${auditLogs.length} 条）`}>
+                <Table<AuditLog>
+                  rowKey="id"
+                  dataSource={auditLogs}
+                  loading={loading}
+                  pagination={false}
+                  scroll={{ x: 960 }}
+                  columns={[
+                    {
+                      title: '时间',
+                      dataIndex: 'createdAt',
+                      key: 'createdAt',
+                      width: 170,
+                      sorter: (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+                      render: (_, log) => new Date(log.createdAt).toLocaleString('zh-CN')
+                    },
+                    {
+                      title: '动作',
+                      dataIndex: 'action',
+                      key: 'action',
+                      width: 200,
+                      render: (action: string) => <Typography.Text code>{action}</Typography.Text>
+                    },
+                    {
+                      title: '管理员',
+                      key: 'admin',
+                      width: 120,
+                      render: (_, log) => (log.adminUsername ? log.adminUsername : <span className="muted">—</span>)
+                    },
+                    {
+                      title: '用户',
+                      key: 'user',
+                      width: 180,
+                      render: (_, log) =>
+                        log.userId ? <Typography.Text type="secondary" style={{ fontSize: 12 }}>{log.userId}</Typography.Text> : <span className="muted">—</span>
+                    },
+                    {
+                      title: '目标',
+                      key: 'target',
+                      width: 180,
+                      render: (_, log) =>
+                        log.targetId ? <Typography.Text type="secondary" style={{ fontSize: 12 }}>{log.targetId}</Typography.Text> : <span className="muted">—</span>
+                    },
+                    {
+                      title: '详情',
+                      key: 'metadata',
+                      render: (_, log) =>
+                        log.metadata ? (
+                          <Typography.Text type="secondary" style={{ fontSize: 12, wordBreak: 'break-all' }}>
+                            {JSON.stringify(log.metadata)}
+                          </Typography.Text>
+                        ) : (
+                          <span className="muted">—</span>
+                        )
+                    }
+                  ]}
+                />
+              </Card>
             </>
           ) : (
             <>
@@ -1024,6 +1673,354 @@ function BrandEditor({
             <InputNumber min={0} style={{ width: '100%' }} />
           </Form.Item>
         )}
+        <Form.Item style={{ marginBottom: 0 }}>
+          <Space style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <Button onClick={onClose}>取消</Button>
+            <Button type="primary" htmlType="submit" loading={saving}>保存</Button>
+          </Space>
+        </Form.Item>
+      </Form>
+    </Modal>
+  );
+}
+
+interface PromoteFormValues {
+  name: string;
+  brandId?: string | null;
+  notes?: string;
+  tags?: string;
+}
+
+function PromoteSubmissionModal({
+  submission,
+  brands,
+  onClose,
+  onDone
+}: {
+  submission: Submission | null;
+  brands: Brand[];
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const { message } = AntdApp.useApp();
+  const isMobile = useIsMobile();
+  const [saving, setSaving] = useState(false);
+
+  async function save(values: PromoteFormValues) {
+    if (!submission) return;
+    setSaving(true);
+    try {
+      const payload = {
+        name: values.name.trim(),
+        brandId: values.brandId ?? null,
+        notes: values.notes ?? '',
+        tags: values.tags ? values.tags.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean) : []
+      };
+      const result = await api<{ officialBagName: string }>(`/submissions/${submission.id}/promote`, {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+      message.success(`已纳入官方袋子库「${result.officialBagName}」，可在官方袋子库中发布`);
+      onDone();
+    } catch (requestError) {
+      message.error(requestError instanceof Error ? requestError.message : '纳入失败');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal
+      title={submission ? `纳入官方：${submission.name}` : '纳入官方'}
+      open={submission !== null}
+      onCancel={onClose}
+      width={isMobile ? '100%' : 560}
+      footer={null}
+      destroyOnHidden
+    >
+      <Form<PromoteFormValues>
+        layout="vertical"
+        onFinish={(values) => void save(values)}
+        initialValues={{
+          name: submission?.name ?? '',
+          brandId: null,
+          notes: submission?.notes ?? '',
+          tags: submission?.tags.join('，') ?? ''
+        }}
+      >
+        <Typography.Paragraph type="secondary">
+          将沿用用户上传的名称、备注与标签；图片会原样复制到官方库并直接就绪，无需重新处理。
+        </Typography.Paragraph>
+        <Form.Item
+          name="name"
+          label="名称"
+          rules={[{ required: true, message: '名称不能为空' }, { max: 80, message: '最多 80 字' }]}
+        >
+          <Input maxLength={80} />
+        </Form.Item>
+        <Form.Item label="品牌">
+          <Form.Item name="brandId" noStyle>
+            <Select
+              placeholder="选择品牌（可选）"
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              style={{ width: '100%' }}
+              options={brands.map((brand) => ({ value: brand.id, label: brand.name }))}
+            />
+          </Form.Item>
+        </Form.Item>
+        <Form.Item name="tags" label="标签（用逗号分隔）">
+          <Input placeholder="手提包、老花、棕色" />
+        </Form.Item>
+        <Form.Item name="notes" label="备注" rules={[{ max: 2000 }]}>
+          <Input.TextArea rows={3} maxLength={2000} />
+        </Form.Item>
+        <Form.Item style={{ marginBottom: 0 }}>
+          <Space style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <Button onClick={onClose}>取消</Button>
+            <Button type="primary" htmlType="submit" loading={saving}>纳入官方</Button>
+          </Space>
+        </Form.Item>
+      </Form>
+    </Modal>
+  );
+}
+
+interface RejectFormValues {
+  note?: string;
+}
+
+function RejectSubmissionModal({
+  submission,
+  onClose,
+  onDone
+}: {
+  submission: Submission | null;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const { message } = AntdApp.useApp();
+  const isMobile = useIsMobile();
+  const [saving, setSaving] = useState(false);
+
+  async function save(values: RejectFormValues) {
+    if (!submission) return;
+    setSaving(true);
+    try {
+      await api(`/submissions/${submission.id}/reject`, {
+        method: 'POST',
+        body: JSON.stringify({ note: values.note ?? '' })
+      });
+      message.success('已驳回');
+      onDone();
+    } catch (requestError) {
+      message.error(requestError instanceof Error ? requestError.message : '驳回失败');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal
+      title={submission ? `驳回：${submission.name}` : '驳回'}
+      open={submission !== null}
+      onCancel={onClose}
+      width={isMobile ? '100%' : 520}
+      footer={null}
+      destroyOnHidden
+    >
+      <Form<RejectFormValues>
+        layout="vertical"
+        onFinish={(values) => void save(values)}
+        initialValues={{ note: '' }}
+      >
+        <Form.Item name="note" label="审核意见（可选）" rules={[{ max: 500 }]}>
+          <Input.TextArea rows={3} placeholder="说明驳回原因" maxLength={500} />
+        </Form.Item>
+        <Form.Item style={{ marginBottom: 0 }}>
+          <Space style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <Button onClick={onClose}>取消</Button>
+            <Button danger htmlType="submit" loading={saving}>驳回</Button>
+          </Space>
+        </Form.Item>
+      </Form>
+    </Modal>
+  );
+}
+
+function UserDetailDrawer({
+  user,
+  loading,
+  onClose,
+  onEditQuota,
+  onToggleStatus
+}: {
+  user: AdminUserDetail | null;
+  loading: boolean;
+  onClose: () => void;
+  onEditQuota: () => void;
+  onToggleStatus: (status: AdminUser['status']) => void;
+}) {
+  const isMobile = useIsMobile();
+  return (
+    <Drawer
+      title={user ? `用户详情：${user.openidMasked}` : '用户详情'}
+      open={user !== null}
+      onClose={onClose}
+      width={isMobile ? '100%' : 680}
+    >
+      <Spin spinning={loading}>
+        {user && (
+          <>
+            <Descriptions column={isMobile ? 1 : 2} size="small" bordered>
+              <Descriptions.Item label="用户 ID" span={isMobile ? 1 : 2}>{user.id}</Descriptions.Item>
+              <Descriptions.Item label="状态">
+                <Tag color={userStatusColors[user.status]}>{userStatusLabels[user.status]}</Tag>
+              </Descriptions.Item>
+              <Descriptions.Item label="有 unionid">{user.hasUnionid ? '是' : '否'}</Descriptions.Item>
+              <Descriptions.Item label="openid" span={isMobile ? 1 : 2}>{user.openidMasked}</Descriptions.Item>
+              {user.unionid && (
+                <Descriptions.Item label="unionid" span={isMobile ? 1 : 2}>
+                  <Typography.Text type="secondary" style={{ fontSize: 12, wordBreak: 'break-all' }}>{user.unionid}</Typography.Text>
+                </Descriptions.Item>
+              )}
+              <Descriptions.Item label="收藏数">{user.collectibleCount}</Descriptions.Item>
+              <Descriptions.Item label="架子数">{user.shelfCount}</Descriptions.Item>
+              <Descriptions.Item label="存储用量">
+                {formatBytes(user.storageUsedBytes)} / {formatBytes(user.storageQuotaBytes)}
+              </Descriptions.Item>
+              <Descriptions.Item label="收藏配额">{user.collectibleQuota}</Descriptions.Item>
+              <Descriptions.Item label="每日抠图配额">{user.dailyMattingQuota}</Descriptions.Item>
+              <Descriptions.Item label="注册时间">{new Date(user.createdAt).toLocaleString('zh-CN')}</Descriptions.Item>
+              <Descriptions.Item label="最近登录">{new Date(user.lastLoginAt).toLocaleString('zh-CN')}</Descriptions.Item>
+            </Descriptions>
+
+            <Space style={{ marginTop: 16 }} wrap>
+              <Button type="primary" onClick={onEditQuota}>调整配额</Button>
+              {user.status === 'ACTIVE' ? (
+                <Popconfirm
+                  title="确定封禁该用户？"
+                  description="封禁后将撤销其全部登录会话"
+                  okText="封禁"
+                  okButtonProps={{ danger: true }}
+                  onConfirm={() => onToggleStatus('SUSPENDED')}
+                >
+                  <Button danger>封禁</Button>
+                </Popconfirm>
+              ) : (
+                <Button onClick={() => onToggleStatus('ACTIVE')}>解封</Button>
+              )}
+            </Space>
+
+            <Typography.Title level={5} style={{ marginTop: 24 }}>
+              最近收藏（{user.recentCollectibles.length}）
+            </Typography.Title>
+            <Table
+              rowKey="id"
+              dataSource={user.recentCollectibles}
+              pagination={false}
+              size="small"
+              scroll={{ x: 520 }}
+              columns={[
+                { title: '名称', dataIndex: 'name', key: 'name' },
+                { title: '架子', dataIndex: 'shelfName', key: 'shelfName', width: 120 },
+                {
+                  title: '图片状态',
+                  dataIndex: 'processingStatus',
+                  key: 'processingStatus',
+                  width: 120,
+                  render: (status: string) => (status === 'READY' ? <Tag color="green">就绪</Tag> : <Tag>{status}</Tag>)
+                },
+                {
+                  title: '加入时间',
+                  dataIndex: 'addedAt',
+                  key: 'addedAt',
+                  width: 170,
+                  render: (value: string) => new Date(value).toLocaleString('zh-CN')
+                }
+              ]}
+            />
+          </>
+        )}
+      </Spin>
+    </Drawer>
+  );
+}
+
+interface QuotaFormValues {
+  storageQuotaBytes: number;
+  collectibleQuota: number;
+  dailyMattingQuota: number;
+}
+
+function UserQuotaModal({
+  user,
+  onClose,
+  onDone
+}: {
+  user: AdminUserDetail | null;
+  onClose: () => void;
+  onDone: (updated: AdminUserDetail) => void;
+}) {
+  const { message } = AntdApp.useApp();
+  const isMobile = useIsMobile();
+  const [saving, setSaving] = useState(false);
+
+  async function save(values: QuotaFormValues) {
+    if (!user) return;
+    setSaving(true);
+    try {
+      const payload: Record<string, number> = {};
+      if (values.storageQuotaBytes !== user.storageQuotaBytes) payload.storageQuotaBytes = values.storageQuotaBytes;
+      if (values.collectibleQuota !== user.collectibleQuota) payload.collectibleQuota = values.collectibleQuota;
+      if (values.dailyMattingQuota !== user.dailyMattingQuota) payload.dailyMattingQuota = values.dailyMattingQuota;
+      if (Object.keys(payload).length === 0) {
+        message.info('没有修改任何配额');
+        return;
+      }
+      const updated = await api<AdminUserDetail>(`/users/${user.id}/quota`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload)
+      });
+      message.success('配额已更新');
+      onDone(updated);
+    } catch (requestError) {
+      message.error(requestError instanceof Error ? requestError.message : '更新失败');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal
+      title={user ? `调整配额：${user.openidMasked}` : '调整配额'}
+      open={user !== null}
+      onCancel={onClose}
+      width={isMobile ? '100%' : 520}
+      footer={null}
+      destroyOnHidden
+    >
+      <Form<QuotaFormValues>
+        key={user?.id ?? 'empty'}
+        layout="vertical"
+        onFinish={(values) => void save(values)}
+        initialValues={{
+          storageQuotaBytes: user?.storageQuotaBytes ?? 0,
+          collectibleQuota: user?.collectibleQuota ?? 0,
+          dailyMattingQuota: user?.dailyMattingQuota ?? 0
+        }}
+      >
+        <Typography.Paragraph type="secondary">只提交有改动的字段；当前用量与默认值供参考。</Typography.Paragraph>
+        <Form.Item name="storageQuotaBytes" label="存储配额（字节）" rules={[{ required: true, message: '请输入存储配额' }]}>
+          <InputNumber min={0} style={{ width: '100%' }} />
+        </Form.Item>
+        <Form.Item name="collectibleQuota" label="收藏数量配额" rules={[{ required: true, message: '请输入收藏配额' }]}>
+          <InputNumber min={0} max={1000000} style={{ width: '100%' }} />
+        </Form.Item>
+        <Form.Item name="dailyMattingQuota" label="每日抠图配额" rules={[{ required: true, message: '请输入抠图配额' }]}>
+          <InputNumber min={0} max={10000} style={{ width: '100%' }} />
+        </Form.Item>
         <Form.Item style={{ marginBottom: 0 }}>
           <Space style={{ display: 'flex', justifyContent: 'flex-end' }}>
             <Button onClick={onClose}>取消</Button>

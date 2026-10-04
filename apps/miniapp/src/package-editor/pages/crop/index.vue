@@ -139,19 +139,36 @@ const imageStyle = computed(() => {
 const frameStyle = computed(() => {
   if (!state.stageWidth || !state.imageWidth) return 'display:none';
   const frame = frameRect();
-  return `left:${frame.x}px;top:${frame.y}px;width:${frame.width}px;height:${frame.height}px;`;
+  /* 取景框与图片层用同一套居中方式（left/top:50% + 负 margin）——
+     不再用 px 硬定位到「测量的舞台中心」：若测量值与真实舞台有偏差，
+     图片（CSS 50% 居中）会与取景框（px 居中）错位。改成同源居中后，
+     即便测量短暂偏差，两者中心也始终重合，只影响整体缩放、不再错位 */
+  return `width:${frame.width}px;height:${frame.height}px;margin-left:${-frame.width / 2}px;margin-top:${-frame.height / 2}px;`;
 });
 
 /* 舞台尺寸查询：普通 view 的 size 查询（无 canvas，无渲染崩溃面）。
-   真机刚跳转时可能先拿到 0，轮询重试直到非零 */
-function readStageSize(attempts = 10) {
+   真机刚跳转时可能先拿到 0，轮询重试直到非零；
+   首次非零读数常是「布局未定」的过渡值（导航/字体/胶囊高度还没落定），
+   直接采用会让每次进入页面取到的舞台尺寸不一致 —— 图片 cover 缩放与取景框都随它走，
+   表现为「图片对不上裁剪框 / 每次进去图片大小不一样」。
+   因此改成「连续两次读到相同尺寸才采用」，读到稳定值再回。 */
+function readStageSize(attempts = 15) {
   return new Promise<{ width: number; height: number }>((resolve, reject) => {
+    let last: { width: number; height: number } | null = null;
     const attempt = (left: number) => {
       const query = uni.createSelectorQuery().in(instance?.proxy as any);
       query.select('.crop-stage').fields({ size: true }, (field: any) => {
-        if (field && field.width > 0 && field.height > 0) return resolve({ width: field.width, height: field.height });
+        const size = field && field.width > 0 && field.height > 0 ? { width: field.width, height: field.height } : null;
+        if (size) {
+          if (last && Math.abs(last.width - size.width) < 1 && Math.abs(last.height - size.height) < 1) {
+            return resolve(size);
+          }
+          last = size;
+        } else {
+          last = null;
+        }
         if (left <= 0) return reject(new Error('画布初始化失败'));
-        setTimeout(() => attempt(left - 1), 120);
+        setTimeout(() => attempt(left - 1), 100);
       }).exec();
     };
     attempt(attempts);
@@ -415,14 +432,16 @@ onUnload(() => clearLoadWatch());
 .load-error__retry.is-pressed { transform: scale(.9); opacity: .8; }
 /* 画布容器：纸感卡片外观（白底 + 细边框 + 柔影，取值与全站 .card 一致）；
    高度走 flex:1 吃掉导航栏/工具/滑杆之外的剩余视口，矮屏自动收缩（min-height 兜底） */
-.canvas-shell { flex: 1 1 auto; min-height: 320rpx; margin: 0 30rpx; border: 1rpx solid rgba(55,47,37,.12); border-radius: 16rpx; background: #fffdf8; box-shadow: 0 20rpx 50rpx rgba(51,42,29,.07); overflow: hidden; }
-/* 舞台：图片与取景框的定位/裁剪容器；手势也挂在这一层 */
-.crop-stage { position: relative; width: 100%; height: 100%; overflow: hidden; border-radius: 16rpx; }
+.canvas-shell { position: relative; flex: 1 1 auto; min-height: 320rpx; margin: 0 30rpx; border: 1rpx solid rgba(55,47,37,.12); border-radius: 16rpx; background: #fffdf8; box-shadow: 0 20rpx 50rpx rgba(51,42,29,.07); overflow: hidden; }
+/* 舞台：图片与取景框的定位/裁剪容器；手势也挂在这一层。
+   用 absolute 铺满父容器（而非 height:100%）——height:100% 依赖父级 flex 高度被视作
+   「确定高度」，部分 WebView 里解析不稳定，会拿到错误的舞台尺寸（图片/取景框随之错乱） */
+.crop-stage { position: absolute; left: 0; top: 0; right: 0; bottom: 0; overflow: hidden; border-radius: 16rpx; }
 /* 图片层：中心锚点在舞台中心（left/top 50% + 负 margin），宽高/位移/旋转/调色全走行内样式 */
 .crop-image { position: absolute; left: 50%; top: 50%; will-change: transform; }
 /* 取景框：白色描边 + 九宫格参考线；框外压暗靠超大扩散 box-shadow（被舞台裁掉）。
    背景两块 1/3 平铺渐变分别在右/下边缘描 1px 线 → 正好落在 1/3 与 2/3 分割线上 */
-.crop-frame { position: absolute; box-sizing: border-box; border: 1.5px solid rgba(255,255,255,.95); pointer-events: none; box-shadow: 0 0 0 9999px rgba(20,18,15,.52); background-image: linear-gradient(to right, transparent calc(100% - 1px), rgba(255,255,255,.38) calc(100% - 1px)), linear-gradient(to bottom, transparent calc(100% - 1px), rgba(255,255,255,.38) calc(100% - 1px)); background-size: calc(100% / 3) calc(100% / 3); }
+.crop-frame { position: absolute; left: 50%; top: 50%; box-sizing: border-box; border: 1.5px solid rgba(255,255,255,.95); pointer-events: none; box-shadow: 0 0 0 9999px rgba(20,18,15,.52); background-image: linear-gradient(to right, transparent calc(100% - 1px), rgba(255,255,255,.38) calc(100% - 1px)), linear-gradient(to bottom, transparent calc(100% - 1px), rgba(255,255,255,.38) calc(100% - 1px)); background-size: calc(100% / 3) calc(100% / 3); }
 /* 画布加载态蒙层：图片加载期间提示，避免被当成「点了没反应」 */
 .canvas-loading { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20rpx; color: #77736d; font-size: var(--wc-font-footnote); }
 .canvas-loading__spinner { width: 60rpx; height: 60rpx; border: 6rpx solid rgba(20, 20, 20, .15); border-top-color: #141414; border-radius: 50%; animation: crop-spin .9s linear infinite; }

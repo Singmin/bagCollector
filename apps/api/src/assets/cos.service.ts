@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { mkdir, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import type { Readable } from 'node:stream';
 import { dirname, extname, resolve, sep } from 'node:path';
 import { HttpStatus, Injectable } from '@nestjs/common';
@@ -159,8 +159,10 @@ export class CosService {
     }
     /* 防御：API_PUBLIC_URL 仍是默认 localhost（服务器漏配）时，代理 URL 客户端不可达，
        回退 COS 直链 —— <image> 组件不受合法域名校验，至少列表/详情图不受影响；
-       配置正确后自动切回统一代理（canvas 合法域名只需配 API 一个） */
-    if (/\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(this.config.API_PUBLIC_URL)) {
+       配置正确后自动切回统一代理（canvas 合法域名只需配 API 一个）。
+       注意：local 存储没有 COS 直链可回退（COS_BUCKET 为空），只能走 API 代理，
+       否则这里会因空 Bucket 触发 cos SDK 的「missing param Bucket」。 */
+    if (!this.isLocal() && /\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(this.config.API_PUBLIC_URL)) {
       return this.cosSignedUrl(key, expires);
     }
     const token = this.localToken(key, Date.now() + expires * 1_000);
@@ -184,6 +186,20 @@ export class CosService {
         (error, data) => {
           if (error) reject(error);
           else resolve(data.Url);
+        }
+      );
+    });
+  }
+
+  /** 读取对象完整字节（审核后台把用户图片复制到官方库用）。本地与 COS 驱动行为一致。 */
+  async getObject(key: string): Promise<Buffer> {
+    if (this.isLocal()) return readFile(this.localPath(key));
+    return new Promise((resolve, reject) => {
+      this.client.getObject(
+        { Bucket: this.config.COS_BUCKET, Region: this.config.COS_REGION, Key: key },
+        (error, data) => {
+          if (error) reject(error);
+          else resolve(Buffer.isBuffer(data.Body) ? data.Body : Buffer.from(data.Body as never));
         }
       );
     });

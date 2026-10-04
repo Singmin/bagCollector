@@ -26,4 +26,22 @@ export class AdminController {
   jobs(@Query('status') status?: JobStatus) {
     return this.admin.jobs(status);
   }
+
+  @Get('audit-logs')
+  @UseGuards(AdminGuard)
+  auditLogs(
+    @Query('action') action?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('cursor') cursor?: string,
+    @Query('limit') rawLimit?: string
+  ) {
+    return this.admin.auditLogs({
+      action,
+      from,
+      to,
+      cursor,
+      limit: rawLimit ? Number(rawLimit) : undefined
+    });
+  }
 }
