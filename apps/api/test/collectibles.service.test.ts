@@ -43,6 +43,8 @@ describe('CollectiblesService.list', () => {
         name: '纸袋一号',
         shelfId: 'shelf-1',
         shelfName: '旅行',
+        quantity: 1,
+        visibility: 'PUBLIC',
         processingStatus: 'READY',
         thumbnailUrl: 'https://assets.example/thumb-one.jpg',
         addedAt: '2026-09-20T08:00:00.000Z',
