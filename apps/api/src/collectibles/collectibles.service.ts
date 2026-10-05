@@ -40,6 +40,8 @@ export class CollectiblesService {
       id: collectible.id,
       name: collectible.name,
       notes: collectible.notes,
+      quantity: collectible.quantity ?? 1,
+      visibility: collectible.visibility ?? 'PUBLIC',
       tags: collectible.tags.map((entry: any) => entry.tag.displayName),
       shelfId: collectible.shelfId,
       shelfName: collectible.shelf.name,
@@ -77,6 +79,8 @@ export class CollectiblesService {
       name: collectible.name,
       shelfId: collectible.shelfId,
       shelfName: collectible.shelf.name,
+      quantity: collectible.quantity ?? 1,
+      visibility: collectible.visibility ?? 'PUBLIC',
       processingStatus: collectible.processingStatus,
       ...(thumbnail ? { thumbnailUrl: await this.assets.signedUrlForObjectKey(thumbnail.objectKey) } : {}),
       addedAt: collectible.addedAt.toISOString(),
@@ -186,7 +190,7 @@ export class CollectiblesService {
   async update(
     userId: string,
     id: string,
-    input: { name?: string; notes?: string; tags?: string[]; shelfId?: string }
+    input: { name?: string; notes?: string; tags?: string[]; shelfId?: string; quantity?: number; addedAt?: string; visibility?: 'PRIVATE' | 'PUBLIC' }
   ) {
     const collectible = await this.prisma.collectible.findFirst({ where: { id, userId } });
     if (!collectible) throw new ApiError('NOT_FOUND', '收藏不存在', HttpStatus.NOT_FOUND);
@@ -198,7 +202,10 @@ export class CollectiblesService {
         data: {
           ...(input.name !== undefined ? { name: input.name } : {}),
           ...(input.notes !== undefined ? { notes: input.notes } : {}),
-          ...(input.shelfId !== undefined ? { shelfId: input.shelfId } : {})
+          ...(input.shelfId !== undefined ? { shelfId: input.shelfId } : {}),
+          ...(input.quantity !== undefined ? { quantity: input.quantity } : {}),
+          ...(input.addedAt !== undefined ? { addedAt: new Date(input.addedAt) } : {}),
+          ...(input.visibility !== undefined ? { visibility: input.visibility } : {})
         }
       });
       if (normalizedTags) {

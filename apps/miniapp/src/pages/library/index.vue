@@ -442,6 +442,25 @@ const editShelf = ref('');
 const editTags = ref<string[]>([]);
 const editTagDraft = ref('');
 const editNote = ref('');
+/* 同款袋子数量（步进器）：1-99，保存随表单一并提交；>1 时卡片右上角显示 ×N 角标 */
+const editQuantity = ref(1);
+const QTY_MAX = 99;
+function changeQuantity(delta: number) {
+  editQuantity.value = Math.min(QTY_MAX, Math.max(1, editQuantity.value + delta));
+}
+/* 收藏日期（编辑态可改）：ISO 字符串，date picker 的 value 取前 10 位 */
+const editDate = ref('');
+const editDateValue = computed(() => (editDate.value ? editDate.value.slice(0, 10) : ''));
+const todayStr = computed(() => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+});
+function onEditDateChange(event: Event) {
+  const value = (event as unknown as { detail?: { value?: string } }).detail?.value;
+  if (value) editDate.value = new Date(`${value}T12:00:00`).toISOString();
+}
+/* 可见性：私密收藏 / 公开展示（默认公开） */
+const editVisibility = ref<'PRIVATE' | 'PUBLIC'>('PUBLIC');
 /* 下划线变红用「聚焦类」而不是 :focus —— 小程序端 input / textarea 的 :focus
    不可靠，H5 那套 .ef-input:focus 直接搬过来多半不生效，改由 focus/blur 切类。 */
 const focusedField = ref('');
@@ -460,7 +479,10 @@ const detailFacts = computed(() => {
     { label: '品牌 / 店铺', value: wish ? (item.ownerName ?? '官方精选') : item.shelfName },
     { label: wish ? '上架日期' : '收藏日期', value: formattedDate(item.addedAt, '-') },
     { label: wish ? '上架天数' : '入库时长', value: daysAgoText(item.addedAt) },
-    { label: '编号', value: wish ? '' : detailNo.value }
+    { label: '编号', value: wish ? '' : detailNo.value },
+    /* 数量恒显（×1 也展示），与设计稿一致；心愿条目无数量/可见性 */
+    { label: '数量', value: !wish ? `×${item.quantity ?? 1}` : '' },
+    { label: '谁能看到', value: !wish ? (item.visibility === 'PRIVATE' ? '私密收藏' : '公开展示') : '' }
   ].filter((row) => row.value);
 });
 
@@ -678,6 +700,9 @@ async function startEdit() {
   editTags.value = [...detail.tags];
   editTagDraft.value = '';
   editNote.value = detail.notes ?? '';
+  editQuantity.value = detail.quantity ?? 1;
+  editDate.value = detail.addedAt;
+  editVisibility.value = detail.visibility ?? 'PUBLIC';
   focusedField.value = '';
   editing.value = true;
   /* 底栏是框架层，页面 z-index 压不住：半窗打开时整条隐藏，关闭时还原 */
@@ -744,6 +769,9 @@ function applyUpdated(updated: Collectible) {
       name: updated.name,
       shelfId: updated.shelfId,
       shelfName: updated.shelfName,
+      quantity: updated.quantity,
+      addedAt: updated.addedAt,
+      visibility: updated.visibility,
       updatedAt: updated.updatedAt
     };
     /* 换了展示架就按差值挪件数。这里不用「本地重算」：items 只装了已加载的那几页，
@@ -762,7 +790,7 @@ function applyUpdated(updated: Collectible) {
   /* 列表里的摘要也要跟着改：宫格 / 展架两套视图、还有分组都读它。
      shelfId 一动，这件收藏在新展示架的分组里就自动出现了（groups 是按 shelfId 现算的）。 */
   items.value = items.value.map((current) => (current.id === updated.id
-    ? { ...current, name: updated.name, shelfId: updated.shelfId, shelfName: updated.shelfName, updatedAt: updated.updatedAt }
+    ? { ...current, name: updated.name, shelfId: updated.shelfId, shelfName: updated.shelfName, quantity: updated.quantity, addedAt: updated.addedAt, visibility: updated.visibility, updatedAt: updated.updatedAt }
     : current));
 }
 
@@ -787,7 +815,7 @@ async function saveEdit() {
       shelf = await dataService.createShelf({ name: shelfName, theme: 'SAGE' });
       shelves.value = [...shelves.value, shelf];
     }
-    const updated = await dataService.updateCollectible(item.id, { name, notes, tags, shelfId: shelf.id });
+    const updated = await dataService.updateCollectible(item.id, { name, notes, tags, shelfId: shelf.id, quantity: editQuantity.value, addedAt: editDate.value, visibility: editVisibility.value });
     applyUpdated(updated);
     /* 保存后半窗与卡片一并关闭，回到列表（applyUpdated 已把改动铺进列表） */
     closeDetail();
@@ -1120,6 +1148,8 @@ function onScrollToLower() {
                 @error="failedThumbnails[item.id] = true"
               />
               <view v-else class="shelf-image-placeholder" />
+              <!-- 数量角标：同款袋子 >1 时显示 ×N（对齐设计稿：右上角小胶囊 + 品牌红） -->
+              <view v-if="(item.quantity ?? 1) > 1" class="qty-badge qty-badge--shelf">×{{ item.quantity }}</view>
             </button>
           </view>
         </scroll-view>
@@ -1166,6 +1196,8 @@ function onScrollToLower() {
               @error="failedThumbnails[item.id] = true"
             />
             <view v-else class="grid-image-placeholder" />
+            <!-- 数量角标：同款袋子 >1 时显示 ×N（对齐设计稿：右上角小胶囊 + 品牌红） -->
+            <view v-if="(item.quantity ?? 1) > 1" class="qty-badge">×{{ item.quantity }}</view>
           </button>
         </view>
         <text v-if="gridOverflow > 0" class="grid-overflow-note" :style="{ padding: `0 ${gridPadX}rpx` }">已显示 {{ gridItems.length }} / 共 {{ items.length }} 件 · 下滑加载更多</text>
@@ -1327,13 +1359,21 @@ function onScrollToLower() {
                 <text class="ef-readout__k">编号</text>
               </view>
               <view class="ef-readout__cell ef-readout__cell--mid">
-                <text class="ef-readout__v">{{ formattedDate(detailItem.addedAt, '-') }}</text>
+                <text class="ef-readout__v">{{ formattedDate(editDate, '-') }}</text>
                 <text class="ef-readout__k">收藏日期</text>
               </view>
               <view class="ef-readout__cell ef-readout__cell--last">
-                <text class="ef-readout__v">{{ daysAgoText(detailItem.addedAt) }}</text>
+                <text class="ef-readout__v">{{ daysAgoText(editDate) }}</text>
                 <text class="ef-readout__k">入库时长</text>
               </view>
+            </view>
+
+            <!-- 收藏日期：可改（date picker），入库时长随之上方只读条实时刷新 -->
+            <view class="ef-row">
+              <text class="ef-key">收藏日期</text>
+              <picker class="ef-val" mode="date" :value="editDateValue" :end="todayStr" @change="onEditDateChange">
+                <view class="ef-input ef-date-row">{{ editDateValue }}<text class="ef-date-hint">点按修改</text></view>
+              </picker>
             </view>
 
             <!-- ② 可编辑行：左标签 + 右值，值下面一条底线 -->
@@ -1391,6 +1431,16 @@ function onScrollToLower() {
                     <text class="ef-suggest__label">＋ 新建品牌「<text class="is-hit">{{ shelfSuggest.keyword }}</text>」</text>
                   </view>
                 </view>
+              </view>
+            </view>
+
+            <!-- 数量：步进器（1-99），>1 时卡片/详情显示 ×N 角标 -->
+            <view class="ef-row">
+              <text class="ef-key">数量</text>
+              <view class="ef-val ef-qty">
+                <view class="ef-qty__btn" :class="{ 'is-disabled': editQuantity <= 1 }" hover-class="is-hover" :hover-stay-time="80" @tap="changeQuantity(-1)">−</view>
+                <text class="ef-qty__value">{{ editQuantity }}</text>
+                <view class="ef-qty__btn" :class="{ 'is-disabled': editQuantity >= 99 }" hover-class="is-hover" :hover-stay-time="80" @tap="changeQuantity(1)">＋</view>
               </view>
             </view>
 
@@ -1452,6 +1502,15 @@ function onScrollToLower() {
                   @focus="focusedField = 'note'"
                   @blur="focusedField = ''"
                 />
+              </view>
+            </view>
+
+            <!-- 谁能看到：私密收藏 / 公开展示（分段二选一） -->
+            <view class="ef-row">
+              <text class="ef-key">谁能看到</text>
+              <view class="ef-val ef-vis">
+                <view class="ef-vis__opt" :class="{ 'is-active': editVisibility === 'PRIVATE' }" hover-class="is-hover" :hover-stay-time="80" @tap="editVisibility = 'PRIVATE'">私密收藏</view>
+                <view class="ef-vis__opt" :class="{ 'is-active': editVisibility === 'PUBLIC' }" hover-class="is-hover" :hover-stay-time="80" @tap="editVisibility = 'PUBLIC'">公开展示</view>
               </view>
             </view>
           </view>
@@ -1598,7 +1657,7 @@ function onScrollToLower() {
 .shelf-items { display: inline-flex; align-items: flex-end; gap: 10rpx; min-width: 100%; padding: 29rpx 40rpx 15rpx; }
 /* 卡片槽：H5 .collection-group-card。袋图定高 240rpx（2026-10-01 用户反馈调整，
    270 → 200 → 240rpx）、宽度按图片自身比例（heightFix，同 H5 的 height:148px; width:auto） */
-.shelf-item { width: 175rpx; height: 240rpx; flex: 0 0 175rpx; margin: 0; padding: 0; display: flex; align-items: flex-end; justify-content: center; background: transparent; overflow: visible; }
+.shelf-item { position: relative; width: 175rpx; height: 240rpx; flex: 0 0 175rpx; margin: 0; padding: 0; display: flex; align-items: flex-end; justify-content: center; background: transparent; overflow: visible; }
 /* 袋图宽高由 inline style 按真实宽高比计算（高度固定 240rpx，宽度等比） */
 .shelf-item .shelf-image { transform: translateY(-18rpx); filter: drop-shadow(0 7rpx 18rpx rgba(0,0,0,.18)); }
 /* 占位块必须和袋图共用同一套位移。漏掉它的话，占位块不跟着上移，
@@ -1653,6 +1712,9 @@ function onScrollToLower() {
    宽/高/圆角随捏合缩放（inline style），加 transition 会与变量跳变不同步，刻意不加 */
 /* 2026-09-26 用户要求：袋子图片在卡内居中显示（水平 + 垂直） */
 .grid-item { position: relative; margin: 0; padding: 0; display: flex; align-items: center; justify-content: center; border: 0; background: linear-gradient(160deg, #fbfbfd, #eef0f4); box-shadow: inset 0 0 0 2rpx rgba(255,255,255,.9); overflow: hidden; }
+/* 数量角标：同款袋子 >1 时显示 ×N（展架视图图区底对齐，角标略抬高贴近袋顶） */
+.qty-badge { position: absolute; z-index: 2; top: 8rpx; right: 8rpx; padding: 3rpx 12rpx; border-radius: 18rpx; background: rgba(255,255,255,.92); box-shadow: 0 2rpx 10rpx rgba(0,0,0,.14); color: #C50405; font-size: 20rpx; font-weight: 700; line-height: 1.5; }
+.qty-badge--shelf { top: 14rpx; right: 12rpx; }
 .grid-item image, .grid-image-placeholder { position: relative; z-index: 1; }
 /* 心愿袋网格卡：与「我的」宫格同尺寸同滚动，仅边框改虚线 + 素底 —— 标识「还未收入」 */
 .grid-item--wish { border: 2rpx dashed rgba(20,20,20,.28); background: rgba(255,255,255,.55); box-shadow: inset 0 0 0 2rpx rgba(255,255,255,.9); }

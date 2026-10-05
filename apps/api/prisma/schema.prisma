@@ -84,6 +84,12 @@ enum SubmissionStatus {
   REJECTED
 }
 
+// 收藏可见性：私密收藏 / 公开展示（默认公开，存量数据同默认）
+enum Visibility {
+  PRIVATE
+  PUBLIC
+}
+
 model Brand {
   id        String       @id @default(cuid())
   name      String       @unique
@@ -152,6 +158,10 @@ model Collectible {
   shelfId           String
   name              String
   notes             String           @default("")
+  // 同款袋子拥有数量：>1 时卡片右上角显示 ×N 角标；存量数据由默认值补成 1
+  quantity          Int              @default(1)
+  // 可见性：私密收藏 / 公开展示；默认公开（存量数据同默认）
+  visibility        Visibility       @default(PUBLIC)
   shelfOrder        Float            @default(0)
   processingStatus  ProcessingStatus @default(UPLOADING)
   processingError   String?

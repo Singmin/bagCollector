@@ -24,7 +24,7 @@ async function changed<T>(request: Promise<T>) {
 
 async function updateCollectible(
   id: string,
-  data: Partial<Pick<Collectible, 'name' | 'notes' | 'shelfId' | 'tags' | 'addedAt'>>
+  data: Partial<Pick<Collectible, 'name' | 'notes' | 'shelfId' | 'tags' | 'addedAt' | 'quantity' | 'visibility'>>
 ) {
   const item = await changed(api<Collectible>(`/collectibles/${id}`, { method: 'PUT', data }));
   return localizeCollectibleImages(item);

@@ -22,6 +22,10 @@ export interface CollectibleSummary {
   name: string;
   shelfId: string;
   shelfName: string;
+  /** 同款袋子拥有数量：>1 时卡片右上角显示 ×N 角标（feed/心愿条目没有该字段） */
+  quantity?: number;
+  /** 可见性：私密收藏 / 公开展示（feed/心愿条目没有该字段） */
+  visibility?: 'PRIVATE' | 'PUBLIC';
   processingStatus: ProcessingStatus;
   thumbnailUrl?: string;
   addedAt: string;

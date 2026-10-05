@@ -31,6 +31,23 @@
 /* ⑤ 占位文字（原生控件内部节点，必须全局） */
 .ef-placeholder { color: #b3afa8; }
 
+/* ⑤⁺ 数量步进器：右对齐的 − ×N ＋，底线与 ef-input 同色 */
+.ef-qty { display: flex; align-items: center; justify-content: flex-end; gap: 26rpx; padding-bottom: 8rpx; border-bottom: 2rpx solid rgba(20,20,20,.13); }
+.ef-qty__btn { width: 56rpx; height: 56rpx; border: 2rpx solid rgba(20,20,20,.16); border-radius: 50%; color: #141414; font-size: 32rpx; line-height: 52rpx; text-align: center; }
+.ef-qty__btn.is-hover { background: rgba(197,4,5,.08); }
+.ef-qty__btn.is-disabled { opacity: .28; }
+.ef-qty__value { min-width: 92rpx; color: #141414; font-size: var(--wc-font-description); font-weight: 700; text-align: center; }
+
+/* ⑤⁺ 收藏日期行：下划线样式与 ef-input 一致，右侧浅色「点按修改」提示 */
+.ef-date-row { display: flex; align-items: center; justify-content: space-between; }
+.ef-date-hint { flex: 0 0 auto; color: #b3afa8; font-size: var(--wc-font-footnote); }
+
+/* ⑤⁺ 可见性分段二选一：私密收藏 / 公开展示 */
+.ef-vis { display: flex; gap: 14rpx; padding-bottom: 8rpx; border-bottom: 2rpx solid rgba(20,20,20,.13); }
+.ef-vis__opt { flex: 1 1 0; min-width: 0; padding: 13rpx 0; border: 2rpx solid rgba(20,20,20,.14); border-radius: 26rpx; color: #77736d; font-size: var(--wc-font-footnote); font-weight: 650; line-height: 1.2; text-align: center; }
+.ef-vis__opt.is-hover { background: rgba(197,4,5,.06); }
+.ef-vis__opt.is-active { border-color: #C50405; color: #C50405; background: rgba(197,4,5,.06); }
+
 /* ⑥ 分类候选下拉（对齐 H5 .ef-suggest：白底圆角卡 + 命中红字 + 靛蓝新建行） */
 .ef-suggest { margin: 13rpx 0 0; padding: 9rpx; border: 1rpx solid rgba(20,20,20,.09); border-radius: 22rpx; background: #ffffff; box-shadow: 0 15rpx 36rpx rgba(52,66,92,.10); }
 .ef-suggest__hint { display: block; padding: 5rpx 13rpx 9rpx; color: #b0aca5; font-size: 16rpx; font-weight: 700; letter-spacing: .9rpx; }

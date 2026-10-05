@@ -7,6 +7,11 @@ import { dataService } from '../../../services/data';
 
 const id = ref(''); const item = ref<Collectible | null>(null);
 const name = ref(''); const notes = ref(''); const saving = ref(false); const loadError = ref('');
+/* 同款袋子数量（步进器）：>1 时卡片右上角显示 ×N 角标 */
+const quantity = ref(1);
+function changeQuantity(delta: number) {
+  quantity.value = Math.min(99, Math.max(1, quantity.value + delta));
+}
 /* 三联条：编号自动生成（自有收藏总数，只读）；收藏日期默认入库当天，点按弹日期选择可改 */
 const collectNo = ref('—');
 const collectDateIso = ref('');
@@ -104,6 +109,7 @@ async function load() {
     collectDateIso.value = nextItem.addedAt;
     notes.value = nextItem.notes; tagList.value = nextItem.tags.slice(0, 30); tagDraft.value = '';
     brand.value = nextItem.shelfName ?? '';
+    quantity.value = nextItem.quantity ?? 1;
   } catch (error) { loadError.value = error instanceof Error ? error.message : '收藏信息加载失败'; }
 }
 /* 裁剪旋转：跳转裁剪页（提交后由后端 sharp 重新出图，回本页刷新） */
@@ -146,7 +152,7 @@ async function save() {
     let shelf = shelves.value.find((current) => current.name.toLowerCase() === normalizedBrand.toLowerCase());
     if (!shelf) shelf = await dataService.createShelf({ name: normalizedBrand, theme: 'SAGE' });
     if (!shelves.value.some((current) => current.id === shelf!.id)) shelves.value = [...shelves.value, shelf];
-    await dataService.updateCollectible(id.value, { name: normalizedName, shelfId: shelf.id, notes: notes.value.trim(), tags: [...tagList.value] });
+    await dataService.updateCollectible(id.value, { name: normalizedName, shelfId: shelf.id, notes: notes.value.trim(), tags: [...tagList.value], quantity: quantity.value });
     if (item.value.processingStatus === 'AWAITING_CROP') {
       await dataService.crop(id.value, { x: 0, y: 0, width: 1, height: 1, rotation: 0 });
       await waitForCropReady(id.value);
@@ -204,6 +210,14 @@ function goBack() { uni.navigateBack({ delta: 1 }); }
       <view class="ef-row">
         <text class="ef-key">品牌 / 店铺</text>
         <view class="ef-val"><input class="ef-input" :class="{ 'is-focus': focusField === 'brand' }" v-model="brand" placeholder="例如：霸王茶姬 / Peet's Coffee" maxlength="30" placeholder-class="ef-placeholder" @focus="focusField = 'brand'" @blur="focusField = ''" /></view>
+      </view>
+      <view class="ef-row">
+        <text class="ef-key">数量</text>
+        <view class="ef-val ef-qty">
+          <view class="ef-qty__btn" :class="{ 'is-disabled': quantity <= 1 }" hover-class="is-hover" :hover-stay-time="80" @tap="changeQuantity(-1)">−</view>
+          <text class="ef-qty__value">{{ quantity }}</text>
+          <view class="ef-qty__btn" :class="{ 'is-disabled': quantity >= 99 }" hover-class="is-hover" :hover-stay-time="80" @tap="changeQuantity(1)">＋</view>
+        </view>
       </view>
       <view class="ef-row ef-row--tags">
         <text class="ef-key">标签</text>

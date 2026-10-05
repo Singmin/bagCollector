@@ -84,7 +84,13 @@ export const updateCollectibleSchema = z.object({
   name: z.string().trim().min(1).max(80).optional(),
   notes: z.string().max(2000).optional(),
   tags: z.array(z.string().trim().min(1).max(30)).max(30).optional(),
-  shelfId: z.string().min(1).optional()
+  shelfId: z.string().min(1).optional(),
+  // 同款袋子的拥有数量（1-99）：>1 时前端卡片显示 ×N 角标
+  quantity: z.number().int().min(1).max(99).optional(),
+  // 收藏日期（ISO 字符串）：编辑时允许修改
+  addedAt: z.string().datetime().optional(),
+  // 可见性：私密收藏 / 公开展示
+  visibility: z.enum(['PRIVATE', 'PUBLIC']).optional()
 });
 
 /**
