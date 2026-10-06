@@ -5,6 +5,7 @@ import { ApiError } from '../common/api-error.js';
 import { QueueService } from '../common/queue.service.js';
 import { PrismaService } from '../database/prisma.service.js';
 import { AssetsService } from '../assets/assets.service.js';
+import { CosService } from '../assets/cos.service.js';
 import { FeedService } from '../feed/feed.service.js';
 
 @Injectable()
@@ -12,6 +13,7 @@ export class CollectiblesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly assets: AssetsService,
+    private readonly cos: CosService,
     private readonly queues: QueueService,
     private readonly feedBags: FeedService
   ) {}
@@ -34,8 +36,37 @@ export class CollectiblesService {
       });
   }
 
+  /** 官方袋子的最新可用图片签名 URL（按 kind）。认领的收藏自己没有图时回退到这里。 */
+  private async officialUrlsByKind(bagId: string): Promise<Partial<Record<AssetKind, string>>> {
+    const assets = await this.prisma.officialBagImage.findMany({
+      where: { officialBagId: bagId, status: AssetStatus.AVAILABLE },
+      orderBy: { version: 'desc' }
+    });
+    const first = (kind: AssetKind) => assets.find((asset) => asset.kind === kind);
+    const entries = await Promise.all(
+      [AssetKind.THUMBNAIL, AssetKind.DISPLAY, AssetKind.STANDARD, AssetKind.CUTOUT].map(async (kind) => {
+        const asset = first(kind);
+        return [kind, asset ? await this.cos.signedUrl(asset.objectKey) : undefined] as const;
+      })
+    );
+    return Object.fromEntries(entries) as Partial<Record<AssetKind, string>>;
+  }
+
+  /** 官方袋子缩略图签名 URL（列表页认领收藏按需回退，只查缩略图）。 */
+  private async officialThumbnailUrl(bagId: string): Promise<string | undefined> {
+    const thumbnail = await this.prisma.officialBagImage.findFirst({
+      where: { officialBagId: bagId, kind: AssetKind.THUMBNAIL, status: AssetStatus.AVAILABLE },
+      orderBy: { version: 'desc' }
+    });
+    return thumbnail ? this.cos.signedUrl(thumbnail.objectKey) : undefined;
+  }
+
   private async toDto(collectible: any) {
     const urls = await this.assets.urlsByKind(collectible.id, collectible.userId);
+    const official = collectible.sourceOfficialBagId
+      ? await this.officialUrlsByKind(collectible.sourceOfficialBagId)
+      : {};
+    const url = (kind: AssetKind) => urls[kind] ?? official[kind];
     return {
       id: collectible.id,
       name: collectible.name,
@@ -47,11 +78,11 @@ export class CollectiblesService {
       shelfName: collectible.shelf.name,
       processingStatus: collectible.processingStatus,
       ...(collectible.processingError ? { processingError: collectible.processingError } : {}),
-      ...(urls.THUMBNAIL ? { thumbnailUrl: urls.THUMBNAIL } : {}),
-      ...(urls.DISPLAY ? { displayImageUrl: urls.DISPLAY } : {}),
-      ...(urls.STANDARD ? { standardImageUrl: urls.STANDARD } : {}),
-      /* 抠图结果：有值表示已抠过图，编辑页据此隐藏「自动抠图」按钮（裁剪不产出该资产） */
-      ...(urls.CUTOUT ? { cutoutImageUrl: urls.CUTOUT } : {}),
+      ...(url(AssetKind.THUMBNAIL) ? { thumbnailUrl: url(AssetKind.THUMBNAIL) } : {}),
+      ...(url(AssetKind.DISPLAY) ? { displayImageUrl: url(AssetKind.DISPLAY) } : {}),
+      ...(url(AssetKind.STANDARD) ? { standardImageUrl: url(AssetKind.STANDARD) } : {}),
+      /* 抠图结果：有值表示已有透明图，编辑页据此隐藏「自动抠图」按钮（裁剪不产出该资产） */
+      ...(url(AssetKind.CUTOUT) ? { cutoutImageUrl: url(AssetKind.CUTOUT) } : {}),
       /* 已保存的裁剪参数：编辑页「自动抠图」要原样回传，否则会把用户裁好的画面重置成全幅 */
       ...(collectible.cropX !== null
         ? {
@@ -74,6 +105,11 @@ export class CollectiblesService {
 
   private async toSummary(collectible: any) {
     const thumbnail = collectible.imageAssets[0];
+    const thumbnailUrl = thumbnail
+      ? await this.assets.signedUrlForObjectKey(thumbnail.objectKey)
+      : collectible.sourceOfficialBagId
+        ? await this.officialThumbnailUrl(collectible.sourceOfficialBagId)
+        : undefined;
     return {
       id: collectible.id,
       name: collectible.name,
@@ -82,7 +118,7 @@ export class CollectiblesService {
       quantity: collectible.quantity ?? 1,
       visibility: collectible.visibility ?? 'PUBLIC',
       processingStatus: collectible.processingStatus,
-      ...(thumbnail ? { thumbnailUrl: await this.assets.signedUrlForObjectKey(thumbnail.objectKey) } : {}),
+      ...(thumbnailUrl ? { thumbnailUrl } : {}),
       addedAt: collectible.addedAt.toISOString(),
       updatedAt: collectible.updatedAt.toISOString()
     };
@@ -279,9 +315,10 @@ export class CollectiblesService {
     const collectible = await this.prisma.collectible.findFirst({ where: { id, userId } });
     if (!collectible) throw new ApiError('NOT_FOUND', '收藏不存在', HttpStatus.NOT_FOUND);
     this.assertIdle(collectible.processingStatus, '图片尚未准备好裁剪');
-    /* 已抠图的图再次裁剪：必须重新抠图，否则新展示图与旧透明图构图上失配。
-       不拦截、不计配额 —— worker 据 rematte 走「裁剪 + 重新抠图」流水线 */
-    const rematte = await this.hasCutout(userId, id);
+    /* 已有透明图的图再次裁剪：必须重新抠图，否则新展示图与旧透明图构图上失配。
+       不拦截、不计配额 —— worker 据 rematte 走「裁剪 + 重新抠图」流水线。
+       透明图判定含官方源：认领的官方袋子若官方已抠图，用户裁剪同样要保持透明 */
+    const rematte = await this.isTransparent(userId, collectible);
     const version = this.nextVersion(collectible);
     const idempotencyKey = `crop:${id}:v${version}`;
     const job = await this.prisma.$transaction(async (transaction) => {
@@ -311,6 +348,18 @@ export class CollectiblesService {
       select: { id: true }
     });
     return !!cutout;
+  }
+
+  /** 该收藏是否已有透明图（决定裁剪是否要 rematte 重抠）：
+   *  用户自己抠过，或引用官方袋子且官方已抠过图（透明展示图）。 */
+  private async isTransparent(userId: string, collectible: { id: string; sourceOfficialBagId: string | null }) {
+    if (await this.hasCutout(userId, collectible.id)) return true;
+    if (!collectible.sourceOfficialBagId) return false;
+    const official = await this.prisma.officialBagImage.findFirst({
+      where: { officialBagId: collectible.sourceOfficialBagId, kind: AssetKind.CUTOUT, status: AssetStatus.AVAILABLE },
+      select: { id: true }
+    });
+    return !!official;
   }
 
   /** POST /collectibles/:id/matte —— 抠图：沿用已保存的裁剪参数（从未裁剪过则全幅），

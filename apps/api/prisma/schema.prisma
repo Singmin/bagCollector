@@ -184,6 +184,8 @@ model Collectible {
   reviewedById      String?
   reviewedAt        DateTime?
   promotedBagId     String?          @unique
+  // 认领官方袋子得到的收藏：只引用官方袋子，图片直接读官方库（不复制、不占用户存储）
+  sourceOfficialBagId String?
   user              User             @relation(fields: [userId], references: [id], onDelete: Cascade)
   shelf             Shelf            @relation(fields: [shelfId, userId], references: [id, userId], onDelete: Restrict)
   tags              CollectibleTag[]
@@ -191,6 +193,7 @@ model Collectible {
   processingJobs    ProcessingJob[]
   reviewedBy        Admin?           @relation(fields: [reviewedById], references: [id], onDelete: SetNull)
   promotedBag       OfficialBag?     @relation(fields: [promotedBagId], references: [id], onDelete: SetNull)
+  sourceOfficialBag OfficialBag?     @relation("CollectibleSourceOfficialBag", fields: [sourceOfficialBagId], references: [id], onDelete: SetNull)
 
   @@unique([id, userId])
   @@index([userId, addedAt])
@@ -301,6 +304,8 @@ model OfficialBag {
   wishlistedBy  WishlistItem[]
   /* 由哪个用户上传的袋子「纳入」而来（审核后台），一个用户袋子最多纳入一次 */
   sourceCollectible Collectible?
+  /* 被用户认领生成的收藏（引用官方图，不复制图片、不占用户存储） */
+  claimedCollectibles Collectible[] @relation("CollectibleSourceOfficialBag")
 
   @@index([status, sortOrder])
 }

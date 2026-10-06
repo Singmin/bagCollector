@@ -2,7 +2,6 @@ import { HttpStatus, Injectable } from '@nestjs/common';
 import { OfficialBagStatus, OfficialProcessStatus, Prisma, ProcessingStatus, ShelfTheme } from '@prisma/client';
 import type { OfficialBagDto } from '@bagcollect/contracts';
 import { ApiError } from '../common/api-error.js';
-import { QueueService } from '../common/queue.service.js';
 import { PrismaService } from '../database/prisma.service.js';
 import { CosService } from '../assets/cos.service.js';
 
@@ -16,8 +15,7 @@ type BagWithBrand = Prisma.OfficialBagGetPayload<{ include: { brand: true } }>;
 export class OfficialBagsService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly cos: CosService,
-    private readonly queues: QueueService
+    private readonly cos: CosService
   ) {}
 
   private async thumbnailUrl(officialBagId: string): Promise<string | undefined> {
@@ -168,14 +166,14 @@ export class OfficialBagsService {
 
   /**
    * 「拥有」官方袋子：创建一条归属当前用户的 Collectible（名称/备注/标签带过去），
-   * 并排队把官方图片复制到用户名下。同一用户对同一袋子只能拥有一次（唯一约束兜底并发）。
+   * 引用官方袋子图片（sourceOfficialBagId），不复制图片、不占用户存储。
+   * 同一用户对同一袋子只能拥有一次（唯一约束兜底并发）。
    *
    * 归类口径：袋子是什么分类（品牌）就进什么展架 —— 用户显式传了 shelfId 用用户的；
    * 否则按官方袋子的品牌名找同名展架，找不到就新建；没有品牌才落到默认「未分类」。
    *
    * overrides：标记半窗里用户改过的名称 / 品牌展架 / 标签 / 备注；不传就用官方袋子自带内容。
-   * 注意 processingStatus 起步是 NORMALIZING（图片还在后台复制），
-   * 收藏列表只返回 READY —— 复制完成后才会出现在收藏架里。
+   * 落库即 READY（图片直接读官方库，无需后台复制），收藏列表立即可见。
    */
   async claim(
     userId: string,
@@ -227,8 +225,9 @@ export class OfficialBagsService {
             shelfId: shelf.id,
             name,
             notes,
-            // 图片仍在后台复制，先置 NORMALIZING，完成后由 worker 置 READY。
-            processingStatus: ProcessingStatus.NORMALIZING,
+            // 引用模式：图片直接读官方库，无需后台复制，落库即 READY。
+            processingStatus: ProcessingStatus.READY,
+            sourceOfficialBagId: bag.id,
             shelfOrder: (last._max.shelfOrder ?? -1) + 1
           }
         });
@@ -258,14 +257,6 @@ export class OfficialBagsService {
       throw error;
     }
 
-    await this.queues.add(
-      'official-claim',
-      { officialBagId: bag.id, userId, collectibleId },
-      /* jobId 必须带 collectibleId（每次认领唯一）：旧版用 userId+bagId，
-         「标记 → 删除 → 再标记」时旧任务还留在失败保留区，同 id 新任务被
-         BullMQ 去重吞掉 —— 重新认领的收藏永远等不到图片复制，卡在 NORMALIZING */
-      `official-claim:${collectibleId}:${bag.id}`
-    );
-    return { collectibleId, processingStatus: ProcessingStatus.NORMALIZING as ProcessingStatus };
+    return { collectibleId, processingStatus: ProcessingStatus.READY as ProcessingStatus };
   }
 }

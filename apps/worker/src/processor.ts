@@ -239,19 +239,26 @@ async function produceCutout(input: {
  *  旋转 → 裁剪 → 调色，产出裁剪图并写入 CROPPED 资产。返回万象需要的全部上下文。 */
 async function cropToAsset(data: ProcessingJobData) {
   await setRunning(data.processingJobId);
-  const [collectible, standard] = await Promise.all([
-    prisma.collectible.findFirstOrThrow({ where: { id: data.collectibleId, userId: data.userId } }),
-    prisma.imageAsset.findFirstOrThrow({
-      where: {
-        collectibleId: data.collectibleId,
-        userId: data.userId,
-        kind: AssetKind.STANDARD,
-        status: AssetStatus.AVAILABLE,
-        version: { lte: data.version }
-      },
+  const collectible = await prisma.collectible.findFirstOrThrow({ where: { id: data.collectibleId, userId: data.userId } });
+  const ownStandard = await prisma.imageAsset.findFirst({
+    where: {
+      collectibleId: data.collectibleId,
+      userId: data.userId,
+      kind: AssetKind.STANDARD,
+      status: AssetStatus.AVAILABLE,
+      version: { lte: data.version }
+    },
+    orderBy: { version: 'desc' }
+  });
+  /* 认领的官方袋子不再复制图片到用户名下：标准图回退到官方库（同 COS，objectKey 可直接读） */
+  let standard: { objectKey: string } | null = ownStandard;
+  if (!standard && collectible.sourceOfficialBagId) {
+    standard = await prisma.officialBagImage.findFirst({
+      where: { officialBagId: collectible.sourceOfficialBagId, kind: AssetKind.STANDARD, status: AssetStatus.AVAILABLE },
       orderBy: { version: 'desc' }
-    })
-  ]);
+    });
+  }
+  if (!standard) throw new Error('缺少标准图');
   if (
     collectible.cropX === null ||
     collectible.cropY === null ||
