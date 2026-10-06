@@ -2,6 +2,7 @@ import { HttpStatus, Injectable } from '@nestjs/common';
 import { OfficialBagStatus, OfficialProcessStatus, Prisma, ProcessingStatus, ShelfTheme } from '@prisma/client';
 import type { OfficialBagDto } from '@bagcollect/contracts';
 import { ApiError } from '../common/api-error.js';
+import { QUOTA_COUNTED_STATUSES } from '../common/quota.js';
 import { PrismaService } from '../database/prisma.service.js';
 import { CosService } from '../assets/cos.service.js';
 
@@ -194,12 +195,12 @@ export class OfficialBagsService {
       throw new ApiError('CONFLICT', '你已经拥有过这个袋子', HttpStatus.CONFLICT);
     }
 
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      include: { _count: { select: { collectibles: true } } }
-    });
+    const [user, collectibleCount] = await Promise.all([
+      this.prisma.user.findUnique({ where: { id: userId } }),
+      this.prisma.collectible.count({ where: { userId, processingStatus: { in: QUOTA_COUNTED_STATUSES } } })
+    ]);
     if (!user) throw new ApiError('UNAUTHORIZED', '用户不存在', HttpStatus.UNAUTHORIZED);
-    if (user._count.collectibles >= user.collectibleQuota) {
+    if (collectibleCount >= user.collectibleQuota) {
       throw new ApiError('QUOTA_EXCEEDED', '收藏数量已达到上限', HttpStatus.PAYLOAD_TOO_LARGE);
     }
 

@@ -2,6 +2,7 @@ import { HttpStatus, Injectable } from '@nestjs/common';
 import { AssetKind, AssetStatus, JobStatus, JobType, ProcessingStatus, Prisma } from '@prisma/client';
 import type { CropInput, MatteInput } from '@bagcollect/contracts';
 import { ApiError } from '../common/api-error.js';
+import { QUOTA_COUNTED_STATUSES } from '../common/quota.js';
 import { QueueService } from '../common/queue.service.js';
 import { PrismaService } from '../database/prisma.service.js';
 import { AssetsService } from '../assets/assets.service.js';
@@ -143,12 +144,12 @@ export class CollectiblesService {
   }
 
   async create(userId: string, input: { name: string; shelfId: string }) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      include: { _count: { select: { collectibles: true } } }
-    });
+    const [user, collectibleCount] = await Promise.all([
+      this.prisma.user.findUnique({ where: { id: userId } }),
+      this.prisma.collectible.count({ where: { userId, processingStatus: { in: QUOTA_COUNTED_STATUSES } } })
+    ]);
     if (!user) throw new ApiError('UNAUTHORIZED', '用户不存在', HttpStatus.UNAUTHORIZED);
-    if (user._count.collectibles >= user.collectibleQuota) {
+    if (collectibleCount >= user.collectibleQuota) {
       throw new ApiError('QUOTA_EXCEEDED', '收藏数量已达到上限', HttpStatus.PAYLOAD_TOO_LARGE);
     }
     const shelf = await this.assertShelf(userId, input.shelfId);
