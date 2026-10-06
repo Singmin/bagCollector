@@ -5,7 +5,9 @@ const mocks = vi.hoisted(() => {
   const prisma = {
     processingJob: { update: vi.fn() },
     collectible: { findFirstOrThrow: vi.fn(), update: vi.fn() },
-    imageAsset: { findFirstOrThrow: vi.fn() },
+    // cropToAsset 用 findFirst（可空）查标准图：认领的官方袋子没有自己的标准图时回退官方库
+    imageAsset: { findFirst: vi.fn(), findFirstOrThrow: vi.fn() },
+    officialBagImage: { findFirst: vi.fn() },
     $transaction: vi.fn(),
     $disconnect: vi.fn()
   };
@@ -95,6 +97,8 @@ beforeEach(async () => {
   });
   mocks.prisma.collectible.update.mockResolvedValue(undefined);
   mocks.prisma.imageAsset.findFirstOrThrow.mockResolvedValue({ objectKey: 'standard.jpg' });
+  mocks.prisma.imageAsset.findFirst.mockResolvedValue({ objectKey: 'standard.jpg' });
+  mocks.prisma.officialBagImage.findFirst.mockResolvedValue(null);
   mocks.prisma.$transaction.mockImplementation(async (operations: Promise<unknown>[]) => Promise.all(operations));
   mocks.getObject.mockResolvedValue(await jpeg());
   mocks.getSignedObjectUrl.mockImplementation(
@@ -125,6 +129,37 @@ describe('worker matting processor', () => {
       where: { id: jobData.processingJobId },
       data: { status: JobStatus.SUCCEEDED, finishedAt: expect.any(Date), errorMessage: null }
     });
+  });
+
+  it('falls back to the official standard image when the collectible has none of its own', async () => {
+    mocks.prisma.imageAsset.findFirst.mockResolvedValue(null);
+    mocks.prisma.collectible.findFirstOrThrow.mockResolvedValue({
+      cropX: 0,
+      cropY: 0,
+      cropWidth: 1,
+      cropHeight: 1,
+      cropRotation: 0,
+      sourceOfficialBagId: 'bag-1'
+    });
+    mocks.prisma.officialBagImage.findFirst.mockResolvedValue({ objectKey: 'official/bag-1/standard/v1.jpg' });
+    mocks.removeBackground.mockResolvedValue(await transparentPng());
+
+    await matImage(jobData);
+
+    expect(mocks.getObject).toHaveBeenCalledWith('official/bag-1/standard/v1.jpg');
+  });
+
+  it('fails when neither the collectible nor its official source has a standard image', async () => {
+    mocks.prisma.imageAsset.findFirst.mockResolvedValue(null);
+    mocks.prisma.collectible.findFirstOrThrow.mockResolvedValue({
+      cropX: 0,
+      cropY: 0,
+      cropWidth: 1,
+      cropHeight: 1,
+      cropRotation: 0
+    });
+
+    await expect(matImage(jobData)).rejects.toThrow('缺少标准图');
   });
 
   it('keeps only the crop asset and never creates renditions when matting fails', async () => {
