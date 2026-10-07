@@ -3,15 +3,32 @@ import { ref } from 'vue';
 import { onShow } from '@dcloudio/uni-app';
 import type { Shelf, ShelfTheme } from '../../../types';
 import { dataService } from '../../../services/data';
+import { collectionRevision, shouldRefreshCollection } from '../../../services/collection-state';
 
 const themes: { value: ShelfTheme; label: string }[] = [{ value: 'SAGE', label: '鼠尾草' },{ value: 'AMBER', label: '琥珀' },{ value: 'SKY', label: '雾蓝' },{ value: 'ROSE', label: '浅粉' },{ value: 'GRAPHITE', label: '石墨' }];
 const shelves = ref<Shelf[]>([]); const showForm = ref(false); const editingId = ref(''); const name = ref(''); const themeIndex = ref(0); const loadError = ref('');
-async function load() { shelves.value = []; loadError.value = ''; try { shelves.value = await dataService.shelves(); } catch (error) { loadError.value = error instanceof Error ? error.message : '展示架加载失败'; } }
+/* onShow 不再每次「清空重拉」：首次进入拉一次，之后只在数据确实变更（本页增删改、
+   或别处改了展架）或超过新鲜度阈值时才刷新。去掉进入即 shelves.value = [] 的闪空，
+   切回页面时旧列表保持可见，新数据回来才替换 —— 这是本页切换耗时最慢（413ms）的主因之一。 */
+let loadedAt = 0;
+let loadedRevision = -1;
+async function load(force = false) {
+  if (!force && loadedAt && !shouldRefreshCollection(loadedAt, loadedRevision)) return;
+  const requestRevision = collectionRevision();
+  loadError.value = '';
+  try {
+    shelves.value = await dataService.shelves();
+    loadedAt = Date.now();
+    loadedRevision = requestRevision;
+  } catch (error) {
+    loadError.value = error instanceof Error ? error.message : '展示架加载失败';
+  }
+}
 function add() { showForm.value = true; editingId.value = ''; name.value = ''; themeIndex.value = 0; }
 function edit(shelf: Shelf) { const index = themes.findIndex((theme) => theme.value === shelf.theme); if (index < 0) return void uni.showToast({ title: '展示架主题无效', icon: 'none' }); showForm.value = true; editingId.value = shelf.id; name.value = shelf.name; themeIndex.value = index; }
-async function save() { const normalized = name.value.trim(); if (!normalized) return void uni.showToast({ title: '请填写展示架名称', icon: 'none' }); try { const data = { name: normalized, theme: themes[themeIndex.value]!.value }; if (editingId.value) await dataService.updateShelf(editingId.value, data); else await dataService.createShelf(data); showForm.value = false; await load(); } catch (error) { uni.showToast({ title: error instanceof Error ? error.message : '保存失败', icon: 'none' }); } }
+async function save() { const normalized = name.value.trim(); if (!normalized) return void uni.showToast({ title: '请填写展示架名称', icon: 'none' }); try { const data = { name: normalized, theme: themes[themeIndex.value]!.value }; if (editingId.value) await dataService.updateShelf(editingId.value, data); else await dataService.createShelf(data); showForm.value = false; await load(true); } catch (error) { uni.showToast({ title: error instanceof Error ? error.message : '保存失败', icon: 'none' }); } }
 async function move(index: number, direction: number) { const target = index + direction; if (target < 0 || target >= shelves.value.length) return; const next = [...shelves.value]; const [entry] = next.splice(index, 1); if (!entry) return; next.splice(target, 0, entry); try { shelves.value = await dataService.reorderShelves(next.map((shelf) => shelf.id)); } catch (error) { uni.showToast({ title: error instanceof Error ? error.message : '排序失败', icon: 'none' }); } }
-function remove(shelf: Shelf) { if (shelf.itemCount > 0) return void uni.showToast({ title: '展示架中仍有收藏，无法删除', icon: 'none' }); uni.showModal({ title: `删除“${shelf.name}”？`, content: '仅删除这个空展示架。', confirmText: '删除', confirmColor: '#9d3d36', success: async (result) => { if (!result.confirm) return; try { await dataService.removeShelf(shelf.id); await load(); } catch (error) { uni.showToast({ title: error instanceof Error ? error.message : '删除失败', icon: 'none' }); } } }); }
+function remove(shelf: Shelf) { if (shelf.itemCount > 0) return void uni.showToast({ title: '展示架中仍有收藏，无法删除', icon: 'none' }); uni.showModal({ title: `删除“${shelf.name}”？`, content: '仅删除这个空展示架。', confirmText: '删除', confirmColor: '#9d3d36', success: async (result) => { if (!result.confirm) return; try { await dataService.removeShelf(shelf.id); await load(true); } catch (error) { uni.showToast({ title: error instanceof Error ? error.message : '删除失败', icon: 'none' }); } } }); }
 onShow(() => void load());
 </script>
 

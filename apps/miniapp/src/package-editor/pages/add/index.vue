@@ -22,6 +22,10 @@ const uploading = ref(false);
 const compressing = ref(false);
 const progress = ref(0);
 const errorMessage = ref('');
+/* 真机 camera 组件从挂载到出帧需要时间，期间画面是黑的 —— 用 initdone 事件标记就绪，
+   就绪前铺一层「正在启动相机」占位，避免首屏被监控判成白屏（本页白屏 5/7 次的根因）。
+   开发者工具不支持 camera 组件、不会回调 initdone，直接视为就绪（保持原状不显示占位）。 */
+const cameraReady = ref(isDevtools);
 
 // 原图直传在慢网下要几十秒，而服务端最终只保留最长边 4096 的版本，
 // 所以超过阈值就先在本地压一次。阈值以下的照片不动，避免无谓的重编码损失。
@@ -249,6 +253,10 @@ function cameraError(event: any) {
   errorMessage.value = event.detail?.errMsg || '相机不可用，请检查相机权限';
 }
 
+function onCameraInit() {
+  cameraReady.value = true;
+}
+
 function back() {
   uni.navigateBack();
 }
@@ -279,7 +287,12 @@ onLoad(() => {
         resolution="high"
         :flash="flashOn ? 'torch' : 'off'"
         @error="cameraError"
+        @initdone="onCameraInit"
       />
+      <view v-if="!filePath && !cameraReady && !uploading" class="camera-loading">
+        <view class="camera-loading-spinner" />
+        <text>正在启动相机…</text>
+      </view>
       <image v-else class="captured-image" :src="filePath" mode="aspectFit" />
       <view class="guide-frame" />
       <view v-if="uploading" class="upload-mask">
@@ -323,6 +336,9 @@ onLoad(() => {
    高度弹性填充 + 上限 1070rpx —— 参考图卡高 ≈66% 屏高，同时小屏（667pt）不溢出 */
 .capture-stage { position: relative; flex: 1 1 0; max-height: 1130rpx; margin: 32rpx 40rpx 0; overflow: hidden; border-radius: 60rpx; background: #e2c4ae; }
 .camera-view, .captured-image { position: absolute; inset: 0; width: 100%; height: 100%; }
+/* 相机出帧前的占位：盖住黑底，给出「正在启动」的明确反馈（白屏优化） */
+.camera-loading { position: absolute; z-index: 2; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 24rpx; background: #e2c4ae; color: rgba(60, 37, 20, .62); font-size: 26rpx; font-weight: 500; }
+.camera-loading-spinner { width: 60rpx; height: 60rpx; border: 5rpx solid rgba(60, 37, 20, .18); border-top-color: rgba(60, 37, 20, .7); border-radius: 50%; animation: spin .9s linear infinite; }
 /* 虚线引导框：相对卡片内嵌 left 56 / top 200（2026-09-26 用户要求下移），560×732，描边 5rpx、圆角 36rpx */
 .guide-frame { position: absolute; z-index: 3; left: 56rpx; top: 200rpx; width: 560rpx; height: 732rpx; box-sizing: border-box; border: 5rpx dashed rgba(255, 255, 255, .65); border-radius: 36rpx; pointer-events: none; }
 .upload-mask { position: absolute; z-index: 5; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 30rpx; background: rgba(60, 37, 20, .48); color: #fff; font-size: 28rpx; font-weight: 600; }
