@@ -308,10 +308,14 @@ export function App() {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [userStatusFilter, setUserStatusFilter] = useState<'' | AdminUser['status']>('');
   const [userSearch, setUserSearch] = useState('');
+  const [userPage, setUserPage] = useState(1);
+  const [userPageSize, setUserPageSize] = useState(20);
+  const [userTotal, setUserTotal] = useState(0);
   const [userDetail, setUserDetail] = useState<AdminUserDetail | null>(null);
   const [userDetailLoading, setUserDetailLoading] = useState(false);
   const [editingQuotaUser, setEditingQuotaUser] = useState<AdminUserDetail | null>(null);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [auditTotal, setAuditTotal] = useState(0);
   const [auditAction, setAuditAction] = useState('');
   const [auditDateRange, setAuditDateRange] = useState<[string, string] | null>(null);
 
@@ -393,15 +397,17 @@ export function App() {
       const params = new URLSearchParams();
       if (userStatusFilter) params.set('status', userStatusFilter);
       if (userSearch.trim()) params.set('search', userSearch.trim());
-      params.set('limit', '100');
+      params.set('page', String(userPage));
+      params.set('pageSize', String(userPageSize));
       const result = await api<AdminUserPage>(`/users?${params.toString()}`);
       setUsers(result.items);
+      setUserTotal(result.totalCount);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : '加载失败');
     } finally {
       setLoading(false);
     }
-  }, [userStatusFilter, userSearch]);
+  }, [userStatusFilter, userSearch, userPage, userPageSize]);
 
   const loadAuditLogs = useCallback(async () => {
     setLoading(true);
@@ -413,9 +419,10 @@ export function App() {
         params.set('from', auditDateRange[0]);
         params.set('to', auditDateRange[1]);
       }
-      params.set('limit', '100');
+      params.set('limit', '2000');
       const result = await api<AuditLogPage>(`/audit-logs?${params.toString()}`);
       setAuditLogs(result.items);
+      setAuditTotal(result.totalCount);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : '加载失败');
     } finally {
@@ -915,7 +922,10 @@ export function App() {
                 <Space wrap direction={isMobile ? 'vertical' : 'horizontal'} style={{ width: isMobile ? '100%' : undefined }}>
                   <Select<'' | AdminUser['status']>
                     value={userStatusFilter}
-                    onChange={setUserStatusFilter}
+                    onChange={(value) => {
+                      setUserStatusFilter(value);
+                      setUserPage(1);
+                    }}
                     style={{ width: isMobile ? '100%' : 140 }}
                     options={[
                       { value: '', label: '全部状态' },
@@ -927,7 +937,10 @@ export function App() {
                     placeholder="搜索 openid / unionid"
                     allowClear
                     style={{ width: isMobile ? '100%' : 260 }}
-                    onSearch={setUserSearch}
+                    onSearch={(value) => {
+                      setUserSearch(value);
+                      setUserPage(1);
+                    }}
                     onChange={(event) => {
                       if (!event.target.value) setUserSearch('');
                     }}
@@ -935,12 +948,22 @@ export function App() {
                 </Space>
               </Card>
 
-              <Card title={`用户（${users.length} 条）`}>
+              <Card title={`用户（共 ${userTotal} 条）`}>
                 <Table<AdminUser>
                   rowKey="id"
                   dataSource={users}
                   loading={loading}
-                  pagination={false}
+                  pagination={{
+                    current: userPage,
+                    pageSize: userPageSize,
+                    total: userTotal,
+                    showSizeChanger: true,
+                    showTotal: (total) => `共 ${total} 条`,
+                    onChange: (nextPage, nextPageSize) => {
+                      setUserPage(nextPageSize !== userPageSize ? 1 : nextPage);
+                      setUserPageSize(nextPageSize);
+                    }
+                  }}
                   scroll={{ x: 1080 }}
                   columns={[
                     {
@@ -1083,12 +1106,12 @@ export function App() {
                 </Space>
               </Card>
 
-              <Card title={`审计日志（${auditLogs.length} 条）`}>
+              <Card title={`审计日志（共 ${auditTotal} 条${auditLogs.length < auditTotal ? `，显示最近 ${auditLogs.length} 条` : ''}）`}>
                 <Table<AuditLog>
                   rowKey="id"
                   dataSource={auditLogs}
                   loading={loading}
-                  pagination={false}
+                  pagination={{ pageSize: 50, showSizeChanger: true, showTotal: (total) => `已加载 ${total} 条` }}
                   scroll={{ x: 960 }}
                   columns={[
                     {

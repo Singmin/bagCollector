@@ -22,8 +22,8 @@ export class UsersAdminController {
   list(
     @Query('status') status?: string,
     @Query('search') search?: string,
-    @Query('cursor') cursor?: string,
-    @Query('limit') rawLimit?: string
+    @Query('page') rawPage?: string,
+    @Query('pageSize') rawPageSize?: string
   ) {
     const statusValue =
       status && (userStatuses as readonly string[]).includes(status)
@@ -32,8 +32,8 @@ export class UsersAdminController {
     return this.users.list({
       status: statusValue,
       search,
-      cursor,
-      limit: rawLimit ? Number(rawLimit) : undefined
+      page: rawPage ? Number(rawPage) : undefined,
+      pageSize: rawPageSize ? Number(rawPageSize) : undefined
     });
   }
 

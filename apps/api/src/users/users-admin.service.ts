@@ -59,10 +59,11 @@ export class UsersAdminService {
   async list(query: {
     status?: UserStatusContract;
     search?: string;
-    cursor?: string;
-    limit?: number;
+    page?: number;
+    pageSize?: number;
   }): Promise<AdminUserPageDto> {
-    const limit = Math.min(Math.max(query.limit ?? 30, 1), 100);
+    const pageSize = Math.min(Math.max(query.pageSize ?? 20, 1), 200);
+    const page = Math.max(query.page ?? 1, 1);
     const search = query.search?.trim();
     const where = {
       ...(query.status ? { status: query.status } : {}),
@@ -79,19 +80,17 @@ export class UsersAdminService {
     const [items, totalCount] = await Promise.all([
       this.prisma.user.findMany({
         where,
-        ...(query.cursor ? { cursor: { id: query.cursor }, skip: 1 } : {}),
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-        take: limit + 1,
+        skip: (page - 1) * pageSize,
+        take: pageSize,
         include: USER_INCLUDE
       }),
       this.prisma.user.count({ where })
     ]);
 
-    const hasMore = items.length > limit;
-    const page = hasMore ? items.slice(0, limit) : items;
     return {
-      items: page.map((user) => this.toSummary(user)),
-      nextCursor: hasMore ? page.at(-1)?.id ?? null : null,
+      items: items.map((user) => this.toSummary(user)),
+      nextCursor: null,
       totalCount
     };
   }

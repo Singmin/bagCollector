@@ -63,7 +63,7 @@ export class AdminService {
     cursor?: string;
     limit?: number;
   }): Promise<AuditLogPageDto> {
-    const limit = Math.min(Math.max(query.limit ?? 30, 1), 100);
+    const limit = Math.min(Math.max(query.limit ?? 30, 1), 2000);
     const action = query.action?.trim();
     const fromDate = parseDayBoundary(query.from, false);
     const toDate = parseDayBoundary(query.to, true);
