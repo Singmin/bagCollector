@@ -43,3 +43,6 @@ backups/
 logs/
 __MACOSX/
 testIMG.jpg
+
+# Local dev runtime logs
+*.log
