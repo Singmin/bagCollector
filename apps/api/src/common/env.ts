@@ -45,7 +45,7 @@ const schema = z
     COS_REGION: z.string().default('ap-guangzhou'),
     COS_PUBLIC_HOST: z.string().default(''),
     COS_STS_DURATION_SECONDS: z.coerce.number().int().min(300).max(3600).default(600),
-    MAX_COLLECTIBLES_PER_USER: z.coerce.number().int().positive().default(500),
+    MAX_COLLECTIBLES_PER_USER: z.coerce.number().int().positive().default(9999),
     MAX_STORAGE_BYTES: z.coerce.number().int().positive().default(5_368_709_120),
     // 抠图用通用抠图（0.02 元/次），配额定为 25 是为了让单用户成本天花板维持 0.50 元/天
     // （此前商品抠图 0.01 元/次 × 50 次）。注意：这个值只在首次登录建档时写入 User.dailyMattingQuota，
