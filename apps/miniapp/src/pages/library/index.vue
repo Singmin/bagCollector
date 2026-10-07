@@ -91,8 +91,17 @@ function onShelfScroll(groupId: string, event: { detail: { scrollLeft: number } 
   const left = event.detail.scrollLeft;
   const metrics = shelfMetrics.get(groupId);
   if (metrics) metrics.left = left;
-  shelfScrollLeft.value = { ...shelfScrollLeft.value, [groupId]: left };
-  shelfEdge.value = { ...shelfEdge.value, [groupId]: { start: left <= 2, end: left >= (metrics?.max ?? 0) - 2 } };
+  /* ⚠ 不要把 left 回写进响应式 shelfScrollLeft（:scroll-left 绑定）：
+     用户拖动时 scroll 事件每帧触发，回写等于每帧 setData 重设滚动位置，
+     容器和手指互相抢滚动条 —— 表现就是「一卡一卡」。位置记在非响应式
+     shelfMetrics.left 即可（箭头翻页 / 吸附用它），程序滚动时才写 shelfScrollLeft。
+     边缘态也只在跨过边界时才更新，避免每帧重建对象触发箭头重渲染 */
+  const prev = shelfEdge.value[groupId];
+  const start = left <= 2;
+  const end = left >= (metrics?.max ?? 0) - 2;
+  if (!prev || prev.start !== start || prev.end !== end) {
+    shelfEdge.value = { ...shelfEdge.value, [groupId]: { start, end } };
+  }
 }
 
 function scrollShelfBy(groupId: string, direction: 1 | -1) {
@@ -244,6 +253,7 @@ function load(force = false) {
       loadedAt = Date.now();
       loadedRevision = requestRevision;
       hydrateThumbnails(page.items);
+      fillViewportIfNeeded();
     } catch (error) {
       const message = error instanceof Error ? error.message : '全部收藏加载失败';
       if (initialized.value) uni.showToast({ title: message, icon: 'none' });
@@ -268,11 +278,33 @@ async function loadMore() {
     nextCursor.value = page.nextCursor;
     totalCount.value = page.totalCount;
     hydrateThumbnails(added);
+    fillViewportIfNeeded();
   } catch (error) {
     uni.showToast({ title: error instanceof Error ? error.message : '加载更多失败', icon: 'none' });
   } finally {
     loadingMore.value = false;
   }
+}
+
+/* ── 内容不满一屏时自动补拉分页 ──
+   scrolltolower 只在「能滚」时才触发：首次只加载 30 条、又只有一个展架时，
+   内容高度低于视口，没有滚动条可拉，后续分页就永远出不来。
+   每次加载完成后量一下内容高度，若仍矮于视口且还有下一页，就继续自动拉，
+   直到铺满一屏或没有更多为止（用户不用手动点）。 */
+function fillViewportIfNeeded() {
+  if (!nextCursor.value) return;
+  nextTick(() => {
+    if (!nextCursor.value || loadingMore.value) return;
+    const query = uni.createSelectorQuery().in(pageInstance?.proxy);
+    query.select('.library-scroll').boundingClientRect();
+    query.select('.library-body').boundingClientRect();
+    query.exec((rows) => {
+      const viewport = rows?.[0] as { height?: number } | null;
+      const body = rows?.[1] as { height?: number } | null;
+      if (!viewport?.height || !body?.height || !nextCursor.value) return;
+      if (body.height <= viewport.height + 2) void loadMore();
+    });
+  });
 }
 
 /* ── 搜索无结果的建议出口（对齐 H5 rankEmptyStateOptions / renderEmptyState）──
@@ -419,6 +451,8 @@ const detailItem = ref<CollectibleSummary | null>(null);
 const detailData = ref<Collectible | null>(null);
 const detailArtwork = ref('');
 const detailLoading = ref(false);
+/* 大图预览浮层：点图区打开，点遮罩/图片任意处关闭（可双指缩放，见模板） */
+const previewShow = ref(false);
 /* 详情缓存按「id + updatedAt」存：收藏被改名/换架后 updatedAt 会变，
    旧缓存自然失效，不会在卡片里显示上一次的内容。 */
 const detailCache = new Map<string, Collectible>();
@@ -538,6 +572,13 @@ function detailSource(): Collectible | null {
   return detailData.value && detailData.value.id === item.id ? detailData.value : (item as Collectible);
 }
 
+/* 轻点图区看大图：弹出自定义预览浮层（比系统全屏小一档，袋子不撑满整屏）。
+   优先给原图（display → 卡片当前展示图）。 */
+function previewDetailArtwork() {
+  if (!detailArtwork.value) return;
+  previewShow.value = true;
+}
+
 /* ── 心愿袋动效（方案 A）：加入=♥弹跳+小爱心飞散；取消=轻微缩回 ── */
 const wishPop = ref(false);
 const wishShrink = ref(false);
@@ -546,7 +587,7 @@ function playWishEffect(added: boolean) {
     wishPop.value = false;
     nextTick(() => {
       wishPop.value = true;
-      setTimeout(() => { wishPop.value = false; }, 560);
+      setTimeout(() => { wishPop.value = false; }, 680);
     });
     return;
   }
@@ -634,6 +675,7 @@ function closeDetail() {
   detailData.value = null;
   detailArtwork.value = '';
   detailLoading.value = false;
+  previewShow.value = false;
   editing.value = false;
   saving.value = false;
   editNameFocused.value = false;
@@ -1196,8 +1238,9 @@ function onScrollToLower() {
               @error="failedThumbnails[item.id] = true"
             />
             <view v-else class="grid-image-placeholder" />
-            <!-- 数量角标：同款袋子 >1 时显示 ×N（对齐设计稿：右上角小胶囊 + 品牌红） -->
-            <view v-if="(item.quantity ?? 1) > 1" class="qty-badge">×{{ item.quantity }}</view>
+            <!-- 数量角标：同款袋子 >1 时显示 ×N（对齐设计稿：右上角小胶囊 + 品牌红）。
+                 贴卡角摆放，右上圆角随卡圆角（gridRadius）走，避免被卡的圆角裁掉外角 -->
+            <view v-if="(item.quantity ?? 1) > 1" class="qty-badge" :style="{ borderTopRightRadius: `${gridRadius}rpx` }">×{{ item.quantity }}</view>
           </button>
         </view>
         <text v-if="gridOverflow > 0" class="grid-overflow-note" :style="{ padding: `0 ${gridPadX}rpx` }">已显示 {{ gridItems.length }} / 共 {{ items.length }} 件 · 下滑加载更多</text>
@@ -1297,8 +1340,8 @@ function onScrollToLower() {
           :show-scrollbar="false"
           @scroll="onDetailScroll"
         >
-          <!-- 顶部大图：编辑表单已移入半窗，卡片始终展示完整图区 -->
-          <view class="detail-artwork">
+          <!-- 顶部大图：编辑表单已移入半窗，卡片始终展示完整图区；轻点看大图 -->
+          <view class="detail-artwork" @tap="previewDetailArtwork">
             <image v-if="detailArtwork" :src="detailArtwork" mode="aspectFit" />
             <view v-else class="detail-artwork__placeholder" />
           </view>
@@ -1331,6 +1374,18 @@ function onScrollToLower() {
       </view>
     </view>
 
+    <!-- 大图预览浮层：深色蒙层 + 居中展示（比系统全屏小一档）。
+         点蒙层或图片即关闭；袋子图带透明通道，居中一张即可。 -->
+    <view v-if="previewShow" class="preview-layer" @tap="previewShow = false">
+      <image
+        v-if="detailArtwork"
+        class="preview-image"
+        :src="detailData?.displayImageUrl ?? detailArtwork"
+        mode="aspectFit"
+        @tap.stop="previewShow = false"
+      />
+    </view>
+
     <!-- 设置半窗（自首页迁入）：蒙层 + 上滑进入/下滑收起（fixed 定位，放在滚动区外） -->
     <settings-sheet :show="settingsShow" @close="closeSettings" />
 
@@ -1346,7 +1401,7 @@ function onScrollToLower() {
         <view class="sheet-handle" />
         <scroll-view class="edit-scroll" scroll-y enhanced :show-scrollbar="false">
           <!-- 图区沿用编辑态收小的那档（168→128px），与原表单一致 -->
-          <view class="detail-artwork detail-artwork--editing">
+          <view class="detail-artwork detail-artwork--editing" @tap="previewDetailArtwork">
             <image v-if="detailArtwork" :src="detailArtwork" mode="aspectFit" />
             <view v-else class="detail-artwork__placeholder" />
           </view>
@@ -1712,9 +1767,11 @@ function onScrollToLower() {
    宽/高/圆角随捏合缩放（inline style），加 transition 会与变量跳变不同步，刻意不加 */
 /* 2026-09-26 用户要求：袋子图片在卡内居中显示（水平 + 垂直） */
 .grid-item { position: relative; margin: 0; padding: 0; display: flex; align-items: center; justify-content: center; border: 0; background: linear-gradient(160deg, #fbfbfd, #eef0f4); box-shadow: inset 0 0 0 2rpx rgba(255,255,255,.9); overflow: hidden; }
-/* 数量角标：同款袋子 >1 时显示 ×N（展架视图图区底对齐，角标略抬高贴近袋顶） */
-.qty-badge { position: absolute; z-index: 2; top: 8rpx; right: 8rpx; padding: 3rpx 12rpx; border-radius: 18rpx; background: rgba(255,255,255,.92); box-shadow: 0 2rpx 10rpx rgba(0,0,0,.14); color: #C50405; font-size: 20rpx; font-weight: 700; line-height: 1.5; }
-.qty-badge--shelf { top: 14rpx; right: 12rpx; }
+/* 数量角标：同款袋子 >1 时显示 ×N（贴紧卡右上角 + 缩小字号，用户 2026-10-06 要求）。
+   宫格视图贴角摆放：右上圆角由模板按 gridRadius 内联注入（跟随捏合缩放），左下圆角保留 */
+.qty-badge { position: absolute; z-index: 2; top: 0; right: 0; padding: 2rpx 10rpx; border-radius: 0 0 0 16rpx; background: rgba(255,255,255,.92); color: rgba(197,4,5,.62); font-size: 18rpx; font-weight: 700; line-height: 1.5; }
+/* 展架视图：袋图 translateY(-18rpx) 上提，角标跟随上移到袋顶（按钮盒 overflow: visible，负值可越出） */
+.qty-badge--shelf { top: -14rpx; right: 4rpx; border-radius: 16rpx; }
 .grid-item image, .grid-image-placeholder { position: relative; z-index: 1; }
 /* 心愿袋网格卡：与「我的」宫格同尺寸同滚动，仅边框改虚线 + 素底 —— 标识「还未收入」 */
 .grid-item--wish { border: 2rpx dashed rgba(20,20,20,.28); background: rgba(255,255,255,.55); box-shadow: inset 0 0 0 2rpx rgba(255,255,255,.9); }
@@ -1750,6 +1807,11 @@ function onScrollToLower() {
    下面的自定义底栏与上面的原生导航栏（`bottom: 0` 只到页面视口底），
    那两块由 services/overlay.ts 的 maskPageChrome() 一起蒙。 */
 .detail-layer { position: fixed; z-index: 950; top: 0; left: 0; right: 0; bottom: 0; }
+
+/* 大图预览浮层：压在详情卡（950）之上；图片给一个「比整屏小一档」的尺寸，
+   袋子不撑满屏幕，留出四周空间看轮廓与投影。 */
+.preview-layer { position: fixed; z-index: 980; top: 0; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: center; padding: 90rpx; background: rgba(15,15,15,.68); animation: detail-fade .2s ease both; }
+.preview-image { width: 720rpx; height: 720rpx; filter: drop-shadow(0 18rpx 45rpx rgba(0,0,0,.38)); }
 
 /* ═══ 编辑半窗壳层样式已抽到 styles/edit-form.css（标记已有半窗共用）═══ */
 /* 底栏护垫：把「穿透下来的点击」接住（见模板里的注释）。

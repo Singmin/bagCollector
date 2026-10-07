@@ -31,20 +31,20 @@
 /* ⑤ 占位文字（原生控件内部节点，必须全局） */
 .ef-placeholder { color: #b3afa8; }
 
-/* ⑤⁺ 数量步进器：右对齐的 − ×N ＋，底线与 ef-input 同色 */
-.ef-qty { display: flex; align-items: center; justify-content: flex-end; gap: 26rpx; padding-bottom: 8rpx; border-bottom: 2rpx solid rgba(20,20,20,.13); }
-.ef-qty__btn { width: 56rpx; height: 56rpx; border: 2rpx solid rgba(20,20,20,.16); border-radius: 50%; color: #141414; font-size: 32rpx; line-height: 52rpx; text-align: center; }
-.ef-qty__btn.is-hover { background: rgba(197,4,5,.08); }
+/* ⑤⁺ 数量步进器：− N ＋ 圆钮紧贴标签左对齐（对齐设计稿，不拉满整行），底线与 ef-input 同色 */
+.ef-qty { display: flex; align-items: center; justify-content: flex-start; gap: 30rpx; padding-bottom: 8rpx; }
+.ef-qty__btn { width: 60rpx; height: 60rpx; border: 2rpx solid rgba(20,20,20,.16); border-radius: 50%; background: #ffffff; color: #141414; font-size: 32rpx; line-height: 56rpx; text-align: center; }
+.ef-qty__btn.is-hover { background: rgba(20,20,20,.06); }
 .ef-qty__btn.is-disabled { opacity: .28; }
-.ef-qty__value { min-width: 92rpx; color: #141414; font-size: var(--wc-font-description); font-weight: 700; text-align: center; }
+.ef-qty__value { min-width: 64rpx; color: #141414; font-size: var(--wc-font-description); font-weight: 700; text-align: center; }
 
 /* ⑤⁺ 收藏日期行：下划线样式与 ef-input 一致，右侧浅色「点按修改」提示 */
 .ef-date-row { display: flex; align-items: center; justify-content: space-between; }
 .ef-date-hint { flex: 0 0 auto; color: #b3afa8; font-size: var(--wc-font-footnote); }
 
-/* ⑤⁺ 可见性分段二选一：私密收藏 / 公开展示 */
-.ef-vis { display: flex; gap: 14rpx; padding-bottom: 8rpx; border-bottom: 2rpx solid rgba(20,20,20,.13); }
-.ef-vis__opt { flex: 1 1 0; min-width: 0; padding: 13rpx 0; border: 2rpx solid rgba(20,20,20,.14); border-radius: 26rpx; color: #77736d; font-size: var(--wc-font-footnote); font-weight: 650; line-height: 1.2; text-align: center; }
+/* ⑤⁺ 可见性分段二选一：私密收藏 / 公开展示（选中 = 品牌红，胶囊尺寸对齐设计稿） */
+.ef-vis { display: flex; gap: 14rpx; padding-bottom: 8rpx; }
+.ef-vis__opt { flex: 0 0 auto; padding: 13rpx 34rpx; border: 2rpx solid rgba(20,20,20,.14); border-radius: 30rpx; background: #ffffff; color: #141414; font-size: var(--wc-font-footnote); font-weight: 650; line-height: 1.2; text-align: center; }
 .ef-vis__opt.is-hover { background: rgba(197,4,5,.06); }
 .ef-vis__opt.is-active { border-color: #C50405; color: #C50405; background: rgba(197,4,5,.06); }
 

@@ -113,7 +113,12 @@ const visibleStart = ref(0);
 const visibleEnd = ref(visibleCount + VIRTUAL_BUFFER);
 
 function updateVisibleRange(scrollLeft: number) {
-  const start = Math.max(0, Math.floor(scrollLeft / stepPx) - VIRTUAL_BUFFER);
+  /* start 必须收敛到 [0, max(0, len-1)]：刷新后 scroll-view 可能以旧 scrollLeft
+     派发一次 scroll（惯性/回弹/位置恢复），若不 clamp，start 会越过 items 尾部，
+     而 end 被 min(len) 压住 → start > end，slice 得空数组，整排卡片消失
+     （标题「今日上新 · N 件」仍在，偶发复现即此路径）。 */
+  const maxStart = Math.max(0, items.value.length - 1);
+  const start = Math.min(Math.max(0, Math.floor(scrollLeft / stepPx) - VIRTUAL_BUFFER), maxStart);
   visibleStart.value = start;
   visibleEnd.value = Math.min(items.value.length, start + visibleCount + VIRTUAL_BUFFER * 2);
 }
@@ -289,6 +294,8 @@ async function toggleWish(item: Collectible) {
   /* 互斥：已标记已有的纸袋不能再进心愿袋（文案压到 9 字，微信 toast 一行放得下） */
   if (markedMap.value[item.id]) return void uni.showToast({ title: '已标记，无需心愿袋', icon: 'none' });
   if (wishToggling) return;
+  /* 翻面落定前忽略主卡上的心愿点击（挂架上的其他纸袋不受影响） */
+  if (item.id === heroItem.value?.id && flipSettling()) return;
   wishToggling = true;
   try {
     if (wishlistIds.value.has(item.id)) {
@@ -318,6 +325,8 @@ async function toggleWish(item: Collectible) {
 const markShow = ref(false);
 const markItem = ref<Collectible | null>(null);
 function openMark(item: Collectible) {
+  /* 翻面落定前忽略：双击翻面的第二下可能正好落在背面「标记已有」按钮上 */
+  if (flipSettling()) return;
   /* 已标记 → 弹删除确认，可撤回标记（撤回后靶心图标同步回到未标记态） */
   const createdId = markedMap.value[item.id];
   if (createdId) {
@@ -400,8 +409,17 @@ function releaseRail() {
   railReleaseTimer = setTimeout(() => { railReleasing.value = false; }, 700);
 }
 
+/* ── 翻面防误触：正/背面是同尺寸叠放的两层，翻面后背面层（z 7）盖过整卡点击层（z 6）。
+   翻面动画长 0.78s，期间/刚落定时在同一位置的再点会落到背面的「标记已有 / 心愿袋」按钮上
+   —— 双击翻面时第二下正好压在按钮上，看起来就是「点了正面却自动弹标记」。
+   翻面后 FLIP_SETTLE_MS 内忽略翻面与主卡上的心愿/标记操作，等动画落定再响应 */
+const FLIP_SETTLE_MS = 800;
+let lastFlipAt = 0;
+function flipSettling() { return Date.now() - lastFlipAt < FLIP_SETTLE_MS; }
+
 function toggleFlip() {
-  if (!heroItem.value) return;
+  if (!heroItem.value || flipSettling()) return;
+  lastFlipAt = Date.now();
   flipped.value = !flipped.value;
 }
 
@@ -450,6 +468,8 @@ async function onRefresherRefresh() {
     <scroll-view
       class="home-scroll"
       scroll-y
+      enhanced
+      :show-scrollbar="false"
       :refresher-enabled="true"
       :refresher-triggered="refresherTriggered"
       refresher-default-style="black"
@@ -531,7 +551,11 @@ async function onRefresherRefresh() {
               <view v-if="heroTags.length" class="back-tags">
                 <text v-for="tag in heroTags" :key="tag"># {{ tag }}</text>
               </view>
-              <text v-if="heroNote" class="back-note">{{ heroNote }}</text>
+              <!-- 备注可滑动：notes 最长 2000 字，卡内高度固定放不下 ——
+                   从「限两行裁掉」改为固定高度的小滚动区（scroll-view 必须有确定高度才能滚）。
+                   enhanced + show-scrollbar 同 back-scroll 的坑：不开 enhanced 滚动条关不掉。
+                   不加 @tap.stop：轻点备注区仍冒泡翻回正面，滑动手势不会误触翻面 -->
+              <scroll-view v-if="heroNote" class="back-note" scroll-y enhanced :show-scrollbar="false">{{ heroNote }}</scroll-view>
               <!-- 发现页操作：加入/取消心愿袋 + 标记已有（收进我的收藏并核对信息） -->
               <view class="back-actions">
                 <button class="back-action" :class="{ 'is-on': isWished(heroItem.id) }" @tap.stop="toggleWish(heroItem)">
@@ -567,7 +591,7 @@ async function onRefresherRefresh() {
         <button class="recent-all" @tap="openLibrary">我的收藏架 <image class="recent-all-arrow" src="/static/figma/arrow-right.svg" mode="aspectFit" /></button>
       </view>
       <!-- 滑到最右端自动加载下一页（游标翻页，只追加不清空） -->
-      <scroll-view class="recent-scroll" scroll-x :show-scrollbar="false" @scroll="onRailScroll" @scrolltolower="loadMore">
+      <scroll-view class="recent-scroll" scroll-x enhanced :show-scrollbar="false" @scroll="onRailScroll" @scrolltolower="loadMore">
         <view class="recent-scene">
           <!-- 亚克力展示杆：半透杆身 + 两端银钢夹块 + 外伸螺纹杆 + 朱红圆球头 -->
           <view class="rack-cable" aria-hidden="true">
@@ -686,6 +710,10 @@ async function onRefresherRefresh() {
 /* 顶部标题区固定：页面改为 100vh 弹性列，头部不滚，内容区独立滚动（scroll-view） */
 .home-page { position: relative; height: 100vh; display: flex; flex-direction: column; overflow: hidden; background-color: #f2f3f7; }
 .home-scroll { flex: 1 1 auto; min-height: 0; }
+/* 滚动条兜底：enhanced + show-scrollbar=false 在部分真机/基础库上不生效，
+   靠 WebKit 伪元素再挡一层（与 back-scroll 同坑同解） */
+.home-scroll::-webkit-scrollbar,
+.recent-scroll::-webkit-scrollbar { display: none; width: 0; height: 0; }
 .home-body { padding-bottom: 176rpx; }
 
 /* ── 头部：一级标题 + 辅助文案，右侧设置钮与标题块垂直居中（H5 .bags-header 同款：
@@ -778,8 +806,12 @@ async function onRefresherRefresh() {
    name 19px；brand 11px；divider 11px；facts gap 6px、dt 9.5px、dd 10.5px；
    tags gap 5px、9.5px、padding 4px 9px；note 10px、padding 8px 10px。
    字号按 1px=2rpx（375 屏基准，见正面说明）── */
-/* 背面滚动区：撑满卡片，内容超高时在卡内上下滚（滚动条已由 enhanced + show-scrollbar 关闭） */
+/* 背面滚动区：撑满卡片，内容超高时在卡内上下滚。
+   ⚠ enhanced + :show-scrollbar="false" 在部分真机/基础库上不生效（截图实测仍冒出滚动条），
+   再用 ::-webkit-scrollbar 兜底隐藏（小程序 scroll-view 支持该伪元素） */
 .back-scroll { position: relative; z-index: 3; height: 100%; }
+.back-scroll::-webkit-scrollbar,
+.back-note::-webkit-scrollbar { display: none; width: 0; height: 0; }
 /* 原 height:100% + overflow:hidden 会把超高内容直接裁掉且滚不动；
    改为 min-height:100%（内容少时仍撑满，观感不变）+ 自然高度，超出部分交给外层 scroll-view */
 .back-inner { display: flex; flex-direction: column; min-height: 100%; padding: 29rpx 33rpx 25rpx; }
@@ -795,8 +827,10 @@ async function onRefresherRefresh() {
 .back-facts__value { flex: 0 1 auto; min-width: 0; color: #2b2720; font-size: 24rpx; font-weight: 600; line-height: 1.4; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .back-tags { display: flex; flex-wrap: wrap; gap: 9rpx; margin-top: 22rpx; }
 .back-tags text { padding: 7rpx 16rpx; border-radius: 18rpx; background: rgba(20,20,20,.055); color: #5d594f; font-size: 24rpx; line-height: 1.2; }
-/* 备注：引用式文字。后端 notes 最长 2000 字而卡内高度固定，限两行裁掉 */
-.back-note { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; margin-top: 20rpx; padding: 15rpx 18rpx; border-left: 4rpx solid rgba(20,20,20,.14); border-radius: 0 16rpx 16rpx 0; background: rgba(20,20,20,.035); color: #5f5b53; font-size: 24rpx; line-height: 1.55; }
+/* 备注：引用式文字。后端 notes 最长 2000 字而卡内高度固定，
+   改为固定高度（约两行正文 + 上下 padding）的纵向滚动区，长文案可在框内上下滑。
+   scroll-view 必须是确定高度才能滚，矮文案时框高保持不变（视觉上仍是一个引用块） */
+.back-note { height: 104rpx; box-sizing: border-box; margin-top: 20rpx; padding: 15rpx 18rpx; border-left: 4rpx solid rgba(20,20,20,.14); border-radius: 0 16rpx 16rpx 0; background: rgba(20,20,20,.035); color: #5f5b53; font-size: 24rpx; line-height: 1.55; }
 /* 背面右上角的「翻回去」按钮已删除：整卡点击区（.flip-card__hit）本身就能翻回 */
 
 /* 空状态：卡片收成一个安静的占位，不参与翻面 */
@@ -1027,4 +1061,20 @@ async function onRefresherRefresh() {
    这就是「点击标记已有 UI 不对」的根因。必须非 scoped 引入，与 library/index.vue 同款。 */
 @import '../../styles/edit-form.css';
 @import '../../styles/like-burst.css';
+
+/* 滚动条全局隐藏：scroll-view 的实际滚动发生在内部一层节点，scoped 样式里的
+   `::-webkit-scrollbar`（只命中宿主）在真机 WKWebView 上关不掉；挪到全局样式，
+   并用「宿主 + 后代」两种选择器一起兜底，覆盖页面、卡片背面、备注、横杆四类滚动区。 */
+.home-scroll::-webkit-scrollbar,
+.home-scroll ::-webkit-scrollbar,
+.back-scroll::-webkit-scrollbar,
+.back-scroll ::-webkit-scrollbar,
+.back-note::-webkit-scrollbar,
+.back-note ::-webkit-scrollbar,
+.recent-scroll::-webkit-scrollbar,
+.recent-scroll ::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
 </style>
