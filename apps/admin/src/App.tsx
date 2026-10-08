@@ -340,12 +340,20 @@ export function App() {
     setLoading(true);
     setError('');
     try {
-      const params = new URLSearchParams();
-      if (statusFilter) params.set('status', statusFilter);
-      if (search.trim()) params.set('search', search.trim());
-      params.set('limit', '100');
-      const result = await api<OfficialBagPage>(`/official-bags?${params.toString()}`);
-      setBags(result.items);
+      // 后端单页上限 100 条，这里用 cursor 自动翻页拉全，确保列表显示全部袋子。
+      const allBags: OfficialBag[] = [];
+      let cursor: string | null = null;
+      do {
+        const params = new URLSearchParams();
+        if (statusFilter) params.set('status', statusFilter);
+        if (search.trim()) params.set('search', search.trim());
+        params.set('limit', '100');
+        if (cursor) params.set('cursor', cursor);
+        const result = await api<OfficialBagPage>(`/official-bags?${params.toString()}`);
+        allBags.push(...result.items);
+        cursor = result.nextCursor;
+      } while (cursor);
+      setBags(allBags);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : '加载失败');
     } finally {
