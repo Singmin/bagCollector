@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue';
+import { computed, getCurrentInstance, nextTick, ref, watch } from 'vue';
 import { onHide, onShow, onShareAppMessage, onShareTimeline } from '@dcloudio/uni-app';
 import type { Collectible, CollectibleSummary, Shelf } from '../../types';
 import { dataService } from '../../services/data';
@@ -43,12 +43,18 @@ function syncClaimState(list: Collectible[]) {
 }
 
 /* 自定义导航（与全部收藏页同一套对齐方式）：
-   标题顶部 = 胶囊按钮顶部；设置钮在头部文档流内，与标题块垂直居中。 */
+   标题顶部 = 胶囊按钮顶部；官方图鉴入口贴在胶囊左侧，与「全部收藏」页的设置钮同一套定位。 */
 const headerTop = ref(0);
+/* 图鉴入口：right = 屏宽 − 胶囊左缘 + 8px 间隙，尺寸 = 胶囊高度 */
+const exploreRight = ref(10);
+const exploreSize = ref(32);
 // #ifdef MP-WEIXIN
 try {
   const capsule = uni.getMenuButtonBoundingClientRect();
+  const win = uni.getSystemInfoSync();
   headerTop.value = capsule.top;
+  exploreRight.value = win.windowWidth - capsule.left + 8;
+  exploreSize.value = capsule.height;
 } catch {
   /* 取不到胶囊矩形（非微信端）时用默认值 */
 }
@@ -111,6 +117,8 @@ const stepPx = (CARD_STEP_RPX * railWindowWidth) / 750;
 const visibleCount = Math.ceil(railWindowWidth / stepPx) + 2;
 const visibleStart = ref(0);
 const visibleEnd = ref(visibleCount + VIRTUAL_BUFFER);
+/* 选择器查询要用页面实例（与 library 页同一写法）：不带 .in() 时查询上下文在页面嵌套场景下不可靠 */
+const pageInstance = getCurrentInstance();
 
 function updateVisibleRange(scrollLeft: number) {
   /* start 必须收敛到 [0, max(0, len-1)]：刷新后 scroll-view 可能以旧 scrollLeft
@@ -135,6 +143,7 @@ const tailSpace = computed(() => Math.max(0, items.value.length - visibleEnd.val
 function shortDate(value: string) { return formattedDate(value).slice(5).replace('/', '.'); }
 function isHero(item: CollectibleSummary) { return heroItem.value?.id === item.id; }
 function openLibrary() { uni.switchTab({ url: '/pages/library/index' }); }
+function goExplore() { uni.navigateTo({ url: '/pages/explore/index' }); }
 let refreshPromise: Promise<void> | undefined;
 
 function assertRenderable(nextItems: CollectibleSummary[]) {
@@ -190,7 +199,7 @@ function load() {
       totalCount.value = page.totalCount;
       nextCursor.value = page.nextCursor;
       syncClaimState(feedItems);
-      updateVisibleRange(0); // 首屏数据到位后立即建立渲染窗口
+      syncRailWindow(); // 数据到位后按当前滚动位置建立渲染窗口（首屏时该位置为 0）
       initialized.value = true;
       wishlistIds.value = new Set(wish.map((item) => item.id));
       // 刷新后沿用当前选中的那一张，它不在列表里才退回最新一张。
@@ -375,7 +384,10 @@ const TILT_PER_SPEED = 6;
 const TILT_MAX = 12;
 const railTilt = ref(0);
 const railReleasing = ref(false);
+/* railLastLeft：滚动位置的实时真值（每帧更新），供刷新后重建渲染窗口用 */
 let railLastLeft = 0;
+/* tiltLastLeft：摆动速度计算的上一帧基准（只按 80ms 节流更新） */
+let tiltLastLeft = 0;
 let railLastAt = 0;
 let railIdleTimer: ReturnType<typeof setTimeout> | undefined;
 let railReleaseTimer: ReturnType<typeof setTimeout> | undefined;
@@ -384,19 +396,51 @@ function onRailScroll(event: Event) {
   const scrollLeft = (event as unknown as { detail?: { scrollLeft?: number } }).detail?.scrollLeft ?? 0;
   /* 虚拟列表窗口要每帧跟随（必须放在下面的 80ms 节流之前），否则快速滑动时会露出空白缺口 */
   updateVisibleRange(scrollLeft);
+  /* railLastLeft 是「刷新后重建渲染窗口」的唯一位置真值，也必须每帧更新 ——
+     若跟着摆动一起被 80ms 节流挡住，快速滑到右侧后立刻下拉刷新 / 切回本页时，
+     记下的还是几十毫秒前的位置，重建出的窗口落在视口左侧，视口同样会露出空白占位。
+     摆动基准另用 tiltLastLeft，两者不再共用一个变量。 */
+  railLastLeft = scrollLeft;
   const now = Date.now();
   const elapsed = now - railLastAt;
   if (railLastAt && elapsed < 80) return;
   if (railLastAt) {
-    const speed = (scrollLeft - railLastLeft) / Math.max(1, elapsed); // px/ms
+    const speed = (scrollLeft - tiltLastLeft) / Math.max(1, elapsed); // px/ms
     const tilt = -speed * TILT_PER_SPEED;
     railReleasing.value = false;
     railTilt.value = Math.max(-TILT_MAX, Math.min(TILT_MAX, tilt));
   }
-  railLastLeft = scrollLeft;
+  tiltLastLeft = scrollLeft;
   railLastAt = now;
   if (railIdleTimer) clearTimeout(railIdleTimer);
   railIdleTimer = setTimeout(releaseRail, 120);
+}
+
+/* ── 数据刷新后重建渲染窗口 ──
+   ⚠ 必须按「最后一次真实滚动位置」重建，不能固定回 0：
+   虚拟列表的左右占位让滚动内容总宽在刷新前后**完全守恒**，因此 scroll-view 的 scrollLeft
+   不会随数据刷新复位（切 tab 回来、下拉刷新、从图鉴页返回，滚动位置都停在原处），
+   而窗口若被重置到 0，卡片就全留在列表最左端、视口落在右侧的 tailSpace 空白占位上
+   —— 现象正是「精选上新标题与挂杆都在、整排卡片空白」，横向滑一下才恢复。
+   （2026-10-07 那次 clamp 只挡住了 start > end「数组被切空」这一条路径，本条是另一条。） */
+function syncRailWindow() {
+  updateVisibleRange(railLastLeft);
+  /* 滚动事件可能缺最后一帧（页面隐藏期间的惯性 / 内容变化被静默 clamp），
+     再用 scroll-view 的真实滚动位置校准一次；差值小于一张卡就跳过，不做无谓重渲染。 */
+  // #ifdef MP-WEIXIN
+  nextTick(() => {
+    uni.createSelectorQuery().in(pageInstance?.proxy as any)
+      .select('.recent-scroll')
+      .scrollOffset((res) => {
+        const info = Array.isArray(res) ? res[0] : res;
+        const left = info?.scrollLeft;
+        if (typeof left !== 'number' || Math.abs(left - railLastLeft) < stepPx) return;
+        railLastLeft = left;
+        updateVisibleRange(left);
+      })
+      .exec();
+  });
+  // #endif
 }
 
 /* 松手（滚动停下）：归零并切成带回弹的曲线，弹一下再落回常态。
@@ -457,13 +501,31 @@ async function onRefresherRefresh() {
 <template>
   <view class="home-page">
     <!-- 头部：与全部收藏页同一套对齐（标题顶 = 胶囊顶，padding-top 由胶囊矩形注入）。
-         设置入口已迁至「我的」页头部右上角（2026-09-29） -->
+         设置入口已迁至「我的」页头部右上角（2026-09-29）；
+         官方图鉴入口固定在胶囊左侧的搜索钮（2026-10-08：原「官方图鉴」横条卡片改为右上角图标） -->
     <view class="bags-header" :style="{ paddingTop: `${headerTop}px` }">
       <view class="bags-header__text">
         <text class="bags-title">袋袋集</text>
         <text class="bags-tagline">收集每一个纸袋的故事</text>
       </view>
     </view>
+
+    <!-- 官方图鉴入口：贴微信胶囊左侧，任何状态（空数据/加载失败）都在 -->
+    <button
+      class="gallery-entry"
+      aria-label="打开官方图鉴"
+      hover-class="gallery-entry--pressed"
+      :hover-stay-time="80"
+      :style="{ top: `${headerTop}px`, right: `${exploreRight}px`, width: `${exploreSize}px`, height: `${exploreSize}px` }"
+      @tap="goExplore"
+    >
+      <image
+        class="gallery-entry__icon"
+        :style="{ width: `${Math.round(exploreSize * 0.68)}px`, height: `${Math.round(exploreSize * 0.68)}px` }"
+        src="/static/figma/search.svg"
+        mode="aspectFit"
+      />
+    </button>
 
     <scroll-view
       class="home-scroll"
@@ -581,6 +643,7 @@ async function onRefresherRefresh() {
         </view>
       </view>
     </view>
+
 
     <view v-if="items.length && !loadError" class="recent-section">
       <view class="recent-heading">
@@ -739,6 +802,11 @@ async function onRefresherRefresh() {
 /* 设置钮已迁至「我的」页头部（2026-09-29），首页头部只保留标题块 */
 
 .load-error { margin: 28rpx 36rpx; padding: 24rpx; border-radius: 20rpx; background: #fae2de; color: #943d37; font-size: var(--wc-font-description); text-align: center; }
+
+/* ── 官方图鉴入口：右上角搜索钮（贴胶囊左侧，与「全部收藏」页设置钮同一套定位与材质） ── */
+.gallery-entry { position: absolute; z-index: 20; display: flex; align-items: center; justify-content: center; margin: 0; padding: 0; border: 2rpx solid rgba(255,255,255,.75); border-radius: 14px; background: rgba(255,255,255,.6); box-shadow: 0 11rpx 25rpx rgba(52,66,92,.08), inset 0 2rpx 0 rgba(255,255,255,.8); transition: transform .18s ease; }
+.gallery-entry--pressed { transform: scale(.94); }
+.gallery-entry__icon { display: block; }
 
 /* ── 主展位：玻璃卡 + 3D 翻面（H5 .stage-section / .flip-card）── */
 /* H5 margin: 0 18px 26px；perspective 让子元素的 3D 变换不被父层压平 */
