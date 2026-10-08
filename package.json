@@ -36,6 +36,7 @@
     "db:local:deploy": "DATABASE_URL=postgresql://bagcollect:bagcollect_local@127.0.0.1:5432/bagcollect prisma migrate deploy --schema apps/api/prisma/schema.prisma",
     "db:test:deploy": "DATABASE_URL=postgresql://bagcollect:bagcollect_test@127.0.0.1:5433/bagcollect_test prisma migrate deploy --schema apps/api/prisma/schema.prisma",
     "db:seed": "tsx apps/api/prisma/seed.ts",
+    "seed:local:mock": "node scripts/seed-local-mock.mjs",
     "verify": "pnpm lint && pnpm typecheck && pnpm check:miniapp && pnpm test && pnpm build"
   },
   "devDependencies": {

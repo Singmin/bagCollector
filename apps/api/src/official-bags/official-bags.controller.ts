@@ -26,6 +26,12 @@ export class OfficialBagsController {
     });
   }
 
+  /* 品牌分类列表（逛袋子页）：必须声明在 @Get(':id') 之前，否则 /official-bags/brands 会被 :id 吞掉 */
+  @Get('brands')
+  brands() {
+    return this.officialBags.brands();
+  }
+
   @Get(':id')
   detail(@CurrentUser() user: AuthUser, @Param('id') id: string) {
     return this.officialBags.detail(user.userId, id);

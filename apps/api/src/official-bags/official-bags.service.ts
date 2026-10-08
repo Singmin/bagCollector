@@ -62,6 +62,27 @@ export class OfficialBagsService {
     };
   }
 
+  /** 用户端品牌分类列表：只返回「旗下有可见袋子」的品牌（按件数从多到少、品牌排序靠前）。
+      逛袋子页据此渲染分类 chips；件数只统计已发布且处理完成的袋子，与列表口径一致。 */
+  async brands() {
+    const [brands, counts] = await Promise.all([
+      this.prisma.brand.findMany({ orderBy: [{ sortOrder: 'desc' }, { name: 'asc' }] }),
+      this.prisma.officialBag.groupBy({
+        by: ['brandId'],
+        where: {
+          status: OfficialBagStatus.PUBLISHED,
+          processStatus: OfficialProcessStatus.READY,
+          brandId: { not: null }
+        },
+        _count: { _all: true }
+      })
+    ]);
+    const countMap = new Map(counts.map((row) => [row.brandId as string, row._count._all]));
+    return brands
+      .map((brand) => ({ id: brand.id, name: brand.name, bagCount: countMap.get(brand.id) ?? 0 }))
+      .filter((brand) => brand.bagCount > 0);
+  }
+
   /** 发现页列表：只返回已发布且图片处理完成的袋子，支持按品牌筛选。 */
   async list(
     userId: string,
@@ -244,6 +265,9 @@ export class OfficialBagsService {
         await transaction.officialClaim.create({
           data: { userId, officialBagId: bag.id, collectibleId: created.id }
         });
+        /* 已拥有就不该再留在心愿袋：与前端标记半窗「标记成功自动移出心愿袋」同一规则，
+           免得出现「既已拥有又想要」的矛盾状态 */
+        await transaction.wishlistItem.deleteMany({ where: { userId, officialBagId: bag.id } });
         await transaction.officialBag.update({
           where: { id: bag.id },
           data: { claimedCount: { increment: 1 } }

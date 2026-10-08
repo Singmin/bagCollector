@@ -1,7 +1,8 @@
 {
   "pages": [
     { "path": "pages/showcase/index", "style": { "navigationStyle": "custom", "disableScroll": true } },
-    { "path": "pages/library/index", "style": { "navigationStyle": "custom", "disableScroll": true, "onReachBottomDistance": 240 } }
+    { "path": "pages/library/index", "style": { "navigationStyle": "custom", "disableScroll": true, "onReachBottomDistance": 240 } },
+    { "path": "pages/explore/index", "style": { "navigationStyle": "custom", "disableScroll": true } }
   ],
   "subPackages": [
     {

@@ -36,6 +36,9 @@ function requestRaw<T>(path: string, options: ApiRequestOptions = {}): Promise<T
 }
 
 async function wechatCode() {
+  /* 本地联调固定 code（VITE_WECHAT_MOCK_CODE，仅 localbuild 构建注入）：
+     配合后端 WECHAT_AUTH_MOCK，让本项目每次启动都登录到同一个 mock 用户 */
+  if (runtimeConfig.wechatMockCode) return runtimeConfig.wechatMockCode;
   const result = await uni.login({ provider: 'weixin' });
   if (!result.code) throw new Error('微信登录 code 为空');
   return result.code;

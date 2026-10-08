@@ -1,4 +1,4 @@
-import type { Collectible, CollectiblePage, OfficialClaimResult, Shelf, ShelfTheme } from '../types';
+import type { Brand, Collectible, CollectiblePage, OfficialBagPage, OfficialClaimResult, Shelf, ShelfTheme } from '../types';
 import { api } from './http';
 import { localizeCollectibleImages } from './images';
 import { markCollectionDataStale } from './collection-state';
@@ -35,6 +35,9 @@ export const dataService = {
   collectibles,
   collectible,
   feed,
+  /* 逛袋子页：官方袋子列表（支持 search / brandId / cursor / limit）与品牌分类 */
+  officialBags: (query = '') => api<OfficialBagPage>(`/official-bags${query ? `?${query}` : ''}`),
+  officialBagBrands: () => api<Brand[]>('/official-bags/brands'),
   wishlist: () => api<Collectible[]>(`/wishlist`),
   addWishlist: (id: string) => api(`/wishlist/${id}`, { method: 'POST' }).then(() => markCollectionDataStale()),
   removeWishlist: (id: string) => api(`/wishlist/${id}`, { method: 'DELETE' }).then(() => markCollectionDataStale()),

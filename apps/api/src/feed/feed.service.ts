@@ -139,6 +139,13 @@ export class FeedService {
   async addWishlist(userId: string, bagId: string) {
     const bag = await this.prisma.officialBag.findFirst({ where: { id: bagId, ...VISIBLE_BAG } });
     if (!bag) throw new ApiError('NOT_FOUND', '纸袋不存在或已下架', HttpStatus.NOT_FOUND);
+    /* 已经拥有的袋子不能再进心愿袋（心愿 = 想要但还没有）。前端按钮会置灰，
+       这里再兜一层：多端操作或旧客户端绕过 UI 时也不会写出矛盾数据。 */
+    const claimed = await this.prisma.officialClaim.findUnique({
+      where: { userId_officialBagId: { userId, officialBagId: bagId } },
+      select: { id: true }
+    });
+    if (claimed) throw new ApiError('CONFLICT', '这只袋子已在收藏架', HttpStatus.CONFLICT);
     await this.prisma.wishlistItem.upsert({
       where: { userId_officialBagId: { userId, officialBagId: bagId } },
       create: { userId, officialBagId: bagId },

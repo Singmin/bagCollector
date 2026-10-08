@@ -77,3 +77,33 @@ export interface UploadPolicy {
   expiresAt: string;
   formData: Record<string, string>;
 }
+
+/* ── 逛袋子页：官方袋子的品牌分类与袋子数据（GET /official-bags）── */
+export interface Brand {
+  id: string;
+  name: string;
+  /** 旗下可见袋子数量 */
+  bagCount: number;
+}
+
+export interface OfficialBag {
+  id: string;
+  name: string;
+  brandId?: string;
+  brand?: string;
+  notes: string;
+  tags: string[];
+  claimedCount: number;
+  thumbnailUrl?: string;
+  displayImageUrl?: string;
+  /** 当前用户是否已拥有该袋子 */
+  claimed?: boolean;
+  publishedAt?: string;
+  updatedAt: string;
+}
+
+export interface OfficialBagPage {
+  items: OfficialBag[];
+  nextCursor: string | null;
+  totalCount: number;
+}
