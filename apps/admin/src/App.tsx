@@ -84,6 +84,8 @@ interface OfficialBagPage {
   totalCount: number;
 }
 
+type BagSortField = 'sortOrder' | 'name' | 'createdAt' | 'claimedCount';
+
 interface Brand {
   id: string;
   name: string;
@@ -292,6 +294,11 @@ export function App() {
   const [bags, setBags] = useState<OfficialBag[]>([]);
   const [statusFilter, setStatusFilter] = useState<'' | OfficialBag['status']>('');
   const [search, setSearch] = useState('');
+  const [bagPage, setBagPage] = useState(1);
+  const [bagPageSize, setBagPageSize] = useState(20);
+  const [bagTotal, setBagTotal] = useState(0);
+  const [bagSort, setBagSort] = useState<BagSortField>('sortOrder');
+  const [bagOrder, setBagOrder] = useState<'asc' | 'desc'>('desc');
   const [editing, setEditing] = useState<OfficialBag | 'new' | null>(null);
   const [bagEditorSession, setBagEditorSession] = useState(0);
   const [collapsed, setCollapsed] = useState(false);
@@ -340,26 +347,22 @@ export function App() {
     setLoading(true);
     setError('');
     try {
-      // 后端单页上限 100 条，这里用 cursor 自动翻页拉全，确保列表显示全部袋子。
-      const allBags: OfficialBag[] = [];
-      let cursor: string | null = null;
-      do {
-        const params = new URLSearchParams();
-        if (statusFilter) params.set('status', statusFilter);
-        if (search.trim()) params.set('search', search.trim());
-        params.set('limit', '100');
-        if (cursor) params.set('cursor', cursor);
-        const result = await api<OfficialBagPage>(`/official-bags?${params.toString()}`);
-        allBags.push(...result.items);
-        cursor = result.nextCursor;
-      } while (cursor);
-      setBags(allBags);
+      const params = new URLSearchParams();
+      if (statusFilter) params.set('status', statusFilter);
+      if (search.trim()) params.set('search', search.trim());
+      params.set('page', String(bagPage));
+      params.set('pageSize', String(bagPageSize));
+      params.set('sort', bagSort);
+      params.set('order', bagOrder);
+      const result = await api<OfficialBagPage>(`/official-bags?${params.toString()}`);
+      setBags(result.items);
+      setBagTotal(result.totalCount);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : '加载失败');
     } finally {
       setLoading(false);
     }
-  }, [statusFilter, search]);
+  }, [statusFilter, search, bagPage, bagPageSize, bagSort, bagOrder]);
 
   const loadBrands = useCallback(async () => {
     try {
@@ -559,6 +562,7 @@ export function App() {
   function viewBagsOfBrand(brand: Brand) {
     setSearch(brand.name);
     setStatusFilter('');
+    setBagPage(1);
     setPage('bags');
   }
 
@@ -1179,7 +1183,10 @@ export function App() {
                 <Space wrap direction={isMobile ? 'vertical' : 'horizontal'} style={{ width: isMobile ? '100%' : undefined }}>
                   <Select<'' | OfficialBag['status']>
                     value={statusFilter}
-                    onChange={setStatusFilter}
+                    onChange={(value) => {
+                      setStatusFilter(value);
+                      setBagPage(1);
+                    }}
                     style={{ width: isMobile ? '100%' : 140 }}
                     options={[
                       { value: '', label: '全部状态' },
@@ -1192,9 +1199,15 @@ export function App() {
                     placeholder="搜索名称 / 品牌 / 标签"
                     allowClear
                     style={{ width: isMobile ? '100%' : 260 }}
-                    onSearch={setSearch}
+                    onSearch={(value) => {
+                      setSearch(value);
+                      setBagPage(1);
+                    }}
                     onChange={(event) => {
-                      if (!event.target.value) setSearch('');
+                      if (!event.target.value) {
+                        setSearch('');
+                        setBagPage(1);
+                      }
                     }}
                   />
                   <Button type="primary" icon={<PlusOutlined />} block={isMobile} onClick={() => openBagEditor('new')}>
@@ -1203,12 +1216,34 @@ export function App() {
                 </Space>
               </Card>
 
-              <Card title={`袋子列表（${bags.length} 条）`}>
+              <Card title={`袋子列表（共 ${bagTotal} 条）`}>
                 <Table<OfficialBag>
                   rowKey="id"
                   dataSource={bags}
                   loading={loading}
-                  pagination={false}
+                  pagination={{
+                    current: bagPage,
+                    pageSize: bagPageSize,
+                    total: bagTotal,
+                    showSizeChanger: true,
+                    showTotal: (total) => `共 ${total} 条`,
+                    onChange: (nextPage, nextPageSize) => {
+                      setBagPage(nextPageSize !== bagPageSize ? 1 : nextPage);
+                      setBagPageSize(nextPageSize);
+                    }
+                  }}
+                  onChange={(_pagination, _filters, sorter, extra) => {
+                    if (extra.action !== 'sort') return;
+                    const s = Array.isArray(sorter) ? sorter[0] : sorter;
+                    if (s && s.order && s.columnKey) {
+                      setBagSort(s.columnKey as BagSortField);
+                      setBagOrder(s.order === 'ascend' ? 'asc' : 'desc');
+                    } else {
+                      setBagSort('sortOrder');
+                      setBagOrder('desc');
+                    }
+                    setBagPage(1);
+                  }}
                   scroll={{ x: 960 }}
                   columns={[
                     {
@@ -1225,6 +1260,8 @@ export function App() {
                     {
                       title: '名称 / 品牌',
                       key: 'name',
+                      sorter: true,
+                      sortOrder: bagSort === 'name' ? (bagOrder === 'asc' ? 'ascend' : 'descend') : null,
                       render: (_, bag) => (
                         <div>
                           <Typography.Text strong>{bag.name}</Typography.Text>
@@ -1235,6 +1272,7 @@ export function App() {
                                 onClick={() => {
                                   setSearch(bag.brand!);
                                   setStatusFilter('');
+                                  setBagPage(1);
                                 }}
                               >
                                 {bag.brand}
@@ -1276,8 +1314,22 @@ export function App() {
                         </Space>
                       )
                     },
-                    { title: '拥有', dataIndex: 'claimedCount', key: 'claimedCount', width: 72 },
-                    { title: '排序', dataIndex: 'sortOrder', key: 'sortOrder', width: 72 },
+                    {
+                      title: '拥有',
+                      dataIndex: 'claimedCount',
+                      key: 'claimedCount',
+                      width: 72,
+                      sorter: true,
+                      sortOrder: bagSort === 'claimedCount' ? (bagOrder === 'asc' ? 'ascend' : 'descend') : null
+                    },
+                    {
+                      title: '排序',
+                      dataIndex: 'sortOrder',
+                      key: 'sortOrder',
+                      width: 72,
+                      sorter: true,
+                      sortOrder: bagSort === 'sortOrder' ? (bagOrder === 'asc' ? 'ascend' : 'descend') : null
+                    },
                     {
                       title: '操作',
                       key: 'actions',

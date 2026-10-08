@@ -34,8 +34,10 @@ export class OfficialBagsAdminController {
   list(
     @Query('status') status?: string,
     @Query('search') search?: string,
-    @Query('cursor') cursor?: string,
-    @Query('limit') rawLimit?: string
+    @Query('page') rawPage?: string,
+    @Query('pageSize') rawPageSize?: string,
+    @Query('sort') sort?: string,
+    @Query('order') order?: string
   ) {
     const statusValue =
       status && (officialBagStatuses as readonly string[]).includes(status)
@@ -44,8 +46,10 @@ export class OfficialBagsAdminController {
     return this.admin.list({
       status: statusValue,
       search,
-      cursor,
-      limit: rawLimit ? Number(rawLimit) : undefined
+      page: rawPage ? Number(rawPage) : undefined,
+      pageSize: rawPageSize ? Number(rawPageSize) : undefined,
+      sort,
+      order
     });
   }
 

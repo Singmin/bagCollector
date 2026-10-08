@@ -8,6 +8,9 @@ import { CosService } from '../assets/cos.service.js';
 
 const ALLOWED_CONTENT_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'] as const;
 
+/** 管理端列表允许排序的字段（白名单，防注入任意列排序）。 */
+const SORTABLE_FIELDS = ['sortOrder', 'name', 'createdAt', 'claimedCount'] as const;
+
 /** 袋子查询统一带出品牌名。 */
 type BagWithBrand = Prisma.OfficialBagGetPayload<{ include: { brand: true } }>;
 
@@ -106,10 +109,22 @@ export class OfficialBagsAdminService {
   }
 
   async list(
-    query: { status?: OfficialBagStatusContract; search?: string; cursor?: string; limit?: number }
+    query: {
+      status?: OfficialBagStatusContract;
+      search?: string;
+      page?: number;
+      pageSize?: number;
+      sort?: string;
+      order?: string;
+    }
   ) {
-    const limit = Math.min(Math.max(query.limit ?? 30, 1), 100);
+    const pageSize = Math.min(Math.max(query.pageSize ?? 20, 1), 200);
+    const page = Math.max(query.page ?? 1, 1);
     const search = query.search?.trim();
+    const sortField = (SORTABLE_FIELDS as readonly string[]).includes(query.sort ?? '')
+      ? (query.sort as (typeof SORTABLE_FIELDS)[number])
+      : 'sortOrder';
+    const sortOrder = query.order === 'asc' ? 'asc' : 'desc';
     const where = {
       ...(query.status ? { status: query.status } : {}),
       ...(search
@@ -125,18 +140,19 @@ export class OfficialBagsAdminService {
     const [items, totalCount] = await Promise.all([
       this.prisma.officialBag.findMany({
         where,
-        ...(query.cursor ? { cursor: { id: query.cursor }, skip: 1 } : {}),
-        orderBy: [{ sortOrder: 'desc' }, { createdAt: 'desc' }],
-        take: limit + 1,
+        orderBy: [
+          { [sortField]: sortOrder },
+          { id: sortOrder }
+        ] as Prisma.OfficialBagOrderByWithRelationInput[],
+        skip: (page - 1) * pageSize,
+        take: pageSize,
         include: { brand: true }
       }),
       this.prisma.officialBag.count({ where })
     ]);
-    const hasMore = items.length > limit;
-    const page = hasMore ? items.slice(0, limit) : items;
     return {
-      items: await Promise.all(page.map((bag) => this.toDto(bag))),
-      nextCursor: hasMore ? page.at(-1)?.id ?? null : null,
+      items: await Promise.all(items.map((bag) => this.toDto(bag))),
+      nextCursor: null,
       totalCount
     };
   }
