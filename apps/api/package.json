@@ -11,6 +11,7 @@
     "db:deploy": "prisma migrate deploy --schema prisma/schema.prisma"
   },
   "dependencies": {
+    "@bagcollect/bag-vision": "workspace:*",
     "@bagcollect/contracts": "workspace:*",
     "@fastify/helmet": "^13.0.2",
     "@fastify/multipart": "^9.2.1",

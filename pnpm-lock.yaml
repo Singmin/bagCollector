@@ -81,6 +81,9 @@ importers:
 
   apps/api:
     dependencies:
+      '@bagcollect/bag-vision':
+        specifier: workspace:*
+        version: link:../../packages/bag-vision
       '@bagcollect/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
@@ -176,6 +179,9 @@ importers:
 
   apps/worker:
     dependencies:
+      '@bagcollect/bag-vision':
+        specifier: workspace:*
+        version: link:../../packages/bag-vision
       '@bagcollect/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
@@ -197,6 +203,12 @@ importers:
       zod:
         specifier: ^3.25.76
         version: 3.25.76
+
+  packages/bag-vision:
+    dependencies:
+      sharp:
+        specifier: ^0.34.4
+        version: 0.34.5
 
   packages/contracts:
     dependencies:

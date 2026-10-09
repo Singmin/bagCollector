@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "composite": true,
+    // 本包是密集的数值下标运算（像素循环、直方图累加、向量点积）：每个下标都已在
+    // 循环边界内被证明合法，逐个补 ! / ?? 0 只会淹没真正的逻辑。这里真正依赖的是
+    // 循环边界与维度常量，而不是索引类型检查。
+    "noUncheckedIndexedAccess": false
+  },
+  "include": ["src/**/*.ts"]
+}

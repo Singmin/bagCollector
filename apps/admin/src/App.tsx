@@ -314,6 +314,8 @@ export function App() {
   const [editing, setEditing] = useState<OfficialBag | 'new' | null>(null);
   const [bagEditorSession, setBagEditorSession] = useState(0);
   const [importOpen, setImportOpen] = useState(false);
+  /** 手动补算官方袋子视觉向量（拍照扫描匹配用）的进行中状态 */
+  const [reconciling, setReconciling] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
   const [brands, setBrands] = useState<Brand[]>([]);
@@ -503,6 +505,32 @@ export function App() {
       setError(requestError instanceof Error ? requestError.message : '登录失败');
     } finally {
       setLoading(false);
+    }
+  }
+
+  /**
+   * 手动补算官方袋子的视觉向量（拍照扫描匹配用）。
+   *
+   * 正常情况下不需要点它：上传/重传图片时 worker 会顺手算好，漏掉的也会被定时对账补上。
+   * 这个按钮是给「刚纳入 / 刚上传完，想立刻能被扫到」这种时刻用的 —— 不必等下一轮对账。
+   * 补算在 worker 里跑（要下载解码图片、做像素计算，是 CPU 活），这里只负责触发。
+   */
+  async function reconcileEmbeddings() {
+    setError('');
+    setReconciling(true);
+    try {
+      const result = await api<{ queued: boolean; pending: number }>('/official-bags/embeddings/reconcile', {
+        method: 'POST'
+      });
+      message.success(
+        result.pending > 0
+          ? `发现 ${result.pending} 个袋子缺少向量，已提交后台补算`
+          : '没有发现缺少向量的袋子，已提交全量核对'
+      );
+    } catch (requestError) {
+      message.error(requestError instanceof Error ? requestError.message : '触发补算失败');
+    } finally {
+      setReconciling(false);
     }
   }
 
@@ -1229,6 +1257,14 @@ export function App() {
                   </Button>
                   <Button icon={<UploadOutlined />} block={isMobile} onClick={() => setImportOpen(true)}>
                     导入 Excel
+                  </Button>
+                  <Button
+                    icon={<ReloadOutlined />}
+                    block={isMobile}
+                    loading={reconciling}
+                    onClick={() => void reconcileEmbeddings()}
+                  >
+                    补算袋子向量
                   </Button>
                 </Space>
               </Card>

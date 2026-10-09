@@ -300,6 +300,7 @@ model OfficialBag {
   createdBy     Admin?              @relation(fields: [createdById], references: [id], onDelete: SetNull)
   brand         Brand?              @relation(fields: [brandId], references: [id], onDelete: SetNull)
   images        OfficialBagImage[]
+  embeddings    BagEmbedding[]
   claims        OfficialClaim[]
   wishlistedBy  WishlistItem[]
   /* 由哪个用户上传的袋子「纳入」而来（审核后台），一个用户袋子最多纳入一次 */
@@ -328,6 +329,29 @@ model OfficialBagImage {
 
   @@unique([officialBagId, kind, version])
   @@index([officialBagId, kind])
+}
+
+/* 官方袋子的视觉特征向量：「拍照扫描袋子」（以图搜图匹配）的数据基础。
+   纯派生数据 —— 由 worker 从官方袋子图（CUTOUT 优先，其次 DISPLAY）提取，
+   与所依据的图片版本绑定（sourceKind + sourceVersion）。任何入库路径漏算都会被
+   worker 的定时对账补上，换图换版也会被识别并重算，因此不依赖调用方记得挂钩子。
+   model 用于区分特征模型：换模型 = 全量重算，靠它做灰度与回滚。 */
+model BagEmbedding {
+  id            String      @id @default(cuid())
+  officialBagId String
+  /* 特征模型标识（如 color-shape-v1）。同一袋子每个模型最多一条向量。 */
+  model         String
+  /* 已 L2 归一化的特征向量：比对时点积即余弦相似度。维度由模型决定。 */
+  vector        Float[]
+  /* 向量提取自哪张官方图及其版本：官方图换版后据此识别并重算。 */
+  sourceKind    AssetKind
+  sourceVersion Int
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  officialBag   OfficialBag @relation(fields: [officialBagId], references: [id], onDelete: Cascade)
+
+  @@unique([officialBagId, model])
+  @@index([model])
 }
 
 // 心愿袋：用户对官方袋子的「想要」标记（发现页 ♥）。袋子下架/删除时级联清除。

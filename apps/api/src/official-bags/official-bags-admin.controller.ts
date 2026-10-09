@@ -35,6 +35,15 @@ export class OfficialBagsAdminController {
     return this.admin.importBags(currentAdmin(request).adminId, parseBody(importOfficialBagsSchema, body));
   }
 
+  /**
+   * 手动补算官方袋子向量。与 worker 定时跑的那轮是同一套逻辑，区别只是不等定时器 ——
+   * 刚纳入/上传完袋子、想让它立刻能被扫到时点这个。
+   */
+  @Post('embeddings/reconcile')
+  reconcileEmbeddings(@Req() request: FastifyRequest & { adminAuth?: AdminAuth }) {
+    return this.admin.reconcileEmbeddings(currentAdmin(request).adminId);
+  }
+
   @Get()
   list(
     @Query('status') status?: string,

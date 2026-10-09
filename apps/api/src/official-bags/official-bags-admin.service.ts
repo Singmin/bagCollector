@@ -1,3 +1,4 @@
+import { BAG_FEATURE_MODEL } from '@bagcollect/bag-vision';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { AssetKind, AssetStatus, OfficialBagStatus, OfficialProcessStatus, Prisma } from '@prisma/client';
 import type { OfficialBagDto, OfficialBagStatus as OfficialBagStatusContract } from '@bagcollect/contracts';
@@ -376,5 +377,28 @@ export class OfficialBagsAdminService {
     }
     await this.audit(adminId, 'OFFICIAL_BAG_DELETE', id, { name: bag.name });
     return { success: true };
+  }
+
+  /**
+   * 手动触发官方袋子向量补算（管理后台的「补算袋子向量」按钮）。
+   *
+   * 走队列而不是在 API 进程里直接算：提取特征要下载并解码图片、做像素级计算，
+   * 是 CPU 活，放在这里会占住事件循环、拖慢所有接口。worker 本来就在干这类事，
+   * 而且有并发控制 —— 那边跑的就是它定时跑的那一轮（找缺失 + 限量补算）。
+   *
+   * 返回的 pending 是「完全没有向量」的袋子数，是个近似值：它不统计「向量还在、
+   * 但依据的是旧版本图」的情况 —— 那需要在 worker 里逐袋比对图片版本才知道，
+   * 为一句进度提示多花一次全表扫描不值得。真正的补算结果以 worker 那轮为准。
+   */
+  async reconcileEmbeddings(adminId: string) {
+    const pending = await this.prisma.officialBag.count({
+      where: {
+        processStatus: OfficialProcessStatus.READY,
+        embeddings: { none: { model: BAG_FEATURE_MODEL } }
+      }
+    });
+    await this.queues.add('embed-reconcile', {});
+    await this.audit(adminId, 'OFFICIAL_BAG_EMBEDDING_RECONCILE', 'embeddings', { pending });
+    return { queued: true, pending };
   }
 }

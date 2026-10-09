@@ -1,6 +1,7 @@
 import { AssetKind, AssetStatus, OfficialProcessStatus, PrismaClient, ProcessingStatus } from '@prisma/client';
 import sharp from 'sharp';
 import { upsertAssetRecord } from './asset-record.js';
+import { ensureBagEmbedding } from './bag-embeddings.js';
 import { config } from './config.js';
 import { removeBackground, standardImage, trimTransparent } from './processor.js';
 import { getObject, putObject } from './object-store.js';
@@ -176,6 +177,21 @@ export async function processOfficialImage(data: OfficialProcessJobData) {
     where: { id: data.officialBagId, version: data.version },
     data: { processStatus: OfficialProcessStatus.READY, processError: null }
   });
+
+  /* 顺手把视觉向量算出来，让袋子发布后立刻能被「拍照扫描」匹配到（否则要等下一轮对账）。
+     提取失败绝不能影响图片处理的结果 —— 图和状态都已落定，这里只记日志，
+     由对账任务在后续轮次补上（见 bag-embeddings.ts）。 */
+  try {
+    await ensureBagEmbedding(data.officialBagId);
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: 'bag_embedding_inline_failed',
+        officialBagId: data.officialBagId,
+        error: error instanceof Error ? error.message : String(error)
+      })
+    );
+  }
 }
 
 /**

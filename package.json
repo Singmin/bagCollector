@@ -7,8 +7,8 @@
     "node": ">=22.0.0"
   },
   "scripts": {
-    "build": "pnpm --filter @bagcollect/contracts build && pnpm --filter @bagcollect/api build && pnpm --filter @bagcollect/worker build && pnpm --filter @bagcollect/admin build && pnpm --filter @bagcollect/miniapp build:mp-weixin",
-    "build:server": "pnpm --filter @bagcollect/contracts build && pnpm --filter @bagcollect/api build && pnpm --filter @bagcollect/worker build && pnpm --filter @bagcollect/admin build",
+    "build": "pnpm --filter @bagcollect/contracts build && pnpm --filter @bagcollect/bag-vision build && pnpm --filter @bagcollect/api build && pnpm --filter @bagcollect/worker build && pnpm --filter @bagcollect/admin build && pnpm --filter @bagcollect/miniapp build:mp-weixin",
+    "build:server": "pnpm --filter @bagcollect/contracts build && pnpm --filter @bagcollect/bag-vision build && pnpm --filter @bagcollect/api build && pnpm --filter @bagcollect/worker build && pnpm --filter @bagcollect/admin build",
     "check:miniapp": "node scripts/check-miniapp.mjs",
     "dev:api": "pnpm --filter @bagcollect/api dev",
     "dev:worker": "pnpm --filter @bagcollect/worker dev",
@@ -19,7 +19,7 @@
     "ci:list-buckets": "node scripts/list-cos-buckets.mjs",
     "ci:compare-models": "node scripts/compare-matting-models.mjs",
     "build:miniapp:local": "pnpm --filter @bagcollect/miniapp build:mp-weixin:local",
-    "typecheck": "pnpm --filter @bagcollect/contracts build && pnpm -r --if-present typecheck",
+    "typecheck": "pnpm --filter @bagcollect/contracts build && pnpm --filter @bagcollect/bag-vision build && pnpm -r --if-present typecheck",
     "lint": "eslint apps packages",
     "test": "vitest run",
     "test:integration": "node scripts/test-api-integration.mjs",

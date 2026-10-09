@@ -107,6 +107,16 @@ export const claimOfficialBagSchema = z.object({
 
 export type ClaimOfficialBagInput = z.infer<typeof claimOfficialBagSchema>;
 
+/**
+ * POST /official-bags/match ——「拍照扫描袋子」。
+ * 拿刚上传的那条收藏的照片去比对官方袋子库，命中就直接入库，否则给出候选或未命中。
+ */
+export const matchOfficialBagSchema = z.object({
+  collectibleId: z.string().min(1)
+});
+
+export type MatchOfficialBagInput = z.infer<typeof matchOfficialBagSchema>;
+
 export const uploadPolicySchema = z.object({
   collectibleId: z.string().min(1),
   fileName: z.string().min(1).max(255),
@@ -281,6 +291,26 @@ export interface OfficialBagPageDto {
 export interface OfficialClaimResultDto {
   collectibleId: string;
   processingStatus: ProcessingStatus;
+}
+
+/** 匹配结果的三种形态。 */
+export const officialBagMatchResults = ['MATCHED', 'CANDIDATES', 'NONE'] as const;
+export type OfficialBagMatchResult = (typeof officialBagMatchResults)[number];
+
+export interface OfficialBagMatchCandidateDto {
+  bag: OfficialBagDto;
+  /** 余弦相似度。返回给前端便于排查/调阈值，UI 不必展示。 */
+  score: number;
+}
+
+export interface OfficialBagMatchDto {
+  result: OfficialBagMatchResult;
+  /** result = MATCHED：命中的袋子，前端直接走 claim 入库。 */
+  matched?: OfficialBagDto;
+  /** result = CANDIDATES：按相似度降序的候选，交给用户点选。 */
+  candidates?: OfficialBagMatchCandidateDto[];
+  /** 本次实际参与比对的官方袋子数（0 表示库为空、或向量尚未生成）。 */
+  compared: number;
 }
 
 export interface BrandDto {

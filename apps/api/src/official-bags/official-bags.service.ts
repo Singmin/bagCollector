@@ -1,7 +1,17 @@
+import { BAG_FEATURE_MODEL, bagFeatures, rankBySimilarity } from '@bagcollect/bag-vision';
+import type { OfficialBagDto, OfficialBagMatchCandidateDto, OfficialBagMatchDto } from '@bagcollect/contracts';
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { OfficialBagStatus, OfficialProcessStatus, Prisma, ProcessingStatus, ShelfTheme } from '@prisma/client';
-import type { OfficialBagDto } from '@bagcollect/contracts';
+import {
+  AssetKind,
+  AssetStatus,
+  OfficialBagStatus,
+  OfficialProcessStatus,
+  Prisma,
+  ProcessingStatus,
+  ShelfTheme
+} from '@prisma/client';
 import { ApiError } from '../common/api-error.js';
+import { env } from '../common/env.js';
 import { QUOTA_COUNTED_STATUSES } from '../common/quota.js';
 import { PrismaService } from '../database/prisma.service.js';
 import { CosService } from '../assets/cos.service.js';
@@ -150,6 +160,111 @@ export class OfficialBagsService {
       select: { id: true }
     });
     return this.toDto(bag, Boolean(claim));
+  }
+
+  /** 当前用户是否已拥有该官方袋子（详情与匹配结果都要带上这个状态）。 */
+  private async isClaimed(userId: string, officialBagId: string) {
+    const claim = await this.prisma.officialClaim.findUnique({
+      where: { userId_officialBagId: { userId, officialBagId } },
+      select: { id: true }
+    });
+    return Boolean(claim);
+  }
+
+  /**
+   * 扫描比对用的查询图：优先 STANDARD（标准化后的白底图），标准化尚未完成时才退回
+   * ORIGINAL。刻意不取 CUTOUT —— 扫描流程不做抠图，那条路走不到这里。
+   */
+  private async queryImage(userId: string, collectibleId: string) {
+    const standard = await this.prisma.imageAsset.findFirst({
+      where: { collectibleId, userId, kind: AssetKind.STANDARD, status: AssetStatus.AVAILABLE },
+      orderBy: { version: 'desc' }
+    });
+    if (standard) return standard;
+    return this.prisma.imageAsset.findFirst({
+      where: { collectibleId, userId, kind: AssetKind.ORIGINAL, status: AssetStatus.AVAILABLE },
+      orderBy: { version: 'desc' }
+    });
+  }
+
+  /**
+   * 「拍照扫描袋子」：拿用户刚拍的照片去比对官方袋子库。
+   *
+   * 判定分三档（阈值见 env）：
+   *   MATCHED    相似度足够高 —— 认定是同一只袋子，前端零操作直接入库；
+   *   CANDIDATES 有若干相近 —— 交给用户点选（颜色相近的不同款靠这一步兜住）；
+   *   NONE       都不像 —— 官方库没有这只袋子。
+   *
+   * 为什么不干脆只留「命中/未命中」两档：特征以颜色为主导，同品牌不同配色/相近款
+   * 容易互相混淆，直接取 top-1 自动入库会把错误的袋子塞进用户收藏，用户还得去删 ——
+   * 比多点一下难受得多。所以模糊区间必须交给人。
+   *
+   * 比对是「查询向量 × 全库向量」的一次线性扫描：官方库是人工维护的规模（百到千级），
+   * 几百维点积是毫秒级，不需要向量索引，也就不需要 pgvector 之类的额外组件。
+   */
+  async match(userId: string, collectibleId: string): Promise<OfficialBagMatchDto> {
+    const collectible = await this.prisma.collectible.findFirst({
+      where: { id: collectibleId, userId },
+      select: { id: true }
+    });
+    if (!collectible) throw new ApiError('NOT_FOUND', '袋子不存在', HttpStatus.NOT_FOUND);
+
+    const image = await this.queryImage(userId, collectibleId);
+    if (!image) throw new ApiError('CONFLICT', '照片还在处理中，请稍候再试', HttpStatus.CONFLICT);
+
+    const config = env();
+    const body = await this.cos.getObject(image.objectKey);
+    const queryVector = await bagFeatures.extract(body, { maxPixels: config.MAX_IMAGE_PIXELS });
+
+    const embeddings = await this.prisma.bagEmbedding.findMany({
+      where: {
+        model: BAG_FEATURE_MODEL,
+        officialBag: {
+          status: OfficialBagStatus.PUBLISHED,
+          processStatus: OfficialProcessStatus.READY
+        }
+      },
+      select: { officialBagId: true, vector: true }
+    });
+    const compared = embeddings.length;
+    if (compared === 0) return { result: 'NONE', compared };
+
+    const ranked = rankBySimilarity(
+      queryVector,
+      embeddings.map((row) => ({ item: row.officialBagId, vector: row.vector })),
+      config.BAG_MATCH_CANDIDATE_LIMIT
+    );
+    const best = ranked[0];
+    if (!best || best.score < config.BAG_MATCH_CANDIDATE_THRESHOLD) {
+      return { result: 'NONE', compared };
+    }
+
+    const bags = await this.prisma.officialBag.findMany({
+      where: { id: { in: ranked.map((entry) => entry.item) } },
+      include: { brand: true }
+    });
+    const byId = new Map<string, BagWithBrand>(bags.map((bag) => [bag.id, bag]));
+
+    if (best.score >= config.BAG_MATCH_AUTO_THRESHOLD) {
+      const bag = byId.get(best.item);
+      if (bag) {
+        return {
+          result: 'MATCHED',
+          matched: await this.toDto(bag, await this.isClaimed(userId, bag.id)),
+          compared
+        };
+      }
+    }
+
+    const candidates: OfficialBagMatchCandidateDto[] = [];
+    for (const entry of ranked) {
+      const bag = byId.get(entry.item);
+      if (!bag) continue;
+      /* score 原样带回去：阈值是经验值，调它的时候要能看到真实分布 */
+      candidates.push({ bag: await this.toDto(bag), score: Number(entry.score.toFixed(4)) });
+    }
+    if (!candidates.length) return { result: 'NONE', compared };
+    return { result: 'CANDIDATES', candidates, compared };
   }
 
   /** 用户指定的「品牌 / 店铺」必须是自己名下的展架。 */

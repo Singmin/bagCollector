@@ -109,3 +109,26 @@ export interface OfficialBagPage {
   /** 当前用户已拥有的官方袋子总数（全量，不受列表筛选/分页影响）。 */
   ownedCount: number;
 }
+
+/* ── 拍照扫描袋子：拿刚拍的照片比对官方袋子库 ── */
+
+/** 匹配结果的三种形态：
+ *  MATCHED    相似度足够高，直接入库（用户零操作）
+ *  CANDIDATES 有几个相近的，交给用户点选
+ *  NONE       都不像，视为官方库没有这只袋子
+ */
+export type OfficialBagMatchResult = 'MATCHED' | 'CANDIDATES' | 'NONE';
+
+export interface OfficialBagMatchCandidate {
+  bag: OfficialBag;
+  /** 余弦相似度：用于排查与调阈值，UI 不展示 */
+  score: number;
+}
+
+export interface OfficialBagMatch {
+  result: OfficialBagMatchResult;
+  matched?: OfficialBag;
+  candidates?: OfficialBagMatchCandidate[];
+  /** 本次实际参与比对的官方袋子数（0 = 库为空或向量未生成） */
+  compared: number;
+}

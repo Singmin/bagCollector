@@ -52,7 +52,22 @@ const schema = z
     // 改动默认值不会影响已注册用户，存量数据需要单独回填。
     MAX_DAILY_MATTING: z.coerce.number().int().positive().default(25),
     MAX_UPLOAD_BYTES: z.coerce.number().int().positive().default(31_457_280),
-    MAX_IMAGE_PIXELS: z.coerce.number().int().positive().default(60_000_000)
+    MAX_IMAGE_PIXELS: z.coerce.number().int().positive().default(60_000_000),
+
+    // ---------------------------------------------------------------------
+    // 「拍照扫描袋子」的判定阈值（余弦相似度）
+    //
+    //   ≥ BAG_MATCH_AUTO_THRESHOLD        认定为同一只袋子，前端零操作直接入库
+    //   ≥ BAG_MATCH_CANDIDATE_THRESHOLD   交给用户从候选里点选
+    //   低于候选阈值                       视为官方库没有这只袋子，引导走手动上传
+    //
+    // 这两个值是经验值，必须拿真实数据调。匹配接口会把 top 候选的分数一并返回，
+    // 便于观察实际分布后再收紧或放宽 —— 阈值定得太松会把不相干的袋子自动塞进
+    // 用户收藏，比多点一下难受得多。
+    // ---------------------------------------------------------------------
+    BAG_MATCH_AUTO_THRESHOLD: z.coerce.number().min(0).max(1).default(0.9),
+    BAG_MATCH_CANDIDATE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.72),
+    BAG_MATCH_CANDIDATE_LIMIT: z.coerce.number().int().min(1).max(10).default(3)
   })
   .superRefine((value, context) => {
     if (!value.WECHAT_AUTH_MOCK && (!value.WECHAT_APP_ID || !value.WECHAT_APP_SECRET)) {

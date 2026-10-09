@@ -55,6 +55,21 @@ const schema = z
     // 要远大于正常「申请上传凭证 → 直传 COS → complete」的耗时，避免误删在途上传。
     ABANDONED_UPLOAD_MS: z.coerce.number().int().min(3_600_000).default(86_400_000),
 
+    // ---------------------------------------------------------------------
+    // 官方袋子视觉向量对账（「拍照扫描袋子」的兜底）
+    //
+    // 这里要把两件成本差三个数量级的事分开看：
+    //   找缺失 = 一次 SELECT，问「哪些官方袋子有图但没有（或过期了）向量」，几千个
+    //            袋子也就几毫秒 —— 所以可以跑得很勤，这就是「一变就扫到」的来源；
+    //   补算   = 下载图 + 解码 + 算特征 + 写库，每袋几百毫秒到几秒，这才是贵的。
+    //
+    // 因此频率控制只需要管「找缺失」，补算天然只在查出缺失时才发生，且每轮限量。
+    // ---------------------------------------------------------------------
+    EMBEDDING_RECONCILE_INTERVAL_MS: z.coerce.number().int().min(5_000).default(30_000),
+    // 每轮最多补算多少个袋子：批量导入上百个袋子时不该一次性占满 worker，
+    // 否则用户那边的抠图任务要排队。分摊到后续几轮跑完即可。
+    EMBEDDING_RECONCILE_BATCH: z.coerce.number().int().min(1).max(200).default(20),
+
     LOCAL_STORAGE_PATH: z.string().min(1).default('../../data/local-storage'),
     COS_SECRET_ID: z.string().default(''),
     COS_SECRET_KEY: z.string().default(''),

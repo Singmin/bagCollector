@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
-import { claimOfficialBagSchema } from '@bagcollect/contracts';
+import { claimOfficialBagSchema, matchOfficialBagSchema } from '@bagcollect/contracts';
 import { AuthGuard } from '../auth/auth.guard.js';
 import { CurrentUser, type AuthUser } from '../common/current-user.js';
 import { parseBody } from '../common/zod.js';
@@ -35,6 +35,15 @@ export class OfficialBagsController {
   @Get(':id')
   detail(@CurrentUser() user: AuthUser, @Param('id') id: string) {
     return this.officialBags.detail(user.userId, id);
+  }
+
+  /**
+   * 「拍照扫描袋子」：拿刚上传的那条收藏的照片比对官方袋子库。
+   * 命中 / 候选 / 未命中三档由服务端判定，前端据此决定自动入库还是让用户点选。
+   */
+  @Post('match')
+  match(@CurrentUser() user: AuthUser, @Body() body: unknown) {
+    return this.officialBags.match(user.userId, parseBody(matchOfficialBagSchema, body).collectibleId);
   }
 
   /**

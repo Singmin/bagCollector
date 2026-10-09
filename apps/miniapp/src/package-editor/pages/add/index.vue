@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import { onLoad } from '@dcloudio/uni-app';
-import type { Collectible, Shelf, UploadPolicy } from '../../../types';
+import type { Collectible, OfficialBag, OfficialBagMatchCandidate, Shelf, UploadPolicy } from '../../../types';
 import { api, authorizedHeaders } from '../../../services/http';
 import { dataService } from '../../../services/data';
 
@@ -22,6 +22,17 @@ const uploading = ref(false);
 const compressing = ref(false);
 const progress = ref(0);
 const errorMessage = ref('');
+
+/* ── 扫描匹配 ──
+   打开时，拍照后先拿这张照片去比对官方袋子库：
+   相似度足够高就直接入库（用户不用填任何信息），有相近的就让用户点选，
+   都不像则提示后转入手工上传。关闭时维持原来的「拍完填信息」流程。 */
+const scanMode = ref(false);
+/** result = CANDIDATES 时的待选列表 */
+const candidates = ref<OfficialBagMatchCandidate[]>([]);
+const showCandidates = ref(false);
+/** 扫描时建的那条收藏 id：它只负责承载照片去比对，命中后要被清掉 */
+const scannedCollectibleId = ref('');
 /* 真机 camera 组件从挂载到出帧需要时间，期间画面是黑的 —— 用 initdone 事件标记就绪，
    就绪前铺一层「正在启动相机」占位，避免首屏被监控判成白屏（本页白屏 5/7 次的根因）。
    开发者工具不支持 camera 组件、不会回调 initdone，直接视为就绪（保持原状不显示占位）。 */
@@ -142,47 +153,132 @@ async function waitForProcessing(id: string) {
   throw new Error('图片处理超时，请稍后在收藏架查看');
 }
 
-async function submit(sourcePath: string) {
-  if (uploading.value) return;
+/**
+ * 上传 + 等待规范化完成，返回建好的收藏 id。
+ * 「拍完填信息」与「拍完先扫描匹配」两条流程共用这一段 —— 差别只在拿到 id 之后做什么。
+ */
+async function uploadAndPrepare(sourcePath: string) {
   const sourceSize = await fileSize(sourcePath);
-  if (sourceSize > 30 * 1024 * 1024) {
-    uni.showToast({ title: '图片不能超过 30MB', icon: 'none' });
-    return;
-  }
+  if (sourceSize > 30 * 1024 * 1024) throw new Error('图片不能超过 30MB');
   filePath.value = sourcePath;
   uploading.value = true;
   compressing.value = true;
   progress.value = 0;
   errorMessage.value = '';
+  const path = await prepareUpload(sourcePath);
+  compressing.value = false;
+  const size = await fileSize(path);
+  const collectible = await dataService.createCollectible({ name: '未命名纸袋', shelfId: await targetShelfId() });
+  const sourceName = path.split('/').pop() || `paper-bag-${Date.now()}.jpg`;
+  const policy = await api<UploadPolicy>('/uploads/policy', {
+    method: 'POST',
+    data: {
+      collectibleId: collectible.id,
+      fileName: sourceName.includes('.') ? sourceName : `${sourceName}.jpg`,
+      contentType: contentType(path),
+      size
+    }
+  });
+  await uploadSource(path, policy);
+  await api('/uploads/complete', {
+    method: 'POST',
+    data: { assetId: policy.assetId, collectibleId: collectible.id, key: policy.key }
+  });
+  /* 原地等待规范化完成：反馈交给页面状态行「正在处理图片」，不弹 loading 蒙层 */
+  await waitForProcessing(collectible.id);
+  return collectible.id;
+}
+
+/** 上传失败时的统一收场：清掉预览图回到相机，让用户能直接重拍。 */
+function failUpload(error: unknown, fallback: string) {
+  compressing.value = false;
+  uploading.value = false;
+  errorMessage.value = error instanceof Error ? error.message : fallback;
+  filePath.value = '';
+}
+
+/** 普通上传：拍完直接进「填写信息」页。 */
+async function submit(sourcePath: string) {
+  if (uploading.value) return;
   try {
-    const path = await prepareUpload(sourcePath);
-    compressing.value = false;
-    const size = await fileSize(path);
-    const collectible = await dataService.createCollectible({ name: '未命名纸袋', shelfId: await targetShelfId() });
-    const sourceName = path.split('/').pop() || `paper-bag-${Date.now()}.jpg`;
-    const policy = await api<UploadPolicy>('/uploads/policy', {
-      method: 'POST',
-      data: {
-        collectibleId: collectible.id,
-        fileName: sourceName.includes('.') ? sourceName : `${sourceName}.jpg`,
-        contentType: contentType(path),
-        size
-      }
-    });
-    await uploadSource(path, policy);
-    await api('/uploads/complete', {
-      method: 'POST',
-      data: { assetId: policy.assetId, collectibleId: collectible.id, key: policy.key }
-    });
-    /* 原地等待规范化完成：反馈交给页面状态行「正在处理图片」，不弹 loading 蒙层 */
-    await waitForProcessing(collectible.id);
-    uni.redirectTo({ url: `/package-editor/pages/metadata/index?id=${collectible.id}` });
+    const id = await uploadAndPrepare(sourcePath);
+    uni.redirectTo({ url: `/package-editor/pages/metadata/index?id=${id}` });
   } catch (error) {
-    compressing.value = false;
-    errorMessage.value = error instanceof Error ? error.message : '照片处理失败';
-    filePath.value = '';
-    uploading.value = false;
+    failUpload(error, '照片处理失败');
   }
+}
+
+/**
+ * 扫描匹配：拍完先比对官方袋子库。
+ *
+ * 命中就直接把这袋子收进收藏（用户零操作）；有相近的就让用户点一个；
+ * 都不像则提示「未匹配成功，请手动上传」，并把刚拍的这张直接带进填写信息页 ——
+ * 照片这时已经在库里了，不该让用户白拍一次。
+ */
+async function submitAndMatch(sourcePath: string) {
+  if (uploading.value) return;
+  try {
+    const id = await uploadAndPrepare(sourcePath);
+    scannedCollectibleId.value = id;
+    uploading.value = false;
+    const match = await dataService.matchOfficialBag(id);
+    if (match.result === 'MATCHED' && match.matched) {
+      /* 「已经拥有」不算匹配失败，但确实没有可入库的东西了 —— 先说清原因，
+         再让照片按手动上传走下去（用户可能就是想把它记下来）。 */
+      if (match.matched.claimed) return void goManual('你已经拥有这只袋子了，继续手动上传');
+      return void (await adoptMatch(match.matched));
+    }
+    if (match.result === 'CANDIDATES' && match.candidates?.length) {
+      candidates.value = match.candidates;
+      showCandidates.value = true;
+      return;
+    }
+    return void goManual('未匹配到官方袋子，请手动填写信息');
+  } catch (error) {
+    failUpload(error, '扫描失败，请重试');
+  }
+}
+
+/**
+ * 命中或点选之后：认领官方袋子，并清掉扫描时那条只用于比对的临时记录。
+ * 认领是引用模式（图片直接读官方库、不占用户存储），落库即就绪，所以立刻能在收藏里看到。
+ */
+async function adoptMatch(bag: OfficialBag) {
+  showCandidates.value = false;
+  try {
+    const { collectibleId } = await dataService.claimOfficialBag(bag.id);
+    /* 临时记录使命已尽。删失败不阻断体验：用户已经拿到袋子，
+       留一条草稿总好过在这一步弹错误、让他以为没成功。 */
+    const stale = scannedCollectibleId.value;
+    scannedCollectibleId.value = '';
+    if (stale) await dataService.removeCollectible(stale).catch(() => undefined);
+    uni.showToast({ title: `已匹配到「${bag.name}」`, icon: 'none', duration: 1200 });
+    setTimeout(() => uni.switchTab({ url: '/pages/library/index' }), 1200);
+  } catch {
+    /* 绝大多数是「已经拥有过」（服务端 CONFLICT）；按未匹配处理，
+       不把它当错误弹给用户。 */
+    await goManual('这只袋子已经在你的收藏里了，继续手动上传');
+  }
+}
+
+/** 未匹配：提示后转入手工上传流程，把刚拍的这张继续用下去（不必重拍）。 */
+async function goManual(message: string) {
+  showCandidates.value = false;
+  const id = scannedCollectibleId.value;
+  scannedCollectibleId.value = '';
+  uni.showToast({ title: message, icon: 'none', duration: 1800 });
+  if (!id) return;
+  setTimeout(() => uni.redirectTo({ url: `/package-editor/pages/metadata/index?id=${id}` }), 1800);
+}
+
+/** 拍照 / 选图后的统一分流：扫描模式走匹配，否则走原来的填写流程。 */
+function handleShot(path: string) {
+  return scanMode.value ? submitAndMatch(path) : submit(path);
+}
+
+function toggleScanMode() {
+  if (uploading.value) return;
+  scanMode.value = !scanMode.value;
 }
 
 function takePhoto() {
@@ -192,7 +288,7 @@ function takePhoto() {
     quality: 'high',
     success: async (result) => {
       try {
-        await submit(result.tempImagePath);
+        await handleShot(result.tempImagePath);
       } catch (error) {
         errorMessage.value = error instanceof Error ? error.message : '拍照失败';
       } finally {
@@ -217,7 +313,7 @@ function chooseFromAlbum() {
       sourceType: ['album'],
       success: (result) => {
         const path = result.tempFilePaths?.[0];
-        if (path) void submit(path).catch((error) => {
+        if (path) void handleShot(path).catch((error) => {
           errorMessage.value = error instanceof Error ? error.message : '相册选图失败';
         });
       },
@@ -234,7 +330,7 @@ function chooseFromAlbum() {
     sizeType: ['original'],
     success: (result) => {
       const file = result.tempFiles[0];
-      if (file) void submit(file.tempFilePath).catch((error) => {
+      if (file) void handleShot(file.tempFilePath).catch((error) => {
         errorMessage.value = error instanceof Error ? error.message : '相册选图失败';
       });
     },
@@ -295,6 +391,14 @@ onLoad(() => {
       </view>
       <image v-else class="captured-image" :src="filePath" mode="aspectFit" />
       <view class="guide-frame" />
+      <view
+        v-if="!filePath && !uploading"
+        class="scan-toggle"
+        :class="{ 'scan-toggle-on': scanMode }"
+        @tap="toggleScanMode"
+      >
+        {{ scanMode ? '扫描匹配：开' : '扫描匹配：关' }}
+      </view>
       <view v-if="uploading" class="upload-mask">
         <view class="upload-spinner" />
         <text>{{ compressing ? '正在压缩照片' : progress < 100 ? `正在上传 ${progress}%` : '正在处理图片' }}</text>
@@ -313,6 +417,25 @@ onLoad(() => {
       <button class="round-button album-button" aria-label="从相册选择" :disabled="uploading" @tap="chooseFromAlbum">
         <image class="album-icon" src="/static/figma/album.svg" mode="aspectFit" />
       </button>
+    </view>
+
+    <!-- 扫描到相近的袋子：交给用户点选。只有一个候选也走这里 ——
+         相似度没到「自动入库」的把握，让人确认一下比猜错强。 -->
+    <view v-if="showCandidates" class="match-mask">
+      <view class="match-sheet">
+        <text class="match-title">找到几个相似的袋子</text>
+        <text class="match-subtitle">选一个收进收藏，或继续手动上传</text>
+        <scroll-view class="match-list" scroll-y>
+          <view v-for="item in candidates" :key="item.bag.id" class="match-item" @tap="adoptMatch(item.bag)">
+            <image class="match-thumb" :src="item.bag.thumbnailUrl" mode="aspectFit" />
+            <view class="match-info">
+              <text class="match-name">{{ item.bag.name }}</text>
+              <text v-if="item.bag.brand" class="match-brand">{{ item.bag.brand }}</text>
+            </view>
+          </view>
+        </scroll-view>
+        <button class="match-cancel" @tap="goManual('请手动填写信息完成上传')">都不是，手动上传</button>
+      </view>
     </view>
   </view>
 </template>
@@ -358,4 +481,22 @@ onLoad(() => {
 .shutter[disabled] { opacity: .45; }
 .shutter-core { width: 130rpx; height: 130rpx; border-radius: 50%; background: #c50405; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* 扫描匹配开关：浮在取景卡底部。刻意不动快门/闪光灯/相册三个按钮的定位 ——
+   那套布局是按参考图逐个测量对齐的，插一个元素进去就会连带偏。 */
+.scan-toggle { position: absolute; z-index: 4; left: 50%; bottom: 28rpx; transform: translateX(-50%); padding: 12rpx 32rpx; border-radius: 999rpx; background: rgba(24, 20, 16, .46); color: #fff; font-size: 24rpx; line-height: 1.4; }
+.scan-toggle-on { background: rgba(197, 4, 5, .88); }
+
+/* ── 候选选择弹层 ── */
+.match-mask { position: fixed; z-index: 20; inset: 0; display: flex; align-items: flex-end; background: rgba(24, 20, 16, .45); }
+.match-sheet { width: 100%; box-sizing: border-box; padding: 40rpx 40rpx calc(40rpx + env(safe-area-inset-bottom)); border-radius: 40rpx 40rpx 0 0; background: #fff; }
+.match-title { display: block; font-size: 34rpx; font-weight: 600; text-align: center; }
+.match-subtitle { display: block; margin-top: 12rpx; font-size: 24rpx; color: #9d9890; text-align: center; }
+.match-list { max-height: 620rpx; margin-top: 24rpx; }
+.match-item { display: flex; align-items: center; gap: 24rpx; margin-bottom: 16rpx; padding: 20rpx; border-radius: 24rpx; background: #f7f5f2; }
+.match-thumb { flex: 0 0 auto; width: 120rpx; height: 120rpx; border-radius: 16rpx; background: #fff; }
+.match-info { flex: 1 1 0; min-width: 0; }
+.match-name { display: block; font-size: 28rpx; font-weight: 500; }
+.match-brand { display: block; margin-top: 8rpx; font-size: 24rpx; color: #9d9890; }
+.match-cancel { margin-top: 8rpx; padding: 0; border: none; border-radius: 999rpx; background: #f2f3f7; color: #444; font-size: 28rpx; line-height: 88rpx; }
 </style>

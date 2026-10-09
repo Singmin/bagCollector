@@ -10,6 +10,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@bagcollect/bag-vision": "workspace:*",
     "@bagcollect/contracts": "workspace:*",
     "@prisma/client": "^6.19.0",
     "bullmq": "^5.61.0",

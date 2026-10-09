@@ -1,4 +1,4 @@
-import type { Brand, Collectible, CollectiblePage, OfficialBagPage, OfficialClaimResult, Shelf, ShelfTheme } from '../types';
+import type { Brand, Collectible, CollectiblePage, OfficialBagMatch, OfficialBagPage, OfficialClaimResult, Shelf, ShelfTheme } from '../types';
 import { api } from './http';
 import { localizeCollectibleImages } from './images';
 import { markCollectionDataStale } from './collection-state';
@@ -51,6 +51,10 @@ export const dataService = {
     overrides: { name?: string; shelfId?: string; notes?: string; tags?: string[] } = {}
   ) =>
     changed(api<OfficialClaimResult>(`/official-bags/${id}/claim`, { method: 'POST', data: overrides })),
+  /* 拍照扫描袋子：拿刚上传的那条收藏去比对官方库，返回 命中 / 候选 / 未命中 三档。
+     刻意不标数据陈旧 —— 匹配本身不写任何东西，命中的写操作由随后的 claim 负责。 */
+  matchOfficialBag: (collectibleId: string) =>
+    api<OfficialBagMatch>('/official-bags/match', { method: 'POST', data: { collectibleId } }),
   updateCollectible,
   removeCollectible: (id: string) => changed(api(`/collectibles/${id}`, { method: 'DELETE' })),
   /* 只裁剪（裁剪页提交）：后端重出展示图/缩略图，不做抠图 */
