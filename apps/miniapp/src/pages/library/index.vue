@@ -1590,8 +1590,7 @@ function onScrollToLower() {
 
 <style scoped>
 /* ══════════════════════════════════════════════════════════════
-   全部收藏（收藏架）—— 版式与材质整体对齐 H5 原型
-   （袋袋集原型_交付包/袋袋集原型.html，data-screen="library"），
+   全部收藏（收藏架）—— 版式与材质整体对齐 H5 原型（data-screen="library"），
    不再沿用 figma 稿的那一套。
 
    换算口径：H5 的手机壳是 width:min(100%,430px) + 9px 边框 + border-box，
@@ -1667,14 +1666,13 @@ function onScrollToLower() {
 /* 底部外边距：24 → 10 → 20rpx（2026-09-26 两轮反馈后取中间值）。
    align-items: stretch：搜索框自动拉伸到与右侧切换钮等高（用户要求对齐） */
 .search-row { display: flex; align-items: stretch; gap: 14rpx; margin: 0 33rpx 20rpx; }
-/* ── 搜索框：H5 .search-box（内边距 16px / 圆角 25px）；高度随行拉伸 ── */
-/* 与右侧切换钮同材质，但无投影（用户要求去掉）；顶沿内高光保留维持玻璃质感 */
-.search-box { flex: 1 1 auto; min-width: 0; padding: 0 29rpx; display: flex; align-items: center; gap: 18rpx; border: 2rpx solid rgba(255,255,255,.75); border-radius: 29rpx; background: rgba(255,255,255,.6); box-shadow: inset 0 2rpx 0 rgba(255,255,255,.8); }
+/* ── 搜索框：与「官方图鉴」页 .gallery-search 视觉对齐（白底胶囊 + 外投影）；高度随行拉伸 ── */
+.search-box { flex: 1 1 auto; min-width: 0; padding: 0 29rpx; display: flex; align-items: center; gap: 18rpx; border: 2rpx solid rgba(255,255,255,.8); border-radius: 44rpx; background: rgba(255,255,255,.86); box-shadow: inset 0 2rpx 0 rgba(255,255,255,.9), 0 6rpx 20rpx rgba(52,66,92,.06); }
 /* icon 16px（32rpx），描边 2 随视框等比渲染 */
 .search-icon { flex: 0 0 32rpx; width: 32rpx; height: 32rpx; }
 .search-input { flex: 1; min-width: 0; height: 100%; color: #141414; font-size: var(--wc-font-footnote); }
-.search-placeholder { color: #969696; }
-.search-clear { flex: 0 0 auto; padding: 0 6rpx; color: #77736d; font-size: 35rpx; line-height: 1; }
+.search-placeholder { color: #a8a49d; }
+.search-clear { flex: 0 0 auto; padding: 0 6rpx; color: #8d877c; font-size: 34rpx; line-height: 1; }
 
 /* ── 分组：H5 .collection-group（组间 30px）与 .collection-group-title（0 22px 12px / 18px 衬线粗标题） ── */
 /* 视图切换过渡（H5 viewSwap）：展架 / 宫格两个分支挂载时淡入+上移，

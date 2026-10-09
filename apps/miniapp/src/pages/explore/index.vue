@@ -47,9 +47,10 @@ try {
 }
 // #endif
 
-/* 概览行：只数 · 品牌数 · 已有 · 心愿（已有关标与心愿角标的口径一致） */
-const ownedCount = computed(() => bags.value.filter((bag) => bag.claimed).length);
-/* 心愿是独立列表，用全量集合计数，不受当前筛选/分页影响 */
+/* 概览行：只数 · 品牌数 · 已有 · 心愿
+   已有 / 心愿都用全量口径，不受当前筛选与分页影响
+   （「已有」由后端返回全量已拥有数，绝不能从当前已加载的 bags 里数，否则会随滚动翻页增长） */
+const ownedCount = ref(0);
 const wishedCount = computed(() => wishlistIds.value.size);
 const overview = computed(() => {
   const parts = [`${totalCount.value} 只`];
@@ -92,6 +93,7 @@ function load() {
       bags.value = page.items;
       totalCount.value = page.totalCount;
       nextCursor.value = page.nextCursor;
+      ownedCount.value = page.ownedCount;
       wishlistIds.value = new Set(wish.map((item) => item.id));
       initialized.value = true;
     } catch (error) {
@@ -114,6 +116,7 @@ async function loadMore() {
     bags.value = [...bags.value, ...page.items.filter((bag) => !known.has(bag.id))];
     nextCursor.value = page.nextCursor;
     totalCount.value = page.totalCount;
+    ownedCount.value = page.ownedCount;
   } catch (error) {
     uni.showToast({ title: error instanceof Error ? error.message : '加载更多失败', icon: 'none' });
   } finally {
@@ -206,6 +209,8 @@ async function claimBag() {
     const listed = bags.value.find((current) => current.id === bag.id);
     if (listed) listed.claimed = true;
     if (detailBag.value?.id === bag.id) detailBag.value = { ...detailBag.value, claimed: true };
+    /* 概览「已有」是全量口径，认领成功后本地 +1，无需重拉列表 */
+    ownedCount.value += 1;
     /* 已拥有就不能再留在心愿袋（后端认领时也会清），本地同步移除，免得心愿角标残留 */
     if (wishlistIds.value.has(bag.id)) {
       try { await dataService.removeWishlist(bag.id); } catch { /* 清理失败不阻塞入库 */ }

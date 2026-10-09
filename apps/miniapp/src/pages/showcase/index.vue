@@ -750,8 +750,7 @@ async function onRefresherRefresh() {
 
 <style scoped>
 /* ══════════════════════════════════════════════════════════════
-   陈列（首页）—— 版式与材质对齐 H5 原型
-   （袋袋集原型_交付包/袋袋集原型.html，data-screen="showcase"）。
+   陈列（首页）—— 版式与材质对齐 H5 原型（data-screen="showcase"）。
 
    ── 字号一律走微信设计规范，不再按 H5 的 px 直接换算 ──
    规范（§5.1 微信字体）只给六档常用字号，落在小程序就是 App.vue 里的
