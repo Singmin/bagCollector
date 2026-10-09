@@ -36,8 +36,14 @@ docker info >/dev/null 2>&1 || {
 API_IMAGE="bagcollect-api:$IMAGE_TAG"
 ADMIN_IMAGE="bagcollect-admin:$IMAGE_TAG"
 
+# 版本号（git commit SHA）与构建时间注入前端静态资源，后台右上角据此核对线上版本。
+BUILD_VERSION="$IMAGE_TAG"
+BUILD_TIME=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+BUILD_ARGS="--build-arg BUILD_VERSION=$BUILD_VERSION --build-arg BUILD_TIME=$BUILD_TIME"
+
 echo "构建 API/Worker 镜像：$API_IMAGE"
 DOCKER_BUILDKIT=1 docker build --progress=plain \
+  $BUILD_ARGS \
   --target api \
   --tag "$API_IMAGE" \
   --file "$RELEASE_DIR/infra/Dockerfile" \
@@ -45,6 +51,7 @@ DOCKER_BUILDKIT=1 docker build --progress=plain \
 
 echo "构建 Admin 镜像：$ADMIN_IMAGE"
 DOCKER_BUILDKIT=1 docker build --progress=plain \
+  $BUILD_ARGS \
   --target admin \
   --tag "$ADMIN_IMAGE" \
   --file "$RELEASE_DIR/infra/Dockerfile" \

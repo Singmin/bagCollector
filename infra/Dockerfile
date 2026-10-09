@@ -21,9 +21,13 @@ COPY packages/contracts/package.json packages/contracts/package.json
 RUN pnpm install --frozen-lockfile
 
 FROM deps AS build
+ARG BUILD_VERSION
+ARG BUILD_TIME
 COPY tsconfig.base.json eslint.config.mjs vitest.config.ts ./
 COPY packages ./packages
 COPY apps ./apps
+# 版本号与构建时间注入到 admin 前端静态资源（vite.config.ts 读取这两个环境变量）。
+ENV BUILD_VERSION=${BUILD_VERSION} BUILD_TIME=${BUILD_TIME}
 # 只构建服务端产物。根 `build` 脚本还会构建小程序，但服务器镜像里用不到它，
 # 每个矩阵 target 都白跑一遍、还要求 VITE_API_BASE_URL —— 那是 upload-miniapp
 # 工作流（miniapp-uploader target）自己负责的事。

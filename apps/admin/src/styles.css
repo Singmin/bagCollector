@@ -63,6 +63,15 @@ body {
   cursor: pointer;
 }
 
+.build-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: default;
+}
+
 /* 手机端适配：< 768px 时缩小留白，表格横向滚动。 */
 @media (max-width: 767px) {
   .app-header {

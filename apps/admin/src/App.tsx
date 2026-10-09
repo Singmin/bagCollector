@@ -25,6 +25,7 @@ import {
   Switch,
   Table,
   Tag,
+  Tooltip,
   Typography,
   Upload
 } from 'antd';
@@ -685,7 +686,8 @@ export function App() {
           <Typography.Title level={4} style={{ margin: 0 }} ellipsis>
             {pageTitles[page]}
           </Typography.Title>
-          <Space>
+          <Space size={12} align="center">
+            <BuildMeta />
             <Button
               icon={<ReloadOutlined />}
               loading={loading}
@@ -1382,6 +1384,25 @@ export function App() {
         </Layout.Content>
       </Layout>
     </Layout>
+  );
+}
+
+/** 右上角的构建信息：版本号 + 构建时间，方便核对线上是否已发布到最新代码。 */
+function BuildMeta() {
+  const isMobile = useIsMobile();
+  const shortVersion = __VERSION__.length > 8 ? __VERSION__.slice(0, 8) : __VERSION__;
+  const buildTime = (() => {
+    const date = new Date(__BUILD_TIME__);
+    return Number.isNaN(date.getTime()) ? __BUILD_TIME__ : date.toLocaleString('zh-CN', { hour12: false });
+  })();
+
+  return (
+    <Tooltip title={`版本 ${__VERSION__} · 构建于 ${buildTime}`}>
+      <span className="build-meta">
+        <Typography.Text code>v{shortVersion}</Typography.Text>
+        {!isMobile && <Typography.Text type="secondary">{buildTime}</Typography.Text>}
+      </span>
+    </Tooltip>
   );
 }
 
