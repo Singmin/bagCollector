@@ -274,6 +274,8 @@ export interface OfficialBagPageDto {
   items: OfficialBagDto[];
   nextCursor: string | null;
   totalCount: number;
+  /** 当前用户已拥有的官方袋子总数（全量，不受列表筛选/分页影响）。 */
+  ownedCount: number;
 }
 
 export interface OfficialClaimResultDto {

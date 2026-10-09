@@ -105,7 +105,7 @@ export class OfficialBagsService {
           }
         : {})
     } satisfies Prisma.OfficialBagWhereInput;
-    const [items, totalCount] = await Promise.all([
+    const [items, totalCount, ownedCount] = await Promise.all([
       this.prisma.officialBag.findMany({
         where,
         ...(query.cursor ? { cursor: { id: query.cursor }, skip: 1 } : {}),
@@ -113,7 +113,16 @@ export class OfficialBagsService {
         take: limit + 1,
         include: { brand: true }
       }),
-      this.prisma.officialBag.count({ where })
+      this.prisma.officialBag.count({ where }),
+      /* 「已有」用全量口径：当前用户已拥有、且当前可见（已发布 + 图片就绪）的官方袋子总数。
+         刻意不带 search / brandId 筛选 —— 概览行与筛选条件无关，只看「我一共拥有多少只」，
+         与前端心愿计数同一口径，避免只统计到当前分页带来的偏差。 */
+      this.prisma.officialClaim.count({
+        where: {
+          userId,
+          officialBag: { status: OfficialBagStatus.PUBLISHED, processStatus: OfficialProcessStatus.READY }
+        }
+      })
     ]);
     const hasMore = items.length > limit;
     const page = hasMore ? items.slice(0, limit) : items;
@@ -125,7 +134,8 @@ export class OfficialBagsService {
     return {
       items: await Promise.all(page.map((bag) => this.toDto(bag, claimedIds.has(bag.id)))),
       nextCursor: hasMore ? page.at(-1)?.id ?? null : null,
-      totalCount
+      totalCount,
+      ownedCount
     };
   }
 
