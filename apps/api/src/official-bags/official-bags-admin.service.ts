@@ -108,6 +108,61 @@ export class OfficialBagsAdminService {
     return this.toDto(bag);
   }
 
+  /**
+   * Excel 批量导入。品牌按名称匹配（不区分大小写），不存在则自动创建；
+   * 导入的袋子统一为草稿（DRAFT），由运营补图后手动点发布。
+   * 整体跑在事务里：任一行失败则全部回滚，避免半成品。
+   */
+  async importBags(
+    adminId: string,
+    input: { items: Array<{ name: string; brandName?: string; notes?: string; tags?: string[] }> }
+  ) {
+    const createdIds = await this.prisma.$transaction(async (tx) => {
+      const brandCache = new Map<string, string>();
+      let nextSort = ((await tx.officialBag.aggregate({ _max: { sortOrder: true } }))._max.sortOrder ?? -1) + 1;
+      let nextBrandSort = ((await tx.brand.aggregate({ _max: { sortOrder: true } }))._max.sortOrder ?? -1) + 1;
+
+      const ids: string[] = [];
+      for (const row of input.items) {
+        let brandId: string | null = null;
+        const brandName = row.brandName?.trim();
+        if (brandName) {
+          const key = brandName.toLocaleLowerCase();
+          const cached = brandCache.get(key);
+          if (cached) {
+            brandId = cached;
+          } else {
+            const existing = await tx.brand.findFirst({
+              where: { name: { equals: brandName, mode: 'insensitive' } }
+            });
+            if (existing) {
+              brandId = existing.id;
+            } else {
+              const brand = await tx.brand.create({ data: { name: brandName, sortOrder: nextBrandSort++ } });
+              brandId = brand.id;
+            }
+            brandCache.set(key, brandId);
+          }
+        }
+        const bag = await tx.officialBag.create({
+          data: {
+            name: row.name.trim(),
+            ...(brandId ? { brandId } : {}),
+            notes: row.notes ?? '',
+            tags: row.tags ? this.normalizeTags(row.tags) : [],
+            sortOrder: nextSort++,
+            createdById: adminId
+          }
+        });
+        ids.push(bag.id);
+      }
+      return ids;
+    });
+
+    await this.audit(adminId, 'OFFICIAL_BAG_IMPORT', 'bulk', { count: createdIds.length });
+    return { created: createdIds.length, ids: createdIds };
+  }
+
   async list(
     query: {
       status?: OfficialBagStatusContract;

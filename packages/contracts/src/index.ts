@@ -146,6 +146,24 @@ export const updateOfficialBagSchema = createOfficialBagSchema.partial().extend(
   sortOrder: z.number().int().min(0).max(1_000_000).optional()
 });
 
+/**
+ * POST /admin/official-bags/import —— Excel 批量导入。
+ * 品牌按名称匹配（不区分大小写），不存在则自动创建；导入的袋子统一为草稿，
+ * 需补图后手动发布（无图直接发布会被发布校验拦截）。
+ */
+export const importOfficialBagRowSchema = z.object({
+  name: z.string().trim().min(1).max(80),
+  brandName: z.string().trim().min(1).max(80).optional(),
+  notes: z.string().max(2000).optional(),
+  tags: z.array(z.string().trim().min(1).max(30)).max(30).optional()
+});
+
+export const importOfficialBagsSchema = z.object({
+  items: z.array(importOfficialBagRowSchema).min(1).max(1000)
+});
+
+export type ImportOfficialBagsInput = z.infer<typeof importOfficialBagsSchema>;
+
 export const createBrandSchema = z.object({
   name: z.string().trim().min(1).max(80),
   sortOrder: z.number().int().min(0).max(1_000_000).optional()

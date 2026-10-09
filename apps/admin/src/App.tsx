@@ -30,6 +30,7 @@ import {
   Upload
 } from 'antd';
 import type { UploadFile } from 'antd';
+import * as XLSX from 'xlsx';
 import {
   AuditOutlined,
   DashboardOutlined,
@@ -283,6 +284,16 @@ interface BrandFormValues {
   sortOrder: number;
 }
 
+/** Excel 导入：可映射到袋子上的字段。 */
+type ImportField = 'name' | 'brandName' | 'tags' | 'notes';
+
+interface ImportBagRow {
+  name: string;
+  brandName?: string;
+  notes?: string;
+  tags?: string[];
+}
+
 export function App() {
   const { message, modal } = AntdApp.useApp();
   const isMobile = useIsMobile();
@@ -302,6 +313,7 @@ export function App() {
   const [bagOrder, setBagOrder] = useState<'asc' | 'desc'>('desc');
   const [editing, setEditing] = useState<OfficialBag | 'new' | null>(null);
   const [bagEditorSession, setBagEditorSession] = useState(0);
+  const [importOpen, setImportOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
   const [brands, setBrands] = useState<Brand[]>([]);
@@ -1215,6 +1227,9 @@ export function App() {
                   <Button type="primary" icon={<PlusOutlined />} block={isMobile} onClick={() => openBagEditor('new')}>
                     新增袋子
                   </Button>
+                  <Button icon={<UploadOutlined />} block={isMobile} onClick={() => setImportOpen(true)}>
+                    导入 Excel
+                  </Button>
                 </Space>
               </Card>
 
@@ -1378,6 +1393,15 @@ export function App() {
                   void loadBags();
                 }}
                 onBrandsChanged={() => void loadBrands()}
+              />
+              <ImportBagsModal
+                open={importOpen}
+                onClose={() => setImportOpen(false)}
+                onDone={() => {
+                  setImportOpen(false);
+                  void loadBags();
+                  void loadBrands();
+                }}
               />
             </>
           )}
@@ -2132,6 +2156,230 @@ function UserQuotaModal({
           </Space>
         </Form.Item>
       </Form>
+    </Modal>
+  );
+}
+
+/** 可导入字段的列名关键词，用于自动识别表头。 */
+const IMPORT_FIELDS: { key: ImportField; label: string; keywords: string[] }[] = [
+  { key: 'name', label: '名称', keywords: ['名称', '名字', 'name'] },
+  { key: 'brandName', label: '品牌', keywords: ['品牌', 'brand'] },
+  { key: 'tags', label: '标签', keywords: ['标签', 'tag'] },
+  { key: 'notes', label: '描述 / 记录', keywords: ['记录', '描述', '备注', '说明', '简介', 'note', 'desc', 'detail'] }
+];
+
+const EMPTY_MAPPING: Record<ImportField, number | null> = { name: null, brandName: null, tags: null, notes: null };
+
+function ImportBagsModal({ open, onClose, onDone }: { open: boolean; onClose: () => void; onDone: () => void }) {
+  const { message } = AntdApp.useApp();
+  const isMobile = useIsMobile();
+  const [fileList, setFileList] = useState<UploadFile[]>([]);
+  const [headers, setHeaders] = useState<string[]>([]);
+  const [rows, setRows] = useState<string[][]>([]);
+  const [mapping, setMapping] = useState<Record<ImportField, number | null>>(EMPTY_MAPPING);
+  const [parsing, setParsing] = useState(false);
+  const [importing, setImporting] = useState(false);
+
+  function matchColumn(header: string): ImportField | null {
+    const h = header.trim().toLocaleLowerCase();
+    if (!h) return null;
+    for (const field of IMPORT_FIELDS) {
+      if (field.keywords.some((kw) => h.includes(kw.toLocaleLowerCase()))) return field.key;
+    }
+    return null;
+  }
+
+  /** 在前几行里找「最像表头」的那一行：包含列关键词最多的行。 */
+  function findHeaderRow(grid: unknown[][]): number {
+    let best = 0;
+    let bestScore = -1;
+    for (let i = 0; i < Math.min(grid.length, 6); i++) {
+      const score = (grid[i] ?? []).reduce<number>(
+        (acc, cell) => acc + (matchColumn(cell == null ? '' : String(cell)) ? 1 : 0),
+        0
+      );
+      if (score > bestScore) {
+        bestScore = score;
+        best = i;
+      }
+    }
+    return bestScore > 0 ? best : 0;
+  }
+
+  async function parseFile(file: File) {
+    setParsing(true);
+    try {
+      const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+      const sheetName = wb.SheetNames[0];
+      if (!sheetName) throw new Error('Excel 文件为空');
+      const ws = wb.Sheets[sheetName];
+      if (!ws) throw new Error('Excel 文件为空');
+      const grid = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' }) as unknown[][];
+      if (!grid.length) throw new Error('Excel 没有内容');
+
+      const headerRow = grid[findHeaderRow(grid)] ?? [];
+      const newHeaders = headerRow.map((cell, idx) => {
+        const text = cell == null ? '' : String(cell).trim();
+        return text === '' ? `列${idx + 1}` : text;
+      });
+      const newRows = grid
+        .slice(findHeaderRow(grid) + 1)
+        .map((row) => newHeaders.map((_, idx) => (row[idx] == null ? '' : String(row[idx]).trim())))
+        .filter((row) => row.some((cell) => cell !== ''));
+
+      const nextMapping: Record<ImportField, number | null> = { ...EMPTY_MAPPING };
+      newHeaders.forEach((header, idx) => {
+        const field = matchColumn(header);
+        if (field && nextMapping[field] === null) nextMapping[field] = idx;
+      });
+
+      setHeaders(newHeaders);
+      setRows(newRows);
+      setMapping(nextMapping);
+      if (!newRows.length) message.warning('未解析到数据行，请确认表头在文件前几行');
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '解析失败');
+      setHeaders([]);
+      setRows([]);
+      setMapping({ ...EMPTY_MAPPING });
+    } finally {
+      setParsing(false);
+    }
+  }
+
+  async function doImport() {
+    if (mapping.name === null) {
+      message.warning('请先指定「名称」对应的列');
+      return;
+    }
+    const items: ImportBagRow[] = [];
+    for (const row of rows) {
+      const name = row[mapping.name] ?? '';
+      if (!name) continue;
+      const item: ImportBagRow = { name };
+      const brandName = mapping.brandName !== null ? (row[mapping.brandName] ?? '') : '';
+      const notes = mapping.notes !== null ? (row[mapping.notes] ?? '') : '';
+      const tagsText = mapping.tags !== null ? (row[mapping.tags] ?? '') : '';
+      if (brandName) item.brandName = brandName;
+      if (notes) item.notes = notes;
+      if (tagsText) item.tags = tagsText.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean);
+      items.push(item);
+    }
+    if (!items.length) {
+      message.warning('没有有效数据（名称列为空）');
+      return;
+    }
+    setImporting(true);
+    try {
+      const result = await api<{ created: number }>('/official-bags/import', {
+        method: 'POST',
+        body: JSON.stringify({ items })
+      });
+      message.success(`已导入 ${result.created} 条，均为草稿，补图后手动发布`);
+      onDone();
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '导入失败');
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  const mappingOptions = headers.map((header, idx) => ({ value: idx, label: header }));
+  const preview = rows.slice(0, 10);
+
+  return (
+    <Modal
+      title="导入 Excel 袋子"
+      open={open}
+      onCancel={onClose}
+      width={isMobile ? '100%' : 820}
+      footer={null}
+      destroyOnHidden
+    >
+      <Space direction="vertical" style={{ width: '100%' }} size={16}>
+        <Upload
+          accept=".xlsx,.xls"
+          maxCount={1}
+          fileList={fileList}
+          beforeUpload={(file) => {
+            void parseFile(file);
+            return false;
+          }}
+          onChange={({ fileList: next }) => {
+            setFileList(next);
+            if (next.length === 0) {
+              setHeaders([]);
+              setRows([]);
+              setMapping({ ...EMPTY_MAPPING });
+            }
+          }}
+        >
+          <Button icon={<UploadOutlined />} loading={parsing}>
+            选择 Excel 文件（.xlsx / .xls）
+          </Button>
+        </Upload>
+
+        <Typography.Paragraph type="secondary" style={{ margin: 0 }}>
+          支持列：名称、品牌、标签（逗号分隔）、描述/记录。上传后自动识别表头并映射，导入的袋子全部为
+          <Typography.Text strong> 草稿 </Typography.Text>
+          ，需补图后手动点发布。
+        </Typography.Paragraph>
+
+        {headers.length > 0 && (
+          <>
+            <Card size="small" title="字段映射">
+              <Row gutter={16}>
+                {IMPORT_FIELDS.map((field) => (
+                  <Col xs={12} md={6} key={field.key}>
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      {field.label}
+                    </Typography.Text>
+                    <Select<number | null>
+                      value={mapping[field.key]}
+                      onChange={(value) => setMapping((prev) => ({ ...prev, [field.key]: value ?? null }))}
+                      allowClear
+                      placeholder="不导入"
+                      style={{ width: '100%', marginTop: 4 }}
+                      options={mappingOptions}
+                    />
+                  </Col>
+                ))}
+              </Row>
+            </Card>
+
+            <Card size="small" title={`数据预览（共 ${rows.length} 行，显示前 ${preview.length} 行）`}>
+              <Table<string[]>
+                rowKey={(_, index) => String(index)}
+                dataSource={preview}
+                size="small"
+                pagination={false}
+                scroll={{ x: 640 }}
+                columns={IMPORT_FIELDS.map((field) => ({
+                  title: field.label,
+                  key: field.key,
+                  ellipsis: true,
+                  render: (_, row) => {
+                    const value = mapping[field.key] === null ? '' : row[mapping[field.key]!];
+                    return value || <span className="muted">—</span>;
+                  }
+                }))}
+              />
+            </Card>
+          </>
+        )}
+
+        <Space style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <Button onClick={onClose}>取消</Button>
+          <Button
+            type="primary"
+            onClick={() => void doImport()}
+            loading={importing}
+            disabled={!rows.length || mapping.name === null}
+          >
+            导入
+          </Button>
+        </Space>
+      </Space>
     </Modal>
   );
 }

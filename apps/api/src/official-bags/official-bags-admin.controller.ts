@@ -1,6 +1,6 @@
 import { Body, Controller, Delete, Get, HttpStatus, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import type { FastifyRequest } from 'fastify';
-import { createOfficialBagSchema, officialBagStatuses, updateOfficialBagSchema } from '@bagcollect/contracts';
+import { createOfficialBagSchema, importOfficialBagsSchema, officialBagStatuses, updateOfficialBagSchema } from '@bagcollect/contracts';
 import { ApiError } from '../common/api-error.js';
 import { parseBody } from '../common/zod.js';
 import { AdminGuard, type AdminAuth } from '../admin/admin.guard.js';
@@ -28,6 +28,11 @@ export class OfficialBagsAdminController {
   @Post()
   create(@Req() request: FastifyRequest & { adminAuth?: AdminAuth }, @Body() body: unknown) {
     return this.admin.create(currentAdmin(request).adminId, parseBody(createOfficialBagSchema, body));
+  }
+
+  @Post('import')
+  importBags(@Req() request: FastifyRequest & { adminAuth?: AdminAuth }, @Body() body: unknown) {
+    return this.admin.importBags(currentAdmin(request).adminId, parseBody(importOfficialBagsSchema, body));
   }
 
   @Get()
