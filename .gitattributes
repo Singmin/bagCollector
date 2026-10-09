@@ -22,19 +22,10 @@
 # 部署包瘦身（export-ignore）。
 #
 # GitHub Actions 用 `git archive` 把「已验证 commit」的源码打成 tar.gz 传给生产
-# 服务器，在服务器本地构建。但仓库里混着大量与生产构建无关的素材：
-#   袋袋集-H5原型/       ~4.5MB（原型 png）
-#   figma_shots/         ~2.2MB（设计截图）
-#   袋袋集原型_交付包/    ~1.0MB
-#   BagCollect*          iOS 原生工程
-# 这些占了大头，而真正需要构建的 apps/packages/infra 只有 ~1.5MB。不排除的话，
-# 「海外 Runner → 国内服务器」要传 7.6MB，上传慢/超时是部署链路最耗时的一步。
-#
+# 服务器，在服务器本地构建。iOS 原生工程（Xcode 项目）与生产构建无关，排除掉
+# 可缩小部署包、缩短「海外 Runner → 国内服务器」的上传耗时。
 # 只影响 `git archive`（部署包），不影响仓库本身、clone 与本地开发。
 # ---------------------------------------------------------------------------
-/袋袋集-H5原型 export-ignore
-/袋袋集原型_交付包 export-ignore
-/figma_shots export-ignore
 /BagCollect export-ignore
 /BagCollectTests export-ignore
 /BagCollectUITests export-ignore
