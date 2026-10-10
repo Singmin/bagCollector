@@ -23,8 +23,16 @@ export class AdminController {
 
   @Get('jobs')
   @UseGuards(AdminGuard)
-  jobs(@Query('status') status?: JobStatus) {
-    return this.admin.jobs(status);
+  jobs(
+    @Query('status') status?: JobStatus,
+    @Query('page') rawPage?: string,
+    @Query('pageSize') rawPageSize?: string
+  ) {
+    return this.admin.jobs({
+      status,
+      page: rawPage ? Number(rawPage) : undefined,
+      pageSize: rawPageSize ? Number(rawPageSize) : undefined
+    });
   }
 
   @Get('audit-logs')
@@ -33,15 +41,15 @@ export class AdminController {
     @Query('action') action?: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
-    @Query('cursor') cursor?: string,
-    @Query('limit') rawLimit?: string
+    @Query('page') rawPage?: string,
+    @Query('pageSize') rawPageSize?: string
   ) {
     return this.admin.auditLogs({
       action,
       from,
       to,
-      cursor,
-      limit: rawLimit ? Number(rawLimit) : undefined
+      page: rawPage ? Number(rawPage) : undefined,
+      pageSize: rawPageSize ? Number(rawPageSize) : undefined
     });
   }
 }

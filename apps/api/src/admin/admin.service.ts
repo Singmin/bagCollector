@@ -1,7 +1,7 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { JobStatus, Prisma } from '@prisma/client';
-import type { AuditLogPageDto } from '@bagcollect/contracts';
+import type { AuditLogPageDto, JobPageDto } from '@bagcollect/contracts';
 import { ApiError } from '../common/api-error.js';
 import { verifyPassword } from '../common/crypto.js';
 import { PrismaService } from '../database/prisma.service.js';
@@ -47,23 +47,50 @@ export class AdminService {
     };
   }
 
-  jobs(status?: JobStatus) {
-    return this.prisma.processingJob.findMany({
-      where: status ? { status } : undefined,
-      include: { collectible: { select: { name: true } } },
-      orderBy: { createdAt: 'desc' },
-      take: 100
-    });
+  /**
+   * 图片处理任务列表。
+   *
+   * 原先硬编码 take: 100 —— 任务超过 100 条之后的部分永远看不到，与「有多少条就能
+   * 看多少条」相悖。改为页码分页，由前端翻页取，每次只取一屏。
+   */
+  async jobs(query: { status?: JobStatus; page?: number; pageSize?: number }): Promise<JobPageDto> {
+    const pageSize = Math.min(Math.max(query.pageSize ?? 20, 1), 200);
+    const currentPage = Math.max(query.page ?? 1, 1);
+    const where = query.status ? { status: query.status } : undefined;
+    const [items, totalCount] = await Promise.all([
+      this.prisma.processingJob.findMany({
+        where,
+        include: { collectible: { select: { name: true } } },
+        orderBy: { createdAt: 'desc' },
+        skip: (currentPage - 1) * pageSize,
+        take: pageSize
+      }),
+      this.prisma.processingJob.count({ where })
+    ]);
+    return {
+      items: items.map((job) => ({
+        id: job.id,
+        type: job.type,
+        status: job.status,
+        attemptCount: job.attemptCount,
+        ...(job.errorMessage ? { errorMessage: job.errorMessage } : {}),
+        collectible: job.collectible ? { name: job.collectible.name } : null,
+        createdAt: job.createdAt.toISOString(),
+        ...(job.finishedAt ? { finishedAt: job.finishedAt.toISOString() } : {})
+      })),
+      totalCount
+    };
   }
 
   async auditLogs(query: {
     action?: string;
     from?: string;
     to?: string;
-    cursor?: string;
-    limit?: number;
+    page?: number;
+    pageSize?: number;
   }): Promise<AuditLogPageDto> {
-    const limit = Math.min(Math.max(query.limit ?? 30, 1), 2000);
+    const pageSize = Math.min(Math.max(query.pageSize ?? 30, 1), 500);
+    const currentPage = Math.max(query.page ?? 1, 1);
     const action = query.action?.trim();
     const fromDate = parseDayBoundary(query.from, false);
     const toDate = parseDayBoundary(query.to, true);
@@ -82,18 +109,16 @@ export class AdminService {
     const [items, totalCount] = await Promise.all([
       this.prisma.auditLog.findMany({
         where,
-        ...(query.cursor ? { cursor: { id: query.cursor }, skip: 1 } : {}),
         orderBy: { createdAt: 'desc' },
-        take: limit + 1,
+        skip: (currentPage - 1) * pageSize,
+        take: pageSize,
         include: { admin: { select: { username: true } } }
       }),
       this.prisma.auditLog.count({ where })
     ]);
 
-    const hasMore = items.length > limit;
-    const page = hasMore ? items.slice(0, limit) : items;
     return {
-      items: page.map((log) => ({
+      items: items.map((log) => ({
         id: log.id,
         action: log.action,
         ...(log.targetId ? { targetId: log.targetId } : {}),
@@ -103,7 +128,6 @@ export class AdminService {
         ...(log.metadata !== null && log.metadata !== undefined ? { metadata: log.metadata } : {}),
         createdAt: log.createdAt.toISOString()
       })),
-      nextCursor: hasMore ? page.at(-1)?.id ?? null : null,
       totalCount
     };
   }

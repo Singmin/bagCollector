@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   App as AntdApp,
   Alert,
@@ -119,7 +119,6 @@ interface Submission {
 
 interface SubmissionPage {
   items: Submission[];
-  nextCursor: string | null;
   totalCount: number;
 }
 
@@ -138,7 +137,6 @@ interface AdminUser {
 
 interface AdminUserPage {
   items: AdminUser[];
-  nextCursor: string | null;
   totalCount: number;
 }
 
@@ -168,7 +166,11 @@ interface AuditLog {
 
 interface AuditLogPage {
   items: AuditLog[];
-  nextCursor: string | null;
+  totalCount: number;
+}
+
+interface JobPage {
+  items: Job[];
   totalCount: number;
 }
 
@@ -260,13 +262,7 @@ const userStatusColors: Record<AdminUser['status'], string> = {
   SUSPENDED: 'red'
 };
 
-/** 把处理状态归成三档：就绪 / 失败 / 处理中（上传/规范化/待裁剪/裁剪/抠图）。 */
-function processBucket(status: string): 'READY' | 'FAILED' | 'PROCESSING' {
-  if (status === 'READY') return 'READY';
-  if (status === 'FAILED') return 'FAILED';
-  return 'PROCESSING';
-}
-
+/** 列表上的处理进度分档。三档展开成具体状态的事在服务端做，见 submissions-admin.service。 */
 type ProcessFilter = 'ALL' | 'READY' | 'PROCESSING' | 'FAILED';
 
 type PageKey = 'overview' | 'bags' | 'brands' | 'submissions' | 'users' | 'audit' | 'match';
@@ -311,6 +307,9 @@ export function App() {
   const [token, setToken] = useState(() => sessionStorage.getItem(TOKEN_KEY));
   const [overview, setOverview] = useState<Overview | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [jobPage, setJobPage] = useState(1);
+  const [jobPageSize, setJobPageSize] = useState(20);
+  const [jobTotal, setJobTotal] = useState(0);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [page, setPage] = useState<PageKey>('overview');
@@ -338,6 +337,9 @@ export function App() {
   const [submissionStatusFilter, setSubmissionStatusFilter] = useState<'' | Submission['submissionStatus']>('');
   const [submissionSearch, setSubmissionSearch] = useState('');
   const [submissionDateRange, setSubmissionDateRange] = useState<[string, string] | null>(null);
+  const [submissionPage, setSubmissionPage] = useState(1);
+  const [submissionPageSize, setSubmissionPageSize] = useState(20);
+  const [submissionTotal, setSubmissionTotal] = useState(0);
   const [promoting, setPromoting] = useState<Submission | null>(null);
   const [rejecting, setRejecting] = useState<Submission | null>(null);
   const [processFilter, setProcessFilter] = useState<ProcessFilter>('ALL');
@@ -354,6 +356,8 @@ export function App() {
   const [auditTotal, setAuditTotal] = useState(0);
   const [auditAction, setAuditAction] = useState('');
   const [auditDateRange, setAuditDateRange] = useState<[string, string] | null>(null);
+  const [auditPage, setAuditPage] = useState(1);
+  const [auditPageSize, setAuditPageSize] = useState(50);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -361,16 +365,17 @@ export function App() {
     try {
       const [nextOverview, nextJobs] = await Promise.all([
         api<Overview>('/overview'),
-        api<Job[]>('/jobs')
+        api<JobPage>(`/jobs?page=${jobPage}&pageSize=${jobPageSize}`)
       ]);
       setOverview(nextOverview);
-      setJobs(nextJobs);
+      setJobs(nextJobs.items);
+      setJobTotal(nextJobs.totalCount);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : '加载失败');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [jobPage, jobPageSize]);
 
   const loadBags = useCallback(async () => {
     setLoading(true);
@@ -441,23 +446,20 @@ export function App() {
         params.set('from', submissionDateRange[0]);
         params.set('to', submissionDateRange[1]);
       }
-      params.set('limit', '100');
+      /* 处理状态筛选也交给服务端：分页之后再做客户端过滤只能过滤当前页，
+         「只看失败」会变成「只看当前页里失败的」—— 那是错的。 */
+      if (processFilter !== 'ALL') params.set('process', processFilter);
+      params.set('page', String(submissionPage));
+      params.set('pageSize', String(submissionPageSize));
       const result = await api<SubmissionPage>(`/submissions?${params.toString()}`);
       setSubmissions(result.items);
+      setSubmissionTotal(result.totalCount);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : '加载失败');
     } finally {
       setLoading(false);
     }
-  }, [submissionStatusFilter, submissionSearch, submissionDateRange]);
-
-  const visibleSubmissions = useMemo(
-    () =>
-      processFilter === 'ALL'
-        ? submissions
-        : submissions.filter((sub) => processBucket(sub.processingStatus) === processFilter),
-    [submissions, processFilter]
-  );
+  }, [submissionStatusFilter, submissionSearch, submissionDateRange, processFilter, submissionPage, submissionPageSize]);
 
   const loadUsers = useCallback(async () => {
     setLoading(true);
@@ -488,7 +490,8 @@ export function App() {
         params.set('from', auditDateRange[0]);
         params.set('to', auditDateRange[1]);
       }
-      params.set('limit', '2000');
+      params.set('page', String(auditPage));
+      params.set('pageSize', String(auditPageSize));
       const result = await api<AuditLogPage>(`/audit-logs?${params.toString()}`);
       setAuditLogs(result.items);
       setAuditTotal(result.totalCount);
@@ -497,7 +500,7 @@ export function App() {
     } finally {
       setLoading(false);
     }
-  }, [auditAction, auditDateRange]);
+  }, [auditAction, auditDateRange, auditPage, auditPageSize]);
 
   const openUserDetail = useCallback(async (id: string): Promise<AdminUserDetail | null> => {
     setUserDetailLoading(true);
@@ -789,7 +792,18 @@ export function App() {
           {error && <Alert type="error" showIcon message={error} style={{ marginBottom: 16 }} />}
 
           {page === 'overview' ? (
-            <OverviewPage overview={overview} jobs={jobs} loading={loading} />
+            <OverviewPage
+              overview={overview}
+              jobs={jobs}
+              loading={loading}
+              jobPage={jobPage}
+              jobPageSize={jobPageSize}
+              jobTotal={jobTotal}
+              onJobPageChange={(nextPage, nextPageSize) => {
+                setJobPage(nextPageSize === jobPageSize ? nextPage : 1);
+                setJobPageSize(nextPageSize);
+              }}
+            />
           ) : page === 'match' ? (
             <>
               <Card title="扫描匹配设置" style={{ maxWidth: 760 }}>
@@ -889,11 +903,11 @@ export function App() {
                   </Button>
                 </Space>
               </Card>
-              <Card title="品牌列表">
+              <Card title={`品牌列表（共 ${brands.length} 个）`}>
                 <Table<Brand>
                   rowKey="id"
                   dataSource={brands}
-                  pagination={false}
+                  pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (total) => `共 ${total} 个` }}
                   scroll={{ x: 640 }}
                   columns={[
                     { title: '品牌名称', dataIndex: 'name', key: 'name', render: (name: string) => <Typography.Text strong>{name}</Typography.Text> },
@@ -937,7 +951,10 @@ export function App() {
                 <Space wrap direction={isMobile ? 'vertical' : 'horizontal'} style={{ width: isMobile ? '100%' : undefined }}>
                   <Select<'' | Submission['submissionStatus']>
                     value={submissionStatusFilter}
-                    onChange={setSubmissionStatusFilter}
+                    onChange={(value) => {
+                      setSubmissionStatusFilter(value);
+                      setSubmissionPage(1);
+                    }}
                     style={{ width: isMobile ? '100%' : 140 }}
                     options={[
                       { value: '', label: '全部状态' },
@@ -948,7 +965,10 @@ export function App() {
                   />
                   <Select<ProcessFilter>
                     value={processFilter}
-                    onChange={setProcessFilter}
+                    onChange={(value) => {
+                      setProcessFilter(value);
+                      setSubmissionPage(1);
+                    }}
                     style={{ width: isMobile ? '100%' : 140 }}
                     options={[
                       { value: 'ALL', label: '全部图片' },
@@ -967,13 +987,17 @@ export function App() {
                       } else {
                         setSubmissionDateRange(null);
                       }
+                      setSubmissionPage(1);
                     }}
                   />
                   <Input.Search
                     placeholder="搜索名称 / 标签 / 展示架"
                     allowClear
                     style={{ width: isMobile ? '100%' : 260 }}
-                    onSearch={setSubmissionSearch}
+                    onSearch={(value) => {
+                      setSubmissionSearch(value);
+                      setSubmissionPage(1);
+                    }}
                     onChange={(event) => {
                       if (!event.target.value) setSubmissionSearch('');
                     }}
@@ -981,12 +1005,22 @@ export function App() {
                 </Space>
               </Card>
 
-              <Card title={`用户上传（${visibleSubmissions.length} 条）`}>
+              <Card title={`用户上传（共 ${submissionTotal} 条）`}>
                 <Table<Submission>
                   rowKey="id"
-                  dataSource={visibleSubmissions}
+                  dataSource={submissions}
                   loading={loading}
-                  pagination={false}
+                  pagination={{
+                    current: submissionPage,
+                    pageSize: submissionPageSize,
+                    total: submissionTotal,
+                    showSizeChanger: true,
+                    showTotal: (total) => `共 ${total} 条`,
+                    onChange: (nextPage, nextPageSize) => {
+                      setSubmissionPage(nextPageSize === submissionPageSize ? nextPage : 1);
+                      setSubmissionPageSize(nextPageSize);
+                    }
+                  }}
                   scroll={{ x: 1100 }}
                   columns={[
                     {
@@ -1276,7 +1310,10 @@ export function App() {
                     placeholder="搜索动作（如 USER / SUBMISSION）"
                     allowClear
                     style={{ width: isMobile ? '100%' : 280 }}
-                    onSearch={setAuditAction}
+                    onSearch={(value) => {
+                      setAuditAction(value);
+                      setAuditPage(1);
+                    }}
                     onChange={(event) => {
                       if (!event.target.value) setAuditAction('');
                     }}
@@ -1291,17 +1328,28 @@ export function App() {
                       } else {
                         setAuditDateRange(null);
                       }
+                      setAuditPage(1);
                     }}
                   />
                 </Space>
               </Card>
 
-              <Card title={`审计日志（共 ${auditTotal} 条${auditLogs.length < auditTotal ? `，显示最近 ${auditLogs.length} 条` : ''}）`}>
+              <Card title={`审计日志（共 ${auditTotal} 条）`}>
                 <Table<AuditLog>
                   rowKey="id"
                   dataSource={auditLogs}
                   loading={loading}
-                  pagination={{ pageSize: 50, showSizeChanger: true, showTotal: (total) => `已加载 ${total} 条` }}
+                  pagination={{
+                    current: auditPage,
+                    pageSize: auditPageSize,
+                    total: auditTotal,
+                    showSizeChanger: true,
+                    showTotal: (total) => `共 ${total} 条`,
+                    onChange: (nextPage, nextPageSize) => {
+                      setAuditPage(nextPageSize === auditPageSize ? nextPage : 1);
+                      setAuditPageSize(nextPageSize);
+                    }
+                  }}
                   scroll={{ x: 960 }}
                   columns={[
                     {
@@ -1602,7 +1650,24 @@ function BuildMeta() {
   );
 }
 
-function OverviewPage({ overview, jobs, loading }: { overview: Overview | null; jobs: Job[]; loading: boolean }) {
+function OverviewPage({
+  overview,
+  jobs,
+  loading,
+  jobPage,
+  jobPageSize,
+  jobTotal,
+  onJobPageChange
+}: {
+  overview: Overview | null;
+  jobs: Job[];
+  loading: boolean;
+  jobPage: number;
+  jobPageSize: number;
+  jobTotal: number;
+  /** 翻页 / 改每页条数：交回主组件带页码重新拉取 */
+  onJobPageChange: (page: number, pageSize: number) => void;
+}) {
   return (
     <>
       <Row gutter={16} style={{ marginBottom: 16 }}>
@@ -1625,12 +1690,19 @@ function OverviewPage({ overview, jobs, loading }: { overview: Overview | null; 
           </Card>
         </Col>
       </Row>
-      <Card title={`最近图片任务（${jobs.length} 条）`}>
+      <Card title={`图片任务（共 ${jobTotal} 条）`}>
         <Table<Job>
           rowKey="id"
           dataSource={jobs}
           loading={loading}
-          pagination={{ pageSize: 10, hideOnSinglePage: true }}
+          pagination={{
+            current: jobPage,
+            pageSize: jobPageSize,
+            total: jobTotal,
+            showSizeChanger: true,
+            showTotal: (total) => `共 ${total} 条`,
+            onChange: onJobPageChange
+          }}
           scroll={{ x: 640 }}
           columns={[
             {

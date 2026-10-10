@@ -21,23 +21,27 @@ export class SubmissionsAdminController {
   @Get()
   list(
     @Query('status') status?: string,
+    @Query('process') process?: string,
     @Query('search') search?: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
-    @Query('cursor') cursor?: string,
-    @Query('limit') rawLimit?: string
+    @Query('page') rawPage?: string,
+    @Query('pageSize') rawPageSize?: string
   ) {
     const statusValue =
       status && (submissionStatuses as readonly string[]).includes(status)
         ? (status as (typeof submissionStatuses)[number])
         : undefined;
+    const processValue =
+      process === 'READY' || process === 'PROCESSING' || process === 'FAILED' ? process : undefined;
     return this.submissions.list({
       status: statusValue,
+      process: processValue,
       search,
       from,
       to,
-      cursor,
-      limit: rawLimit ? Number(rawLimit) : undefined
+      page: rawPage ? Number(rawPage) : undefined,
+      pageSize: rawPageSize ? Number(rawPageSize) : undefined
     });
   }
 

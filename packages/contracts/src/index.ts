@@ -373,7 +373,6 @@ export interface SubmissionDto {
 
 export interface SubmissionPageDto {
   items: SubmissionDto[];
-  nextCursor: string | null;
   totalCount: number;
 }
 
@@ -395,7 +394,6 @@ export interface AdminUserSummaryDto {
 
 export interface AdminUserPageDto {
   items: AdminUserSummaryDto[];
-  nextCursor: string | null;
   totalCount: number;
 }
 
@@ -426,7 +424,24 @@ export interface AuditLogDto {
 
 export interface AuditLogPageDto {
   items: AuditLogDto[];
-  nextCursor: string | null;
+  totalCount: number;
+}
+
+/** 管理后台：图片处理任务行。 */
+export interface JobDto {
+  id: string;
+  type: string;
+  status: string;
+  attemptCount: number;
+  errorMessage?: string;
+  /** 关联的收藏（任务列表要显示"在处理哪只袋子"） */
+  collectible?: { name: string } | null;
+  createdAt: string;
+  finishedAt?: string;
+}
+
+export interface JobPageDto {
+  items: JobDto[];
   totalCount: number;
 }
 

@@ -90,7 +90,6 @@ export class UsersAdminService {
 
     return {
       items: items.map((user) => this.toSummary(user)),
-      nextCursor: null,
       totalCount
     };
   }

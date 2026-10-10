@@ -5,6 +5,7 @@ import {
   OfficialBagStatus,
   OfficialProcessStatus,
   Prisma,
+  ProcessingStatus,
   SubmissionStatus
 } from '@prisma/client';
 import type {
@@ -141,18 +142,41 @@ export class SubmissionsAdminService {
 
   async list(query: {
     status?: SubmissionStatusContract;
+    /* 图片处理进度分组：PROCESSING 是「还没出图」的几个中间状态的并集 */
+    process?: 'READY' | 'PROCESSING' | 'FAILED';
     search?: string;
     from?: string;
     to?: string;
-    cursor?: string;
-    limit?: number;
+    page?: number;
+    pageSize?: number;
   }): Promise<SubmissionPageDto> {
-    const limit = Math.min(Math.max(query.limit ?? 30, 1), 100);
+    /* 上限 200：这个列表每行都要签一次图片 URL，一次拉太多会把响应体与签名开销
+       一起顶上去 —— 分页的目的本来就是「每次只取一屏」。 */
+    const pageSize = Math.min(Math.max(query.pageSize ?? 30, 1), 200);
+    const currentPage = Math.max(query.page ?? 1, 1);
     const search = query.search?.trim();
     const fromDate = parseDayBoundary(query.from, false);
     const toDate = parseDayBoundary(query.to, true);
+    /* 库里处理进度是细分的六个状态，而列表上只分「已就绪 / 处理中 / 失败」三档，
+       这里把三档展开成 in 查询。必须放在服务端做 —— 客户端过滤只能过滤当前页，
+       分页之后「只看失败」会变成「只看当前页里失败的」，口径是错的。 */
+    const processStatuses =
+      query.process === 'READY'
+        ? [ProcessingStatus.READY]
+        : query.process === 'FAILED'
+          ? [ProcessingStatus.FAILED]
+          : query.process === 'PROCESSING'
+            ? [
+                ProcessingStatus.UPLOADING,
+                ProcessingStatus.NORMALIZING,
+                ProcessingStatus.AWAITING_CROP,
+                ProcessingStatus.CROPPING,
+                ProcessingStatus.MATTING
+              ]
+            : null;
     const where = {
       ...(query.status ? { submissionStatus: query.status } : {}),
+      ...(processStatuses ? { processingStatus: { in: processStatuses } } : {}),
       ...(fromDate || toDate
         ? {
             addedAt: {
@@ -175,19 +199,16 @@ export class SubmissionsAdminService {
     const [items, totalCount] = await Promise.all([
       this.prisma.collectible.findMany({
         where,
-        ...(query.cursor ? { cursor: { id: query.cursor }, skip: 1 } : {}),
         orderBy: [{ addedAt: 'desc' }, { id: 'desc' }],
-        take: limit + 1,
+        skip: (currentPage - 1) * pageSize,
+        take: pageSize,
         include: { shelf: { select: { name: true } }, tags: { include: { tag: true } } }
       }),
       this.prisma.collectible.count({ where })
     ]);
-    const hasMore = items.length > limit;
-    const page = hasMore ? items.slice(0, limit) : items;
-    const images = await this.resolveImages(page.map((collectible) => collectible.id));
+    const images = await this.resolveImages(items.map((collectible) => collectible.id));
     return {
-      items: page.map((collectible) => this.toDto(collectible, images.get(collectible.id)! )),
-      nextCursor: hasMore ? page.at(-1)?.id ?? null : null,
+      items: items.map((collectible) => this.toDto(collectible, images.get(collectible.id)!)),
       totalCount
     };
   }
