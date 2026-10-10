@@ -15,6 +15,7 @@ import { env } from '../common/env.js';
 import { QUOTA_COUNTED_STATUSES } from '../common/quota.js';
 import { PrismaService } from '../database/prisma.service.js';
 import { CosService } from '../assets/cos.service.js';
+import { SettingsService } from '../settings/settings.service.js';
 
 const DEFAULT_SHELF_NAME = '未分类';
 const DEFAULT_SHELF_THEME: ShelfTheme = 'SAGE';
@@ -26,7 +27,8 @@ type BagWithBrand = Prisma.OfficialBagGetPayload<{ include: { brand: true } }>;
 export class OfficialBagsService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly cos: CosService
+    private readonly cos: CosService,
+    private readonly settings: SettingsService
   ) {}
 
   private async thumbnailUrl(officialBagId: string): Promise<string | undefined> {
@@ -213,6 +215,8 @@ export class OfficialBagsService {
     if (!image) throw new ApiError('CONFLICT', '照片还在处理中，请稍候再试', HttpStatus.CONFLICT);
 
     const config = env();
+    /* 阈值走运行时设置（管理后台可调、保存即生效），env 里的值只作为默认兜底 */
+    const settings = await this.settings.matchSettings();
     const body = await this.cos.getObject(image.objectKey);
     const queryVector = await bagFeatures.extract(body, { maxPixels: config.MAX_IMAGE_PIXELS });
 
@@ -232,10 +236,10 @@ export class OfficialBagsService {
     const ranked = rankBySimilarity(
       queryVector,
       embeddings.map((row) => ({ item: row.officialBagId, vector: row.vector })),
-      config.BAG_MATCH_CANDIDATE_LIMIT
+      settings.candidateLimit
     );
     const best = ranked[0];
-    if (!best || best.score < config.BAG_MATCH_CANDIDATE_THRESHOLD) {
+    if (!best || best.score < settings.candidateThreshold) {
       return { result: 'NONE', compared };
     }
 
@@ -245,7 +249,7 @@ export class OfficialBagsService {
     });
     const byId = new Map<string, BagWithBrand>(bags.map((bag) => [bag.id, bag]));
 
-    if (best.score >= config.BAG_MATCH_AUTO_THRESHOLD) {
+    if (best.score >= settings.autoThreshold) {
       const bag = byId.get(best.item);
       if (bag) {
         return {

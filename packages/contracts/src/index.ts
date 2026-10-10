@@ -117,6 +117,30 @@ export const matchOfficialBagSchema = z.object({
 
 export type MatchOfficialBagInput = z.infer<typeof matchOfficialBagSchema>;
 
+/**
+ * 扫描匹配的判定阈值（管理后台可调）。
+ *
+ * 之所以存在库里而不是只读 env：阈值必须拿真实数据反复校准，而 env 改一次要重启容器。
+ * 两个阈值的语义是「高于 auto 直接入库 / 高于 candidate 出候选 / 都不到算未命中」，
+ * 因此 auto 低于 candidate 是自相矛盾的配置，直接拦掉。
+ */
+export const matchSettingsSchema = z
+  .object({
+    /** 相似度 ≥ 此值：认定同一只袋子，前端零操作入库 */
+    autoThreshold: z.number().min(0).max(1),
+    /** 相似度 ≥ 此值：返回候选交给用户点选；低于则视为未命中 */
+    candidateThreshold: z.number().min(0).max(1),
+    /** 候选返回条数 */
+    candidateLimit: z.number().int().min(1).max(10)
+  })
+  .refine((value) => value.autoThreshold >= value.candidateThreshold, {
+    message: '自动入库阈值不能低于候选阈值',
+    path: ['autoThreshold']
+  });
+
+export type MatchSettingsInput = z.infer<typeof matchSettingsSchema>;
+export type MatchSettingsDto = MatchSettingsInput;
+
 export const uploadPolicySchema = z.object({
   collectibleId: z.string().min(1),
   fileName: z.string().min(1).max(255),

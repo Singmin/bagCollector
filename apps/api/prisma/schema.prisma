@@ -394,3 +394,16 @@ model AuditLog {
   @@index([createdAt])
   @@index([userId, createdAt])
 }
+
+/* 运行时可变的应用设置（键值对）。
+   与 env 的分工：env 是「部署时确定、改动要重启容器」的基础设施配置；
+   这里放「运营期间要调的业务参数」—— 目前是拍照扫描匹配的判定阈值。
+   落到库里是为了改了立刻生效：阈值本来就要拿真实数据反复校准，
+   每调一次都去改 .env 再重启 api 容器是不可接受的。
+   缺失的键由 env 的默认值兜底（见 settings.service），所以这张表初始为空也能跑。
+   谁在什么时候改的交给 AuditLog，不在这里冗余。 */
+model AppSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}

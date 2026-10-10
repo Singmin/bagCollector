@@ -64,6 +64,10 @@ const schema = z
     // 这两个值是经验值，必须拿真实数据调。匹配接口会把 top 候选的分数一并返回，
     // 便于观察实际分布后再收紧或放宽 —— 阈值定得太松会把不相干的袋子自动塞进
     // 用户收藏，比多点一下难受得多。
+    //
+    // 注意：这里只是 **默认值**。真正生效的值存在 AppSetting 表里，由管理后台的
+    // 「匹配设置」页调节、保存即生效 —— 阈值本来就要反复校准，不该每调一次就
+    // 重启 api 容器。只有库里没有对应键时才回退到这里（见 settings.service）。
     // ---------------------------------------------------------------------
     BAG_MATCH_AUTO_THRESHOLD: z.coerce.number().min(0).max(1).default(0.9),
     BAG_MATCH_CANDIDATE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.72),
