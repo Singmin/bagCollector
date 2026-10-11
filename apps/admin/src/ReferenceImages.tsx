@@ -17,7 +17,7 @@ export function ReferenceImages({ bagId }: { bagId: string }) {
     } catch (e) { message.error(e instanceof Error ? e.message : '上传失败'); }
     finally { setBusy(false); }
   }
-  return <Card size="small" title="扫描实拍参考图（最多 5 张）" style={{ marginTop: 20 }}>
+  return <Card size="small" title="扫描实拍参考图" style={{ marginTop: 20 }}>
     <Typography.Paragraph type="secondary">添加已确认同款的正面、侧拍和不同光照图片；不会替换主展示图片。</Typography.Paragraph>
     <Space wrap>
       {items.map(item => <Space key={item.id} direction="vertical">
@@ -30,8 +30,8 @@ export function ReferenceImages({ bagId }: { bagId: string }) {
       </Space>)}
     </Space>
     <Space style={{ marginTop: 12 }} wrap>
-      <Upload accept="image/*" showUploadList={false} beforeUpload={file => { void upload(file); return false; }} disabled={busy || items.length >= 5}>
-        <Button loading={busy} disabled={items.length >= 5}>添加参考图</Button>
+      <Upload accept="image/*" showUploadList={false} beforeUpload={file => { void upload(file); return false; }} disabled={busy}>
+        <Button loading={busy} disabled={busy}>添加参考图</Button>
       </Upload>
       <Button onClick={() => void load()}>刷新状态</Button>
       <Button onClick={() => void api(`/official-bags/${bagId}/references/recompute`, { method: 'POST' }).then(() => { message.success('已触发重算'); void load(); }).catch(e => message.error(String(e)))}>重新计算特征</Button>

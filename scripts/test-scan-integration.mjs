@@ -114,12 +114,11 @@ try {
     const response = await fetch(`http://127.0.0.1:3188/api/admin/official-bags/${bag.id}/references`, { method: 'POST', headers: { Authorization: `Bearer ${adminToken}` }, body: form });
     const body = await response.json(); return { status: response.status, body };
   }));
-  assert.equal(uploads.filter(r => r.status === 201).length, 5, JSON.stringify(uploads));
-  assert.equal(uploads.filter(r => r.status === 409).length, 1, 'concurrent reference upload must respect five-image limit');
-  const refs = await http(`/admin/official-bags/${bag.id}/references`, adminToken); assert.equal(refs.length, 5);
+  assert.equal(uploads.filter(r => r.status === 201).length, 6, 'all six concurrent reference uploads must succeed: ' + JSON.stringify(uploads));
+  const refs = await http(`/admin/official-bags/${bag.id}/references`, adminToken); assert.equal(refs.length, 6);
   keys.push(...refs.map(r => r.objectKey));
   await reconcileScanEmbeddings(100);
-  assert.equal(await prisma.scanEmbedding.count({ where: { officialBagId: bag.id, model: COLOR_SCAN_MODEL } }), 6, 'one primary plus five references');
+  assert.equal(await prisma.scanEmbedding.count({ where: { officialBagId: bag.id, model: COLOR_SCAN_MODEL } }), 7, 'one primary plus all six references');
   await http(`/admin/official-bags/${bag.id}/references/${refs[0].id}`, adminToken, { method: 'DELETE' });
   assert.equal(await prisma.scanEmbedding.count({ where: { officialBagId: bag.id, referenceKey: refs[0].id } }), 0);
   await reconcileScanEmbeddings(100);
@@ -181,7 +180,7 @@ try {
   assert.equal(await prisma.officialClaim.count({ where: { userId } }), 1, 'confirmed official collection is preserved');
   assert.equal(await prisma.matchScan.findUnique({ where: { id: old.id } }), null); await assert.rejects(getObject(temporary));
   if (process.env.VISION_SERVICE_URL) assert.ok(await prisma.scanEmbedding.count({ where: { officialBagId: bag.id, model: DINO_SCAN_MODEL } }), 'real DINO backfill');
-  console.log('Scan integration passed: authenticated HTTP routes, legacy compatibility, idempotency, real image processing, confirmation, concurrent reference limit/deletion, stale/offline filtering, quota concurrency, timeout and cleanup.');
+  console.log('Scan integration passed: authenticated HTTP routes, legacy compatibility, idempotency, real image processing, confirmation, unlimited concurrent references/deletion, stale/offline filtering, quota concurrency, timeout and cleanup.');
 } finally {
   if (scanWorker) { scanWorker.kill(); await Promise.race([new Promise(r => scanWorker.once('exit', r)), delay(3000)]); }
   if (server) { server.kill(); await Promise.race([new Promise(r => server.once('exit', r)), delay(3000)]); }

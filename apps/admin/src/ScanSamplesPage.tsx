@@ -56,7 +56,7 @@ export function ScanSamplesPage() {
   return <Space direction="vertical" size="middle" style={{ width: '100%' }}>
     {error && <Alert type="error" message={error} />}
     <Card title="扫描样本采集" extra={<Button onClick={() => void load()}>刷新</Button>}>
-      <Typography.Paragraph>标记自动积累实拍照片；只有审核通过并且特征就绪的图片参与匹配。与管理员上传共用每款 5 张额外参考名额。关闭采集后，已审核参考仍可使用。</Typography.Paragraph>
+      <Typography.Paragraph>标记自动积累实拍照片；只有审核通过并且特征就绪的图片参与匹配。每款参考图数量不限。关闭采集后，已审核参考仍可使用。</Typography.Paragraph>
       {settings && <Space wrap>
         <span>采集开关</span><Switch checked={settings.enabled} onChange={enabled => setSettings({ ...settings, enabled })} />
         <span>COS 容量预算（GiB）</span><InputNumber min={0} max={1024} step={.25} value={settings.budgetBytes / 1024 ** 3} onChange={v => setSettings({ ...settings, budgetBytes: Math.round((v ?? 0) * 1024 ** 3) })} />
@@ -87,13 +87,12 @@ export function ScanSamplesPage() {
       confirmLoading={busy} onCancel={() => setReview(undefined)} onOk={() => {
         if (!review) return;
         if (review.action === 'CORRECT' && !bagId) { message.warning('请选择正确款式'); return; }
-        if (['APPROVE', 'RESTORE'].includes(review.action) && refs.length >= 5 && !replace) { message.warning('请指定替换哪张参考图'); return; }
         void perform(review.sample, review.action, { ...(bagId ? { bagId } : {}), ...(replace ? { replaceReferenceId: replace } : {}) });
       }}>
       {review?.action === 'CORRECT' ? <><Input.Search placeholder="搜索款式或品牌" onSearch={v => void search(v)} /><Select style={{ width: '100%', marginTop: 12 }} placeholder="选择已发布且图片就绪的款式" value={bagId} onChange={setBagId} options={bags.map(b => ({ value: b.id, label: b.name }))} /></> : <Typography.Paragraph>{review && ['WITHDRAW', 'REJECT'].includes(review.action) ? '图片保留 7 天，可在清理前恢复。' : '请确认是同款、主体清晰，并且有参考价值。恢复未就绪的驳回样本会先回到待审重新计算。'}</Typography.Paragraph>}
       {review && ['APPROVE', 'RESTORE'].includes(review.action) && <>
-        <Typography.Paragraph>当前额外参考：{refs.length} / 5。满额必须选择替换；新图和特征同时生效。</Typography.Paragraph>
-        <Select allowClear style={{ width: '100%' }} placeholder="选择要替换的参考图（未满时可留空）" value={replace} onChange={setReplace}
+        <Typography.Paragraph>当前额外参考：{refs.length} 张。默认新增，也可选择替换；新图和特征同时生效。</Typography.Paragraph>
+        <Select allowClear style={{ width: '100%' }} placeholder="可选：选择要替换的参考图，留空则新增" value={replace} onChange={setReplace}
           options={refs.map((ref, index) => ({ value: ref.id, label: <Space><Image preview={false} src={ref.url} width={45} height={45} style={{ objectFit: 'contain' }} /><span>参考 {index + 1} · {ref.id}</span></Space> }))} />
       </>}
     </Modal>

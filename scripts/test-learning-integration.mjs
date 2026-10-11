@@ -125,7 +125,7 @@ try {
     await putObject(...args);
   });
   assert.equal((await sampleOf(lateLabel)).state, 'PENDING'); assert.equal((await sampleOf(lateLabel)).featureState, 'QUEUED', 'late upload completion must not erase an already committed label');
-  // Correction, review replacement with shared manual slots, and concurrent approvals.
+  // Unlimited references: approval and restoration can add beyond five; replacement remains optional and atomic.
   const alternateImage = await sharp(image).modulate({ hue: 80 }).png().toBuffer();
   const replacementScan = await job(); await captureLearningSample(replacementScan, alternateImage);
   await learning.feedback(user.id, replacementScan.id, { feedback: 'SELECTED', bagId: bag.id });
@@ -137,21 +137,27 @@ try {
     const ref = await prisma.bagReferenceImage.create({ data: { officialBagId: bag.id, objectKey: key, contentType: 'image/jpeg' } });
     for (const f of computed.features) await prisma.scanEmbedding.create({ data: { officialBagId: bag.id, model: f.model, referenceKey: ref.id, sourceKind: 'ORIGINAL', sourceVersion: 1, vector: f.vector, colorVector: f.colorVector } });
   }
-  await assert.rejects(learning.review(admin.id, replacement.id, { action: 'APPROVE' }), eligible);
+  const sixthScan = await job(); await captureLearningSample(sixthScan, await sharp(image).modulate({ hue: 40 }).png().toBuffer());
+  await learning.feedback(user.id, sixthScan.id, { feedback: 'SELECTED', bagId: bag.id });
+  const sixth = await sampleOf(sixthScan); await computeLearningSample(sixth.id);
+  await learning.review(admin.id, sixth.id, { action: 'APPROVE' });
+  assert.equal(await prisma.bagReferenceImage.count({ where: { officialBagId: bag.id } }), 6, 'sixth reference is added without replacing any existing image');
+  await learning.review(admin.id, sixth.id, { action: 'WITHDRAW' });
+  await learning.review(admin.id, sixth.id, { action: 'RESTORE' });
+  assert.equal(await prisma.bagReferenceImage.count({ where: { officialBagId: bag.id } }), 6, 'restoring beyond five does not require replacement');
   const oldRef = (await prisma.learningSample.findUniqueOrThrow({ where: { id: sample.id } })).referenceId;
   const concurrent = await Promise.allSettled([1, 2].map(() => learning.review(admin.id, replacement.id, { action: 'APPROVE', replaceReferenceId: oldRef })));
-  assert.equal(concurrent.filter(r => r.status === 'fulfilled').length, 1); assert.equal(await prisma.bagReferenceImage.count({ where: { officialBagId: bag.id } }), 5);
+  assert.equal(concurrent.filter(r => r.status === 'fulfilled').length, 1); assert.equal(await prisma.bagReferenceImage.count({ where: { officialBagId: bag.id } }), 6);
   assert.equal((await prisma.learningSample.findUniqueOrThrow({ where: { id: sample.id } })).state, 'REPLACED');
-  await assert.rejects(learning.review(admin.id, sample.id, { action: 'RESTORE' }), eligible);
   const replacedRef = (await sampleOf(replacementScan)).referenceId;
   await learning.review(admin.id, sample.id, { action: 'RESTORE', replaceReferenceId: replacedRef });
-  assert.equal(await prisma.bagReferenceImage.count({ where: { officialBagId: bag.id } }), 5);
+  assert.equal(await prisma.bagReferenceImage.count({ where: { officialBagId: bag.id } }), 6);
   const manualRef = await prisma.bagReferenceImage.findFirst({ where: { officialBagId: bag.id, objectKey: `${prefix}/admin-0.jpg` } });
   await scans.removeReference(admin.id, bag.id, manualRef.id);
   const archived = await prisma.learningSample.findUniqueOrThrow({ where: { objectKey: manualRef.objectKey } }); extraSampleIds.push(archived.id);
   assert.equal(archived.origin, 'ADMIN_ARCHIVE'); assert.equal(archived.byteSize, 0n, 'legacy admin images excluded from sample budget');
   await learning.review(admin.id, archived.id, { action: 'RESTORE' });
-  assert.equal(await prisma.bagReferenceImage.count({ where: { officialBagId: bag.id } }), 5);
+  assert.equal(await prisma.bagReferenceImage.count({ where: { officialBagId: bag.id } }), 6);
   await assert.rejects(learning.review(admin.id, replacement.id, { action: 'CORRECT', bagId: offline.id }), eligible);
   await prisma.officialBag.update({ where: { id: offline.id }, data: { status: 'PUBLISHED' } });
   await learning.review(admin.id, replacement.id, { action: 'CORRECT', bagId: offline.id });
@@ -224,7 +230,7 @@ try {
   }
   assert.ok(ready, `queue recovery failed: ${workerOutput}`);
   assert.equal((await sampleOf(recoveryScan)).state, 'PENDING', 'queued feature completion alone cannot approve a reference');
-  console.log(`Learning integration passed: labels, ownership, independent JPEG, model recovery, review lifecycle, shared slots, capacity races, retention and cleanup recovery. Inference: ${realVisionUrl ? 'real DINO' : 'deterministic stub'}; production performance/accuracy remain unmeasured.`);
+  console.log(`Learning integration passed: labels, ownership, independent JPEG, model recovery, unlimited reference approval/restoration, optional replacement, capacity races, retention and cleanup recovery. Inference: ${realVisionUrl ? 'real DINO' : 'deterministic stub'}; production performance/accuracy remain unmeasured.`);
 } finally {
   if (worker) { worker.kill(); await Promise.race([new Promise(resolve => worker.once('exit', resolve)), delay(3000)]); }
   const samples = await prisma.learningSample.findMany({ where: { OR: [{ userId: { in: [user?.id, other?.id].filter(Boolean) } }, { id: { in: extraSampleIds } }] } });
