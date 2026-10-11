@@ -17,5 +17,10 @@ export const scanSettingsSchema = z.object({
   dailyGlobalEnhancements: z.number().int().min(0).max(1000000)
 });
 export type ScanSettingsInput = z.infer<typeof scanSettingsSchema>;
-export const scanFeedbackSchema = z.object({ bagId: z.string().min(1).optional(), feedback: z.enum(['SELECTED', 'NONE']) })
-  .refine(value => value.feedback !== 'SELECTED' || !!value.bagId, '确认选择时需要款式 ID');
+export const scanFeedbackSchema = z.object({ bagId: z.string().min(1).optional(), feedback: z.enum(['SELECTED', 'CORRECTED', 'NONE']) })
+  .refine(value => value.feedback === 'NONE' || !!value.bagId, '确认选择时需要款式 ID');
+export const learningSettingsSchema = z.object({ enabled: z.boolean(), budgetBytes: z.number().int().min(0).max(1024 ** 4) });
+export const learningReviewSchema = z.object({
+  action: z.enum(['APPROVE', 'REJECT', 'CORRECT', 'WITHDRAW', 'RESTORE', 'RECOMPUTE']),
+  bagId: z.string().min(1).optional(), replaceReferenceId: z.string().min(1).optional()
+}).refine(v => v.action !== 'CORRECT' || !!v.bagId, '纠正时需要款式 ID');

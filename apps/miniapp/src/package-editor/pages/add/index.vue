@@ -5,6 +5,7 @@ import type { OfficialBag, OfficialBagMatchCandidate, UploadPolicy } from '../..
 import { previewCrop, type Rect } from '../../../services/scan-crop';
 import { api, authorizedHeaders } from '../../../services/http';
 import { dataService } from '../../../services/data';
+import { submitScanFeedback } from '../../../services/scan-feedback';
 
 const systemInfo = uni.getSystemInfoSync();
 const statusBarHeight = systemInfo.statusBarHeight ?? 20;
@@ -39,6 +40,26 @@ const scanMode = ref(false);
 /** result = CANDIDATES 时的待选列表 */
 const candidates = ref<OfficialBagMatchCandidate[]>([]);
 const showCandidates = ref(false);
+const correcting = ref(false);
+const correctionQuery = ref('');
+const correctionResults = ref<OfficialBag[]>([]);
+const correctionCursor = ref<string | null>(null);
+const searching = ref(false);
+let searchGeneration = 0;
+async function searchCorrectBag(more = false) {
+  const generation = ++searchGeneration;
+  const query = correctionQuery.value.trim();
+  searching.value = true;
+  if (!more) correctionResults.value = [];
+  try {
+    const page = await dataService.officialBags(`search=${encodeURIComponent(query)}&limit=20${more && correctionCursor.value ? `&cursor=${encodeURIComponent(correctionCursor.value)}` : ''}`);
+    if (!pageAlive || generation !== searchGeneration) return;
+    correctionResults.value = more ? [...correctionResults.value, ...page.items] : page.items;
+    correctionCursor.value = page.nextCursor;
+  } catch (error) { uni.showToast({ title: error instanceof Error ? error.message : '搜索失败，请重试', icon: 'none' }); }
+  finally { if (generation === searchGeneration) searching.value = false; }
+}
+function openCorrection() { correcting.value = true; correctionQuery.value = ''; correctionResults.value = []; correctionCursor.value = null; }
 /** 扫描时建的那条收藏 id：它只负责承载照片去比对，命中后要被清掉 */
 const scannedCollectibleId = ref('');
 /* 真机 camera 组件从挂载到出帧需要时间，期间画面是黑的 —— 用 initdone 事件标记就绪，
@@ -287,12 +308,13 @@ function adjustAndRetry() {
  * 命中或点选之后：认领官方袋子，并清掉扫描时那条只用于比对的临时记录。
  * 认领是引用模式（图片直接读官方库、不占用户存储），落库即就绪，所以立刻能在收藏里看到。
  */
-async function adoptMatch(bag: OfficialBag) {
-  if (uploading.value || bag.claimed) return;
+async function adoptMatch(bag: OfficialBag, corrected = false) {
+  if (uploading.value) return;
   uploading.value = true;
   try {
-    await dataService.claimOfficialBag(bag.id);
-    if (scanId.value) await dataService.scanFeedback(scanId.value, 'SELECTED', bag.id).catch(() => undefined);
+    if (!bag.claimed) await dataService.claimOfficialBag(bag.id);
+    if (scanId.value) await submitScanFeedback(scanId.value, corrected ? 'CORRECTED' : 'SELECTED', bag.id);
+    correcting.value = false;
     showCandidates.value = false;
     /* 临时记录使命已尽。删失败不阻断体验：用户已经拿到袋子，
        留一条草稿总好过在这一步弹错误、让他以为没成功。 */
@@ -309,7 +331,7 @@ async function adoptMatch(bag: OfficialBag) {
 /** 未匹配：提示后转入手工上传流程，把刚拍的这张继续用下去（不必重拍）。 */
 async function goManual(message: string) {
   if (uploading.value) return;
-  if (scanId.value) await dataService.scanFeedback(scanId.value, 'NONE').catch(() => undefined);
+  if (scanId.value) await submitScanFeedback(scanId.value, 'NONE');
   showCandidates.value = false;
   const id = scannedCollectibleId.value;
   scannedCollectibleId.value = '';
@@ -495,6 +517,21 @@ onShow(() => {
     <!-- 所有候选都由用户确认，包括只有一个候选的情况。 -->
     <view v-if="showCandidates" class="match-mask">
       <view class="match-sheet">
+        <template v-if="correcting">
+          <text class="match-title">搜索正确款式</text>
+          <view class="correction-search"><input v-model="correctionQuery" placeholder="输入款式或品牌名称" confirm-type="search" @confirm="searchCorrectBag()" /><button :disabled="searching || uploading" @tap="searchCorrectBag()">搜索</button></view>
+          <text v-if="searching" class="match-subtitle">正在搜索</text>
+          <scroll-view class="match-list" scroll-y>
+            <view v-for="bag in correctionResults" :key="bag.id" class="match-item" @tap="adoptMatch(bag, true)">
+              <image class="match-thumb" :src="bag.thumbnailUrl" mode="aspectFit" />
+              <view class="match-info"><text class="match-name">{{ bag.name }}</text><text class="match-brand">{{ bag.brand }}{{ bag.claimed ? ' · 已收藏，点击标记' : '' }}</text></view>
+            </view>
+            <button v-if="correctionCursor" :disabled="searching" @tap="searchCorrectBag(true)">加载更多</button>
+            <text v-if="!searching && correctionQuery && !correctionResults.length" class="match-subtitle">未找到款式，请调整关键词</text>
+          </scroll-view>
+          <button class="match-cancel" :disabled="uploading" @tap="correcting = false">返回匹配结果</button>
+        </template>
+        <template v-else>
         <text class="match-title">{{ candidates.length ? '找到相似的袋子' : '暂未完成匹配' }}</text>
         <text class="match-subtitle">{{ matchMessage }}</text>
         <scroll-view class="match-list" scroll-y>
@@ -503,18 +540,23 @@ onShow(() => {
             <view class="match-info">
               <text class="match-name">{{ item.bag.name }}</text>
               <text v-if="item.bag.brand" class="match-brand">{{ item.bag.brand }}</text>
-              <text v-if="item.bag.claimed" class="match-brand">已收藏</text>
+              <text v-if="item.bag.claimed" class="match-brand">已收藏，点击标记</text>
             </view>
           </view>
         </scroll-view>
+        <button class="match-cancel" :disabled="uploading" @tap="openCorrection">候选都不对，搜索正确款式</button>
         <button class="match-cancel" :disabled="uploading" @tap="adjustAndRetry">调整裁剪后重试</button>
         <button class="match-cancel" :disabled="uploading" @tap="goManual('请手动填写信息完成上传')">继续手动上传</button>
+        </template>
       </view>
     </view>
   </view>
 </template>
 
 <style scoped>
+.correction-search { display: flex; gap: 16rpx; margin: 24rpx 0; }
+.correction-search input { flex: 1; min-width: 0; padding: 16rpx; background: #f2f3f7; border-radius: 16rpx; }
+.correction-search button { margin: 0; font-size: 28rpx; }
 /* ── 按参考图 Frame 92 测量对齐（1 图px ≈ 1.5rpx）── */
 .camera-page { height: 100vh; display: flex; flex-direction: column; overflow: hidden; background: #fff; color: #000; }
 /* 头部总高 = 状态栏 + 胶囊行（inline style 注入：padding-top 撑状态栏、height 含状态栏）。

@@ -171,8 +171,16 @@ export class CosService {
     return Promise.resolve(`${this.config.API_PUBLIC_URL}/api/assets/file?token=${encodeURIComponent(token)}`);
   }
 
+  /** Sample previews must remain signed even when display images use public/CDN URLs. */
+  privateSignedUrl(key: string, expires = 300): Promise<string> {
+    this.assertConfigured();
+    if (!this.isLocal()) return this.cosSignedUrl(key, expires, false);
+    const token = this.localToken(key, Date.now() + expires * 1000);
+    return Promise.resolve(`${this.config.API_PUBLIC_URL}/api/assets/file?token=${encodeURIComponent(token)}`);
+  }
+
   /** 原生 COS 签名 URL（代理方案的回退路径）。 */
-  private cosSignedUrl(key: string, expires: number): Promise<string> {
+  private cosSignedUrl(key: string, expires: number, usePublicHost = true): Promise<string> {
     return new Promise((resolve, reject) => {
       this.client.getObjectUrl(
         {
@@ -181,7 +189,7 @@ export class CosService {
           Key: key,
           Sign: true,
           Expires: expires,
-          ...(this.config.COS_PUBLIC_HOST ? { Domain: this.config.COS_PUBLIC_HOST } : {})
+          ...(usePublicHost && this.config.COS_PUBLIC_HOST ? { Domain: this.config.COS_PUBLIC_HOST } : {})
         },
         (error, data) => {
           if (error) reject(error);

@@ -9,3 +9,4 @@ export {
 
 export { cosineSimilarity, rankBySimilarity, type RankedCandidate, type VectorLike } from './similarity.js';
 export * from './scan.js';
+export * from './learning.js';

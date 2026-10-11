@@ -4,6 +4,8 @@ import COS from 'cos-nodejs-sdk-v5';
 import { config } from './config.js';
 
 const client = new COS({ SecretId: config.COS_SECRET_ID, SecretKey: config.COS_SECRET_KEY });
+// A sample copy is optional; bound its upload so it cannot hold live recognition indefinitely.
+const sampleClient = new COS({ SecretId: config.COS_SECRET_ID, SecretKey: config.COS_SECRET_KEY, Timeout: 3000 });
 const localRoot = resolve(process.cwd(), config.LOCAL_STORAGE_PATH);
 
 function localPath(key: string) {
@@ -56,13 +58,13 @@ export function getSignedObjectUrl(key: string, options: SignedObjectUrlOptions 
   });
 }
 
-export function putObject(key: string, body: Buffer, contentType: string) {
+export function putObject(key: string, body: Buffer, contentType: string, privateObject = false) {
   if (config.STORAGE_DRIVER === 'local') {
     const path = localPath(key);
     return mkdir(dirname(path), { recursive: true }).then(() => writeFile(path, body));
   }
   return new Promise<void>((resolve, reject) => {
-    client.putObject(
+    (privateObject ? sampleClient : client).putObject(
       {
         Bucket: config.COS_BUCKET,
         Region: config.COS_REGION,
@@ -71,7 +73,8 @@ export function putObject(key: string, body: Buffer, contentType: string) {
         ContentType: contentType,
         ContentLength: body.length,
         /* 处理产物的 key 都带 v{n} 版本号，对象内容永不变化 —— 允许 CDN/浏览器缓存一年 */
-        CacheControl: 'public, max-age=31536000, immutable',
+        CacheControl: privateObject ? 'private, no-store' : 'public, max-age=31536000, immutable',
+        ...(privateObject ? { ACL: 'private' as const } : {}),
         ServerSideEncryption: 'AES256'
       },
       (error) => (error ? reject(error) : resolve())
@@ -100,7 +103,7 @@ export async function deleteObjects(keys: string[]) {
           Objects: chunk.map((Key) => ({ Key })),
           Quiet: true
         },
-        (error) => (error ? reject(error) : resolve())
+        (error, data) => (error ? reject(error) : data.Error?.length ? reject(new Error('COS partial deletion failed')) : resolve())
       );
     });
   }

@@ -1,12 +1,13 @@
 import { COLOR_SCAN_MODEL, DINO_SCAN_MODEL, DEFAULT_SCAN_SETTINGS, cropScanImage, extractScanFeature, needsScanEnhancement, rankScanCandidates, scanCandidates,
   type ScanCrop, type ScanSettings, type ScanEntry, type ScanScore } from '@bagcollect/bag-vision';
-import { PrismaClient } from '@prisma/client';
+import { scanPrisma } from './scan-database.js';
+import { captureLearningSample, recordSkippedLearningSample } from './learning-processor.js';
 import sharp from 'sharp';
 import { config } from './config.js';
 import { getObject, putObject, getSignedObjectUrl, deleteObjects } from './object-store.js';
 import { createTencentCiBackgroundRemover } from './matting-tencent-ci.js';
 
-export const scanPrisma = new PrismaClient();
+export { scanPrisma } from './scan-database.js';
 const serviceUrl = process.env.VISION_SERVICE_URL;
 const scanMatting = createTencentCiBackgroundRemover({
   process: config.CI_MATTING_PROCESS, timeoutMs: 12_000, maxResponseBytes: config.CI_MATTING_MAX_RESPONSE_BYTES,
@@ -65,17 +66,30 @@ export async function processScan(scanId: string) {
       ...data, scores: data.scores ? data.scores.map(s => ({ ...s })) : undefined,
       stage: data.stage ?? 'DONE', elapsedMs: Date.now() - scan.createdAt.getTime(), finishedAt: new Date()
     } });
+    await scanPrisma.learningSample.updateMany({ where: { scanId, state: 'STAGED' }, data: {
+      snapshot: { crop: scan.crop, settings: scan.settings, sourceVersion: scan.sourceVersion, scores: (data.scores ?? baseScores).map(s => ({ ...s })),
+        scanCreatedAt: scan.createdAt.toISOString(), enhancement: data.enhancement ?? scan.enhancement, elapsedMs: Date.now() - scan.createdAt.getTime() }
+    } }).catch(() => undefined);
   };
   let baseScores: ScanScore[] = [];
   try {
     if (Date.now() - scan.createdAt.getTime() >= 45_000) { await finish({ stage: 'FAILED', reason: 'TIMEOUT' }); return; }
     const source = await scanPrisma.imageAsset.findFirst({ where: { collectibleId: scan.collectibleId, userId: scan.userId, objectKey: scan.sourceKey, status: 'AVAILABLE' } });
     if (!source) { await finish({ stage: 'FAILED', reason: 'SOURCE_REMOVED' }); return; }
+    const crop = scan.crop as unknown as ScanCrop | undefined;
+    const sourceBytes = await getObject(scan.sourceKey);
+    let image: Buffer;
+    try { image = await cropScanImage(sourceBytes, crop ?? undefined, config.MAX_IMAGE_PIXELS); }
+    catch {
+      await recordSkippedLearningSample(scan, 'INVALID_SAMPLE').catch(() => undefined);
+      await finish({ stage: 'FAILED', reason: 'INVALID_IMAGE' }); return;
+    }
+    // Complete the independent copy before publishing a confirmable scan result.
+    // Collection failure is diagnostic only and cannot fail recognition.
+    await captureLearningSample(scan, image).catch(error => console.warn(JSON.stringify({ event: 'learning_capture_error', scanId, error: String(error) })));
     const { entries, total } = await indexFor(scan.model);
     const compared = new Set(entries.map(e => e.officialBagId)).size;
     if (!entries.length) { await finish({ compared: 0, reason: total ? 'INDEX_NOT_READY' : 'LIBRARY_EMPTY' }); return; }
-    const crop = scan.crop as unknown as ScanCrop | undefined;
-    const image = await cropScanImage(await getObject(scan.sourceKey), crop ?? undefined, config.MAX_IMAGE_PIXELS);
     const query = await extractScanFeature(image, settings.engine, serviceUrl, config.MAX_IMAGE_PIXELS);
     baseScores = rankScanCandidates([query], entries, settings);
     await scanPrisma.matchScan.updateMany({ where: { id: scanId, finishedAt: null }, data: { scores: baseScores.map(s => ({ ...s })), compared } });
@@ -114,10 +128,10 @@ export async function processScan(scanId: string) {
 
 /** Backfill both models and all references, one bag per sweep by default. */
 const backfillRetryAfter = new Map<string, number>();
-export async function reconcileScanEmbeddings(limit = 1) {
+export async function reconcileScanEmbeddings(limit = 1, featureLimit = Number.POSITIVE_INFINITY) {
   const bags = await scanPrisma.officialBag.findMany({ where: { processStatus: 'READY' },
     include: { images: { where: { status: 'AVAILABLE', kind: { in: ['CUTOUT', 'DISPLAY'] } } }, references: true, scanEmbeddings: true }, orderBy: { updatedAt: 'asc' } });
-  let repaired = 0; let attemptedBags = 0;
+  let repaired = 0; let attemptedBags = 0; let attemptedFeatures = 0;
   for (const bag of bags) {
     const primary = featureSource(bag.images, bag.version);
     const sources = [...(primary ? [{ key: 'primary', ...primary }] : []), ...bag.references.map(r => ({ key: r.id, kind: 'ORIGINAL' as const, version: r.version, objectKey: r.objectKey }))];
@@ -147,13 +161,16 @@ export async function reconcileScanEmbeddings(limit = 1) {
         backfillRetryAfter.set(retryKey, Date.now() + 300_000);
         console.warn(JSON.stringify({ event: 'scan_embedding_failed', bagId: bag.id, referenceKey: source.key, model, error: String(error) }));
       }
+      // Queue jobs yield between individual features, so one bag with many references
+      // cannot hold up a live scan for six sequential inference timeouts.
+      if (++attemptedFeatures >= featureLimit) return { repaired: repaired + (changed ? 1 : 0), more: true };
     }
     if (changed) repaired++;
     // Bound attempts as well as successful repairs. A failed service must not scan
     // the entire library with one timeout per reference and starve interactive work.
     if (attempted && ++attemptedBags >= limit) break;
   }
-  return { repaired };
+  return { repaired, more: false };
 }
 
 export async function cleanupScans() {
@@ -161,7 +178,7 @@ export async function cleanupScans() {
   // Only untouched AWAITING_CROP drafts that still carry this exact source qualify.
   const pendingDrafts = await scanPrisma.$queryRaw<{ id: string }[]>`
     SELECT s.id FROM "MatchScan" s JOIN "Collectible" c ON c.id = s."collectibleId" AND c."userId" = s."userId"
-    WHERE s.feedback = 'SELECTED' AND c."processingStatus" = 'AWAITING_CROP' AND c."sourceOfficialBagId" IS NULL
+    WHERE s.feedback IN ('SELECTED', 'CORRECTED') AND c."processingStatus" = 'AWAITING_CROP' AND c."sourceOfficialBagId" IS NULL
     ORDER BY s."createdAt" ASC LIMIT 100`;
   const confirmed = await scanPrisma.matchScan.findMany({ where: { id: { in: pendingDrafts.map(row => row.id) } } });
   for (const scan of confirmed) {

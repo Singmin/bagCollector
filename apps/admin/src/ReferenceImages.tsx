@@ -23,10 +23,10 @@ export function ReferenceImages({ bagId }: { bagId: string }) {
       {items.map(item => <Space key={item.id} direction="vertical">
         <Image src={item.url} width={90} height={110} style={{ objectFit: 'contain' }} />
         <Tag>{item.models.length ? `已生成 ${item.models.length} 种特征` : '等待计算'}</Tag>
-        <Popconfirm title="删除这张参考图？" onConfirm={async () => {
+        <Popconfirm title="撤回这张参考图？图片保留 7 天，可在扫描样本页恢复。" onConfirm={async () => {
           try { await api(`/official-bags/${bagId}/references/${item.id}`, { method: 'DELETE' }); await load(); }
           catch (e) { message.error(String(e)); }
-        }}><Button size="small" danger>删除</Button></Popconfirm>
+        }}><Button size="small" danger>撤回</Button></Popconfirm>
       </Space>)}
     </Space>
     <Space style={{ marginTop: 12 }} wrap>

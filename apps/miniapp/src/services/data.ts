@@ -34,7 +34,7 @@ export const dataService = {
   createMatchScan: (data: { collectibleId: string; requestId: string; source: 'camera' | 'album'; crop?: { x: number; y: number; width: number; height: number; rotation: number } }) =>
     api<{ scanId: string }>('/official-bags/match-scans', { method: 'POST', data }),
   matchScan: (id: string) => api<MatchScan>(`/official-bags/match-scans/${id}`),
-  scanFeedback: (id: string, feedback: 'SELECTED' | 'NONE', bagId?: string) => api(`/official-bags/match-scans/${id}/feedback`, { method: 'POST', data: { feedback, bagId } }),
+  scanFeedback: (id: string, feedback: 'SELECTED' | 'CORRECTED' | 'NONE', bagId?: string) => api(`/official-bags/match-scans/${id}/feedback`, { method: 'POST', data: { feedback, bagId } }),
   shelves: () => api<Shelf[]>('/shelves'),
   collectibles,
   collectible,

@@ -372,7 +372,8 @@ export class OfficialBagsAdminService {
       select: { objectKey: true }
     });
     const references = await this.prisma.bagReferenceImage.findMany({ where: { officialBagId: id }, select: { objectKey: true } });
-    images.push(...references);
+    // Learned images retain their own lifecycle and capacity accounting.
+    images.push(...references.filter(ref => !ref.objectKey.startsWith('learning-samples/')));
     await this.prisma.officialBag.delete({ where: { id } });
     if (images.length) {
       await this.queues.add('cleanup', { keys: images.map((image) => image.objectKey) });
@@ -400,7 +401,7 @@ export class OfficialBagsAdminService {
       }
     });
     await this.queues.add('embed-reconcile', {});
-    await this.queues.scans.add('reconcile', {}, { attempts: 1, removeOnComplete: 20, removeOnFail: 20 });
+    await this.queues.scans.add('reconcile', {}, { priority: 20, attempts: 1, removeOnComplete: 20, removeOnFail: 20 });
     await this.audit(adminId, 'OFFICIAL_BAG_EMBEDDING_RECONCILE', 'embeddings', { pending });
     return { queued: true, pending };
   }
