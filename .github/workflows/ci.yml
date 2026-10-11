@@ -67,6 +67,7 @@ jobs:
       - name: Check runtime image contents
         run: |
           docker run --rm "bagcollect-api:$GITHUB_SHA" sh -c 'test -s apps/api/dist/main.js && test -s apps/worker/dist/main.js && test -s apps/worker/dist/scan-main.js && cd apps/api && node -e "require(\"@prisma/client\")"'
+          docker run --rm "bagcollect-api:$GITHUB_SHA" sh -c 'cd apps/worker && node --input-type=module -e "import sharp from \"sharp\"; await sharp({create:{width:8,height:8,channels:3,background:\"red\"}}).png().toBuffer(); console.log(\"sharp PNG encode OK\")"'
           docker run --rm "bagcollect-admin:$GITHUB_SHA" nginx -t
           docker run --rm "bagcollect-vision:$GITHUB_SHA" python -c 'import onnxruntime, fastapi, numpy, PIL'
       - name: Export verified images
@@ -84,6 +85,8 @@ jobs:
           done
       - name: Check imported API readiness
         run: |
+          docker run --rm --network host -e DATABASE_URL "bagcollect-api:$GITHUB_SHA" \
+            node apps/api/node_modules/prisma/build/index.js migrate deploy --schema apps/api/prisma/schema.prisma
           docker run -d --name bagcollect-image-api --network host \
             -e DATABASE_URL -e REDIS_URL -e JWT_SECRET -e WECHAT_AUTH_MOCK \
             -e NODE_ENV=test -e STORAGE_DRIVER=local \

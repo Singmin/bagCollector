@@ -65,7 +65,7 @@ services:
   migrate:
     image: ${API_IMAGE:?set API_IMAGE}
     logging: *default-logging
-    command: ["pnpm", "--filter", "@bagcollect/api", "db:deploy"]
+    command: ["node", "apps/api/node_modules/prisma/build/index.js", "migrate", "deploy", "--schema", "apps/api/prisma/schema.prisma"]
     env_file: ${BAGCOLLECT_RUNTIME_ENV_FILE:-.env.deploy}
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-bagcollect}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bagcollect}

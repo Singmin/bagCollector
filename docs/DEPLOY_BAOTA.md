@@ -162,6 +162,8 @@ docker build --target api -f infra/Dockerfile .
 
 admin-artifact、production-images、vision-images 都是忽略提交的临时产物目录。
 
+运行时镜像仅保留 Node 可执行文件和应用依赖，不继承 npm/yarn/Corepack/pnpm 缓存。Prisma 在构建阶段生成 Node/Rust 客户端后，删除其未使用的 edge WASM、可选 TypeScript、依赖 source map 和 Alpine 上不兼容的 glibc sharp 二进制。迁移直接通过 Node 执行 Prisma CLI；CI 必须检查真实迁移、API 就绪和 sharp PNG 编码。
+
 TCR 配置现在只供 `upload-miniapp.yml` 使用。如果暂时不用自动上传小程序，可以不配置 TCR；需要时再按腾讯云控制台提供的账号 ID、访问密码、命名空间配置仓库级 `TCR_USERNAME`、`TCR_PASSWORD`、`TCR_NAMESPACE`。
 
 ---

@@ -22,12 +22,12 @@ jobs:
             echo "===== $image ====="
             docker image inspect --format 'Uncompressed image bytes: {{.Size}}' "$image"
             docker history --no-trunc --format '{{.Size}}  {{.CreatedBy}}' "$image"
-            docker run --rm --entrypoint sh "$image" -c '
+            docker run --rm --user 0:0 --entrypoint sh "$image" -c '
               echo "===== root directories ====="
               du -kx -d 2 /app /root /usr/local 2>/dev/null | sort -n | tail -n 25
               echo "===== largest pnpm packages ====="
               du -sk /app/node_modules/.pnpm/* 2>/dev/null | sort -n | tail -n 25
               echo "===== largest individual files ====="
-              find /app /root /usr/local -type f -size +10M -exec ls -l {} \; 2>/dev/null
+              find /app /root /usr/local -type f -exec ls -ln {} + 2>/dev/null | awk '\''$5 > 10485760'\''
             '
           done
