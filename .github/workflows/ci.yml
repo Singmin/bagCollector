@@ -31,6 +31,7 @@ jobs:
       REDIS_URL: redis://localhost:6379
       JWT_SECRET: ci-only-secret-with-at-least-thirty-two-characters
       WECHAT_AUTH_MOCK: "true"
+      BUILD_VERSION: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -42,10 +43,18 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm db:generate
       - run: pnpm db:deploy
+      - name: Set Admin build time
+        run: echo "BUILD_TIME=$(date -u '+%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_ENV"
       - run: pnpm verify
       - run: pnpm test:integration
       - run: pnpm test:scan
       - run: pnpm test:learning
+      - name: Prepare verified Admin artifact
+        run: |
+          test -s apps/admin/dist/index.html
+          mkdir -p admin-artifact/assets
+          cp -R apps/admin/dist/. admin-artifact/assets/
+          printf '%s\n' "$GITHUB_SHA" > admin-artifact/source-sha
       - name: Build Docker targets
         run: |
           # api 这个 target 同时承载 api 与 worker 两个容器（compose 用 command 区分），
@@ -57,3 +66,11 @@ jobs:
           # 需要重新启用时取消下面一行注释，并同步恢复 compose 与部署脚本。详见
           # docs/TENCENT_CI_MATTING.md。
           # docker build --target rembg -f infra/Dockerfile .
+      - name: Upload verified Admin artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: admin-${{ github.sha }}
+          path: admin-artifact/
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true

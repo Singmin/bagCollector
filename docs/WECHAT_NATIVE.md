@@ -83,7 +83,7 @@ ADMIN_USERNAME=admin ADMIN_PASSWORD='使用强密码' pnpm db:seed
 - `WECHAT_PRIVATE_KEY_PATH`：服务器上上传私钥的绝对路径。
 - GitHub Environment Variable `MINIAPP_API_BASE_URL`：小程序访问的 HTTPS API 地址，包含 `/api`。
 
-PR 跑 `ci.yml`（类型检查、Lint、单测、数据库迁移、应用构建和两个 Docker target）。main 推送跑 `deploy.yml`，它先用 `workflow_call` 复用同一个 `ci.yml`，然后用 `git archive` 打包同一个 commit 并传到服务器 —— **部署的一定是通过验证的那份代码**。服务器顺序构建带 commit SHA 标签的 API/Admin 本地镜像，再执行 `infra/deploy.sh`：备份 PostgreSQL → 启动 postgres/redis 并等健康 → 执行 migration → 切换 api/worker/admin → 等 API 健康检查，任一步失败则恢复上一组本地镜像。部署带 `concurrency` 串行锁，两个部署不会同时构建、迁移或切容器。抠图改走万象后不再构建或启动 rembg，旧容器由 `--remove-orphans` 清理。migration 必须保持向前兼容，因为镜像回滚不会反向修改数据库。
+PR 跑 `ci.yml`（类型检查、Lint、单测、数据库迁移、应用构建和两个 Docker target），验证通过后保存带 SHA 标识的 Admin 静态产物。main 推送跑 `deploy.yml`，它先用 `workflow_call` 复用同一个 `ci.yml`，再下载本次运行的 Admin 产物，与 `git archive` 打包的同一 commit 源码一起传到服务器 —— **部署的一定是通过验证的那份代码和后台产物**。服务器顺序构建 API/Worker 镜像与只打包静态资源的 Admin 镜像，后台不再在服务器编译；产物缺失或 SHA 不一致时立即中止。然后执行 `infra/deploy.sh`：备份 PostgreSQL → 启动 postgres/redis 并等健康 → 执行 migration → 切换 api/worker/admin → 等 API 健康检查，任一步失败则恢复上一组本地镜像。部署带 `concurrency` 串行锁，两个部署不会同时构建、迁移或切容器。抠图改走万象后不再构建或启动 rembg，旧容器由 `--remove-orphans` 清理。migration 必须保持向前兼容，因为镜像回滚不会反向修改数据库。
 
 小程序通过 `Upload mini program development version` 手动工作流上传开发版本。审核与正式发布仍在微信后台人工确认。
 

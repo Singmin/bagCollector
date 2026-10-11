@@ -1,7 +1,7 @@
 name: Build and deploy
 
 # main 分支每次合并：先跑完整验证（复用 ci.yml），再把已验证 commit 的源码传到
-# 生产服务器，在服务器本地构建镜像并部署。源码只有几 MB，避免 GitHub 海外 Runner
+# 生产服务器，同时复用 verify 编译的 Admin 静态产物。服务器只编译后端、打包后台，避免 GitHub 海外 Runner
 # 向国内镜像仓库推送百 MB 镜像时长期卡在 exporting to image。
 # 手动触发（workflow_dispatch）走同一条链路，只是不需要新的 commit。
 on:
@@ -30,8 +30,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Package verified source
-        run: git archive --format=tar.gz --output="bagcollect-source-${GITHUB_SHA}.tar.gz" "$GITHUB_SHA"
+      - name: Download verified Admin artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: admin-${{ github.sha }}
+          path: admin-artifact/
+
+      - name: Package verified source and Admin artifact
+        run: |
+          test -s admin-artifact/assets/index.html
+          test "$(cat admin-artifact/source-sha)" = "$GITHUB_SHA"
+          ARCHIVE="bagcollect-source-${GITHUB_SHA}.tar"
+          git archive --format=tar --output="$ARCHIVE" "$GITHUB_SHA"
+          tar -rf "$ARCHIVE" admin-artifact
+          gzip "$ARCHIVE"
 
       - name: Preflight SSH connectivity check
         env:
@@ -94,8 +106,8 @@ jobs:
           echo "主机指纹采集成功"
 
       - name: Copy verified source to the server
-        # git archive 只包含当前 commit 的已跟踪文件，不会把本机 .env、密钥、node_modules
-        # 或工作区未提交文件带到服务器。每次 run 使用独立目录，重跑不会混入旧源码。
+        # 源码来自固定 commit 的 git archive，另附同次 verify 的 Admin 产物；不会包含
+        # 本机 .env、密钥、node_modules 或未提交文件。每次 run 使用独立目录。
         # 用 Runner 自带的 OpenSSH 而非 scp-action：报错信息完整，失败快速可见。
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}

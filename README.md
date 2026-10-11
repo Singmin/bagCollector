@@ -50,7 +50,7 @@ pnpm test:image-flow:local -- /absolute/path/to/image.png
 
 ## 部署
 
-生产环境跑在宝塔面板（aaPanel）服务器上，PostgreSQL、Redis、API、Worker 与运营后台都由 `infra/docker-compose.yml` 统一下发成 Docker 容器，全部只绑 `127.0.0.1`，公网流量经宝塔 Nginx 反代进入。CI/CD 由 GitHub Actions 驱动：往 `main` 推 commit 会自动验证，把该 commit 的源码包传到服务器，在服务器本地构建带 SHA 标签的镜像并部署；构建成功前不切换线上容器，部署失败时回滚到上一组本地镜像。
+生产环境跑在宝塔面板（aaPanel）服务器上，PostgreSQL、Redis、API、Worker 与运营后台都由 `infra/docker-compose.yml` 统一下发成 Docker 容器，全部只绑 `127.0.0.1`，公网流量经宝塔 Nginx 反代进入。CI/CD 由 GitHub Actions 驱动：往 `main` 推 commit 会自动验证，在 Runner 编译运营后台，把该 commit 的源码和已验证的后台静态产物一起传到服务器。服务器只编译 API/Worker，并把后台产物打包为 Nginx 镜像；两者都使用 SHA 标签。构建成功前不切换线上容器，部署失败时回滚到上一组本地镜像。
 
 完整的服务器准备、环境变量、镜像仓库授权、域名与 HTTPS、微信合法域名配置和排错表见 [部署到宝塔服务器](docs/DEPLOY_BAOTA.md)。
 
