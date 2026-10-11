@@ -8,12 +8,14 @@ const mocks = vi.hoisted(() => ({
     matchScan: { findUnique: vi.fn(), findFirst: vi.fn(), updateMany: vi.fn(), update: vi.fn() },
     officialBag: { findMany: vi.fn() }, imageAsset: { findFirst: vi.fn() }, appSetting: { findUnique: vi.fn() },
     scanEnhancementUsage: { findUnique: vi.fn(), upsert: vi.fn() }, scanEmbedding: { upsert: vi.fn() },
+    learningSample: { updateMany: vi.fn(async () => ({ count: 0 })) },
     $transaction: vi.fn(), $executeRaw: vi.fn(), $queryRaw: vi.fn()
   }, getObject: vi.fn(), putObject: vi.fn(), removeBackground: vi.fn(), extract: vi.fn(), options: {} as Record<string, unknown>
 }));
 vi.mock('@prisma/client', () => ({ PrismaClient: class { constructor() { return mocks.prisma; } } }));
 vi.mock('../src/config.js', () => ({ config: { STORAGE_DRIVER: 'cos', CI_MATTING_PROCESS: 'AIPicMatting', CI_MATTING_SIZE_MODE: 'rescale', MAX_IMAGE_PIXELS: 60000000, CI_MATTING_MAX_RESPONSE_BYTES: 83886080 } }));
 vi.mock('../src/object-store.js', () => ({ getObject: mocks.getObject, putObject: mocks.putObject, getSignedObjectUrl: vi.fn(), deleteObjects: vi.fn() }));
+vi.mock('../src/learning-processor.js', () => ({ captureLearningSample: vi.fn(async () => {}), recordSkippedLearningSample: vi.fn(async () => {}) }));
 vi.mock('../src/matting-tencent-ci.js', () => ({ createTencentCiBackgroundRemover: (options: Record<string, unknown>) => { mocks.options = options; return mocks.removeBackground; } }));
 vi.mock('@bagcollect/bag-vision', async original => ({ ...await original<typeof import('@bagcollect/bag-vision')>(), extractScanFeature: mocks.extract }));
 const { processScan, reconcileScanEmbeddings } = await import('../src/scan-processor.js');
@@ -41,6 +43,13 @@ beforeEach(async () => {
   mocks.extract.mockResolvedValue(query);
 });
 describe('scan enhancement failure boundaries', () => {
+  it('yields background reference backfill after one feature to preserve scan priority', async () => {
+    mocks.prisma.officialBag.findMany.mockResolvedValue([{ id: 'feature-job-bag', version: 1, images: [{ kind: 'DISPLAY', version: 1, objectKey: 'primary.jpg' }],
+      references: [{ id: 'reference-1', version: 1, objectKey: 'reference.jpg' }], scanEmbeddings: [] }]);
+    mocks.prisma.$queryRaw.mockResolvedValue([{ version: 1 }]);
+    expect((await reconcileScanEmbeddings(1, 1)).more).toBe(true);
+    expect(mocks.extract).toHaveBeenCalledTimes(1); expect(mocks.prisma.scanEmbedding.upsert).toHaveBeenCalledTimes(1);
+  });
   it('retains basic candidates after an issued cloud failure, charges once, and never retries a redelivery', async () => {
     mocks.removeBackground.mockRejectedValue(new Error('cloud timeout'));
     await processScan('scan-1'); await processScan('scan-1');

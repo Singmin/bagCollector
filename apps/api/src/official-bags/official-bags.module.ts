@@ -10,10 +10,12 @@ import { OfficialBagsController } from './official-bags.controller.js';
 import { OfficialBagsService } from './official-bags.service.js';
 import { MatchScansService } from './match-scans.service.js';
 import { MatchScansAdminController } from './match-scans-admin.controller.js';
+import { LearningSamplesService } from './learning-samples.service.js';
+import { LearningSamplesAdminController } from './learning-samples-admin.controller.js';
 
 @Module({
   imports: [AuthModule, SettingsModule],
-  controllers: [OfficialBagsController, OfficialBagsAdminController, BrandsAdminController, MatchScansAdminController],
-  providers: [OfficialBagsService, OfficialBagsAdminService, BrandsAdminService, AdminGuard, MatchScansService]
+  controllers: [OfficialBagsController, OfficialBagsAdminController, BrandsAdminController, MatchScansAdminController, LearningSamplesAdminController],
+  providers: [OfficialBagsService, OfficialBagsAdminService, BrandsAdminService, AdminGuard, MatchScansService, LearningSamplesService]
 })
 export class OfficialBagsModule {}

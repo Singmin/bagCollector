@@ -9,11 +9,13 @@ import { PrismaService } from '../database/prisma.service.js';
 import { CosService } from '../assets/cos.service.js';
 import { SettingsService } from '../settings/settings.service.js';
 import { OfficialBagsService } from './official-bags.service.js';
+import { LearningSamplesService } from './learning-samples.service.js';
 
 @Injectable()
 export class MatchScansService {
   constructor(private readonly prisma: PrismaService, private readonly queues: QueueService,
-    private readonly cos: CosService, private readonly settings: SettingsService, private readonly bags: OfficialBagsService) {}
+    private readonly cos: CosService, private readonly settings: SettingsService, private readonly bags: OfficialBagsService,
+    private readonly learning: LearningSamplesService = new LearningSamplesService(prisma, cos, queues)) {}
 
   async create(userId: string, input: CreateMatchScanInput): Promise<{ scanId: string }> {
     const existing = await this.prisma.matchScan.findUnique({ where: { userId_requestId: { userId, requestId: input.requestId } } });
@@ -84,16 +86,8 @@ export class MatchScansService {
       compared: scan.compared, result: candidates.length ? 'CANDIDATES' : 'NONE', candidates };
   }
 
-  async feedback(userId: string, id: string, input: { bagId?: string; feedback: 'SELECTED' | 'NONE' }) {
-    const scan = await this.prisma.matchScan.findFirst({ where: { id, userId } });
-    if (!scan) throw new ApiError('NOT_FOUND', '扫描任务不存在', 404);
-    if (input.feedback === 'SELECTED') {
-      if (!(scan.scores as unknown as ScanScore[]).some(s => s.bagId === input.bagId)) throw new ApiError('VALIDATION', '选择不在候选中', 400);
-      const claim = await this.prisma.officialClaim.findFirst({ where: { userId, officialBagId: input.bagId, createdAt: { gte: scan.createdAt } } });
-      if (!claim) throw new ApiError('CONFLICT', '请先确认收进收藏', 409);
-    }
-    await this.prisma.matchScan.update({ where: { id }, data: { feedback: input.feedback, selectedBagId: input.feedback === 'SELECTED' ? input.bagId : null } });
-    return { success: true };
+  async feedback(userId: string, id: string, input: { bagId?: string; feedback: 'SELECTED' | 'CORRECTED' | 'NONE' }) {
+    return this.learning.feedback(userId, id, input);
   }
 
   async diagnostics(page = 1) {
@@ -107,7 +101,7 @@ export class MatchScansService {
 
   async references(bagId: string) {
     const rows = await this.prisma.bagReferenceImage.findMany({ where: { officialBagId: bagId }, orderBy: { createdAt: 'asc' } });
-    return Promise.all(rows.map(async row => ({ ...row, url: await this.cos.signedUrl(row.objectKey),
+    return Promise.all(rows.map(async row => ({ ...row, url: row.objectKey.startsWith('learning-samples/') ? await this.cos.privateSignedUrl(row.objectKey) : await this.cos.signedUrl(row.objectKey),
       models: (await this.prisma.scanEmbedding.findMany({ where: { officialBagId: bagId, referenceKey: row.id }, select: { model: true } })).map(e => e.model) })));
   }
 
@@ -127,7 +121,7 @@ export class MatchScansService {
         await tx.auditLog.create({ data: { adminId, action: 'BAG_REFERENCE_ADD', targetId: bagId, metadata: { referenceId: id } } });
       });
     } catch (error) { await this.queues.add('cleanup', { keys: [key] }); throw error; }
-    await this.queues.scans.add('reconcile', {}, { attempts: 1, removeOnComplete: 20, removeOnFail: 20 });
+    await this.queues.scans.add('reconcile', {}, { priority: 20, attempts: 1, removeOnComplete: 20, removeOnFail: 20 });
     return { id };
   }
 
@@ -135,18 +129,16 @@ export class MatchScansService {
     const ref = await this.prisma.bagReferenceImage.findFirst({ where: { id, officialBagId: bagId } });
     if (!ref) throw new ApiError('NOT_FOUND', '参考图不存在', 404);
     await this.prisma.$transaction(async tx => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('learning-capacity'))`;
       await tx.$queryRaw`SELECT id FROM "OfficialBag" WHERE id = ${bagId} FOR UPDATE`;
-      await tx.scanEmbedding.deleteMany({ where: { officialBagId: bagId, referenceKey: id } });
-      await tx.bagReferenceImage.deleteMany({ where: { id, officialBagId: bagId } });
-      await tx.auditLog.create({ data: { adminId, action: 'BAG_REFERENCE_REMOVE', targetId: bagId, metadata: { referenceId: id } } });
+      await this.learning.archiveReference(tx, adminId, bagId, ref.id, 'WITHDRAWN');
     });
-    await this.queues.add('cleanup', { keys: [ref.objectKey] });
     return { success: true };
   }
 
   async reconcile(bagId?: string) {
     if (bagId) await this.prisma.scanEmbedding.deleteMany({ where: { officialBagId: bagId, model: { in: [COLOR_SCAN_MODEL, DINO_SCAN_MODEL] } } });
-    await this.queues.scans.add('reconcile', {}, { attempts: 1, removeOnComplete: 20, removeOnFail: 20 });
+    await this.queues.scans.add('reconcile', {}, { priority: 20, attempts: 1, removeOnComplete: 20, removeOnFail: 20 });
     return { queued: true };
   }
 }

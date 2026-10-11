@@ -5,6 +5,7 @@ let loginPromise: Promise<void> | undefined;
 let refreshPromise: Promise<void> | undefined;
 
 export interface ApiRequestOptions {
+  timeout?: number;
   method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
   data?: string | AnyObject | ArrayBuffer;
   header?: AnyObject;

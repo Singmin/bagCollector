@@ -433,6 +433,48 @@ model ScanEnhancementUsage {
   @@id([day, scope])
 }
 
+// Independent of scan/draft lifetime. byteSize is released only after object deletion.
+model LearningSample {
+  id            String   @id @default(cuid())
+  scanId        String?  @unique
+  userId        String?
+  officialBagId String?
+  referenceId   String?  @unique
+  origin        String   @default("SCAN")
+  source        String
+  model         String
+  snapshot      Json
+  objectKey     String?  @unique
+  byteSize      BigInt   @default(0)
+  hash          String?
+  state         String   @default("STAGING")
+  featureState  String   @default("WAITING_LABEL")
+  reason        String?
+  possibleDuplicate String?
+  expiresAt     DateTime?
+  deletedAt     DateTime?
+  reviewedById  String?
+  reviewedAt    DateTime?
+  attempts      Int      @default(0)
+  retryAt       DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  features      LearningSampleFeature[]
+  @@index([state, expiresAt])
+  @@index([officialBagId, hash])
+  @@index([featureState, retryAt])
+}
+
+model LearningSampleFeature {
+  id          String @id @default(cuid())
+  sampleId    String
+  model       String
+  vector      Float[]
+  colorVector Float[]
+  sample      LearningSample @relation(fields: [sampleId], references: [id], onDelete: Cascade)
+  @@unique([sampleId, model])
+}
+
 // 心愿袋：用户对官方袋子的「想要」标记（发现页 ♥）。袋子下架/删除时级联清除。
 model WishlistItem {
   id            String      @id @default(cuid())

@@ -8,5 +8,7 @@ describe('scan contracts', () => {
   it('allows coarse plus fine rotation and requires a selected style', () => {
     expect(createMatchScanSchema.safeParse({ collectibleId: 'a', source: 'album', requestId: 'request-1', crop: { x: 0, y: 0, width: 1, height: 1, rotation: 290 } }).success).toBe(true);
     expect(scanFeedbackSchema.safeParse({ feedback: 'SELECTED' }).success).toBe(false);
+    expect(scanFeedbackSchema.safeParse({ feedback: 'CORRECTED' }).success).toBe(false);
+    expect(scanFeedbackSchema.safeParse({ feedback: 'CORRECTED', bagId: 'published-bag' }).success).toBe(true);
   });
 });

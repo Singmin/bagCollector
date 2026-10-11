@@ -25,6 +25,7 @@
     "test": "vitest run",
     "test:integration": "node scripts/test-api-integration.mjs",
     "test:scan": "node scripts/test-scan-integration.mjs",
+    "test:learning": "node scripts/test-learning-integration.mjs",
     "scan:benchmark": "node scripts/benchmark-scans.mjs",
     "test:integration:local": "pnpm --filter @bagcollect/api build && pnpm --filter @bagcollect/worker build && DATABASE_URL=postgresql://bagcollect:bagcollect_test@127.0.0.1:5433/bagcollect_test REDIS_URL=redis://127.0.0.1:6380 JWT_SECRET=local-test-secret-with-at-least-thirty-two-characters WECHAT_AUTH_MOCK=true node scripts/test-api-integration.mjs",
     "test:official:local": "pnpm --filter @bagcollect/api build && node scripts/test-official-bags-integration.mjs",

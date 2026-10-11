@@ -51,6 +51,7 @@ import { api, TOKEN_KEY } from './api';
 import { ClaimStats } from './ClaimStats';
 import { ChangelogPage } from './ChangelogPage';
 import { ScanSettingsPage } from './ScanSettingsPage';
+import { ScanSamplesPage } from './ScanSamplesPage';
 import { ReferenceImages } from './ReferenceImages';
 
 interface Overview {
@@ -251,7 +252,7 @@ const userStatusColors: Record<AdminUser['status'], string> = {
 /** 列表上的处理进度分档。三档展开成具体状态的事在服务端做，见 submissions-admin.service。 */
 type ProcessFilter = 'ALL' | 'READY' | 'PROCESSING' | 'FAILED';
 
-type PageKey = 'overview' | 'bags' | 'brands' | 'submissions' | 'users' | 'audit' | 'match' | 'changelog';
+type PageKey = 'overview' | 'bags' | 'brands' | 'submissions' | 'users' | 'audit' | 'match' | 'samples' | 'changelog';
 
 /** 拍照扫描袋子的判定阈值（存库、后台可改、保存即生效）。 */
 
@@ -659,6 +660,7 @@ export function App() {
     { key: 'users', icon: <TeamOutlined />, label: '用户管理' },
     { key: 'audit', icon: <AuditOutlined />, label: '审计日志' },
     { key: 'match', icon: <SettingOutlined />, label: '匹配设置' },
+    { key: 'samples', icon: <FileImageOutlined />, label: '扫描样本' },
     { key: 'changelog', icon: <HistoryOutlined />, label: '版本改动' }
   ];
 
@@ -670,6 +672,7 @@ export function App() {
     users: '用户管理',
     audit: '审计日志',
     match: '匹配设置',
+    samples: '扫描样本',
     changelog: '版本改动'
   };
 
@@ -771,6 +774,8 @@ export function App() {
             />
           ) : page === 'match' ? (
             <ScanSettingsPage key={changelogRefreshKey} />
+          ) : page === 'samples' ? (
+            <ScanSamplesPage key={changelogRefreshKey} />
           ) : page === 'brands' ? (
             <>
               <Card style={{ marginBottom: 16 }}>

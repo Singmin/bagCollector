@@ -1,6 +1,9 @@
 <script setup lang="ts">
-import { onLaunch } from '@dcloudio/uni-app';
+import { onLaunch, onShow } from '@dcloudio/uni-app';
 import { ensureLogin } from './services/http';
+import { retryScanFeedback } from './services/scan-feedback';
+
+onShow(() => { void retryScanFeedback(); });
 
 onLaunch(() => {
   void ensureLogin().catch((error) => {

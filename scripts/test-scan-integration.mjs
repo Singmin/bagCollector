@@ -104,6 +104,11 @@ try {
   await http('/admin/settings/scan', userToken, {}, 401);
   await http('/admin/settings/scan', adminToken, { method: 'PUT', body: JSON.stringify(defaults) });
   assert.ok((await http('/admin/match-scans', adminToken)).items.some(row => row.id === created[0].scanId));
+  await http('/admin/settings/learning', userToken, {}, 401);
+  assert.equal((await http('/admin/settings/learning', adminToken)).enabled, false);
+  await http('/admin/settings/learning', adminToken, { method: 'PUT', body: JSON.stringify({ enabled: false, budgetBytes: 1024 ** 3, dailyLimit: 1 }) });
+  assert.ok((await http('/admin/learning-samples', adminToken)).total >= 1);
+  await http('/admin/learning-samples/nonexistent/review', adminToken, { method: 'POST', body: JSON.stringify({ action: 'CORRECT' }) }, 400);
   const uploads = await Promise.all(Array.from({ length: 6 }, async () => {
     const form = new FormData(); form.append('file', new Blob([image], { type: 'image/png' }), 'reference.png');
     const response = await fetch(`http://127.0.0.1:3188/api/admin/official-bags/${bag.id}/references`, { method: 'POST', headers: { Authorization: `Bearer ${adminToken}` }, body: form });
@@ -180,6 +185,9 @@ try {
 } finally {
   if (scanWorker) { scanWorker.kill(); await Promise.race([new Promise(r => scanWorker.once('exit', r)), delay(3000)]); }
   if (server) { server.kill(); await Promise.race([new Promise(r => server.once('exit', r)), delay(3000)]); }
+  const learningRows = await prisma.learningSample.findMany({ where: { OR: [{ userId: { in: userIds } }, { officialBagId: { in: bagIds } }] } });
+  keys.push(...learningRows.flatMap(row => row.objectKey ? [row.objectKey] : []));
+  await prisma.learningSample.deleteMany({ where: { id: { in: learningRows.map(row => row.id) } } });
   await prisma.officialClaim.deleteMany({ where: { userId: { in: userIds } } });
   await prisma.collectible.deleteMany({ where: { userId: { in: userIds } } });
   await prisma.user.deleteMany({ where: { id: { in: userIds } } });
