@@ -116,7 +116,6 @@ export class MatchScansService {
       await this.prisma.$transaction(async tx => {
         const bags = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM "OfficialBag" WHERE id = ${bagId} FOR UPDATE`;
         if (!bags.length) throw new ApiError('NOT_FOUND', '袋子不存在', 404);
-        if (await tx.bagReferenceImage.count({ where: { officialBagId: bagId } }) >= 5) throw new ApiError('CONFLICT', '每款最多添加 5 张参考图', 409);
         await tx.bagReferenceImage.create({ data: { id, officialBagId: bagId, objectKey: key, contentType } });
         await tx.auditLog.create({ data: { adminId, action: 'BAG_REFERENCE_ADD', targetId: bagId, metadata: { referenceId: id } } });
       });

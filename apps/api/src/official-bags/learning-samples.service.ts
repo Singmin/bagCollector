@@ -172,8 +172,6 @@ export class LearningSamplesService {
             if (!f || f.vector.length !== (model === DINO_SCAN_MODEL ? 384 : 389) || f.colorVector.length !== 389 || ![...f.vector, ...f.colorVector].every(Number.isFinite)) throw invalid('当前模型特征不完整，请重算');
           }
           if (sample.hash && await tx.learningSample.findFirst({ where: { officialBagId: bag.id, hash: sample.hash, state: 'APPROVED', id: { not: id } } })) throw invalid('该款式已有完全相同的有效参考');
-          const count = await tx.bagReferenceImage.count({ where: { officialBagId: bag.id } });
-          if (count >= 5 && !input.replaceReferenceId) throw invalid('有效参考已满 5 张，请指定替换哪张');
           if (input.replaceReferenceId) await this.archiveReference(tx, adminId, bag.id, input.replaceReferenceId, 'REPLACED');
           const referenceId = randomUUID();
           const snapshot = sample.snapshot as { contentType?: string; version?: number };
