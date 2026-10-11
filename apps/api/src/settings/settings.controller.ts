@@ -1,6 +1,6 @@
 import { Body, Controller, Get, HttpStatus, Put, Req, UseGuards } from '@nestjs/common';
 import type { FastifyRequest } from 'fastify';
-import { matchSettingsSchema } from '@bagcollect/contracts';
+import { matchSettingsSchema, scanSettingsSchema } from '@bagcollect/contracts';
 import { AdminGuard, type AdminAuth } from '../admin/admin.guard.js';
 import { ApiError } from '../common/api-error.js';
 import { parseBody } from '../common/zod.js';
@@ -18,6 +18,17 @@ function currentAdmin(request: FastifyRequest & { adminAuth?: AdminAuth }): Admi
 @UseGuards(AdminGuard)
 export class SettingsController {
   constructor(private readonly settings: SettingsService) {}
+
+  @Get('scan')
+  scanSettings() { return this.settings.scanSettings(); }
+
+  @Get('scan/coverage')
+  scanCoverage() { return this.settings.scanCoverage(); }
+
+  @Put('scan')
+  updateScanSettings(@Req() request: FastifyRequest & { adminAuth?: AdminAuth }, @Body() body: unknown) {
+    return this.settings.updateScanSettings(currentAdmin(request).adminId, parseBody(scanSettingsSchema, body));
+  }
 
   /** 当前生效的匹配阈值（库里没存过的键已由 env 默认值补齐）。 */
   @Get('match')

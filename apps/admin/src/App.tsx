@@ -50,6 +50,8 @@ import {
 import { api, TOKEN_KEY } from './api';
 import { ClaimStats } from './ClaimStats';
 import { ChangelogPage } from './ChangelogPage';
+import { ScanSettingsPage } from './ScanSettingsPage';
+import { ReferenceImages } from './ReferenceImages';
 
 interface Overview {
   users: number;
@@ -252,14 +254,7 @@ type ProcessFilter = 'ALL' | 'READY' | 'PROCESSING' | 'FAILED';
 type PageKey = 'overview' | 'bags' | 'brands' | 'submissions' | 'users' | 'audit' | 'match' | 'changelog';
 
 /** 拍照扫描袋子的判定阈值（存库、后台可改、保存即生效）。 */
-interface MatchSettings {
-  /** 相似度 ≥ 此值：认定为同一只袋子，前端零操作入库 */
-  autoThreshold: number;
-  /** 相似度 ≥ 此值：返回候选交给用户点选；低于则视为未命中 */
-  candidateThreshold: number;
-  /** 候选返回条数 */
-  candidateLimit: number;
-}
+
 
 interface BagFormValues {
   name: string;
@@ -311,8 +306,6 @@ export function App() {
   /** 手动补算官方袋子视觉向量（拍照扫描匹配用）的进行中状态 */
   const [reconciling, setReconciling] = useState(false);
   /** 扫描匹配的判定阈值（null = 还没加载出来） */
-  const [matchSettings, setMatchSettings] = useState<MatchSettings | null>(null);
-  const [savingMatchSettings, setSavingMatchSettings] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
   /** 版本改动页的刷新：自增 key 强制重挂载，让页面重新拉取数据。 */
@@ -395,35 +388,6 @@ export function App() {
       setError(requestError instanceof Error ? requestError.message : '品牌加载失败');
     }
   }, []);
-
-  const loadMatchSettings = useCallback(async () => {
-    try {
-      setMatchSettings(await api<MatchSettings>('/settings/match'));
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : '匹配设置加载失败');
-    }
-  }, []);
-
-  /**
-   * 保存匹配阈值。服务端保存后回传实际生效的值，这里拿它刷新表单 ——
-   * 不做乐观更新，免得界面上显示的和真正在跑的不是一套。
-   */
-  async function saveMatchSettings(next: MatchSettings) {
-    setSavingMatchSettings(true);
-    setError('');
-    try {
-      const saved = await api<MatchSettings>('/settings/match', {
-        method: 'PUT',
-        body: JSON.stringify(next)
-      });
-      setMatchSettings(saved);
-      message.success('已保存，立即生效');
-    } catch (requestError) {
-      message.error(requestError instanceof Error ? requestError.message : '保存失败');
-    } finally {
-      setSavingMatchSettings(false);
-    }
-  }
 
   const loadSubmissions = useCallback(async () => {
     setLoading(true);
@@ -514,14 +478,14 @@ export function App() {
       else if (page === 'submissions') void loadSubmissions();
       else if (page === 'users') void loadUsers();
       else if (page === 'audit') void loadAuditLogs();
-      else if (page === 'match') void loadMatchSettings();
+      else if (page === 'match') setChangelogRefreshKey(key => key + 1);
       else if (page === 'changelog') {
         // 版本改动页自己管理数据加载，这里不触发任何主组件的 load。
       }
       else void loadBrands();
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [token, page, load, loadBags, loadBrands, loadSubmissions, loadUsers, loadAuditLogs, loadMatchSettings]);
+  }, [token, page, load, loadBags, loadBrands, loadSubmissions, loadUsers, loadAuditLogs]);
 
   // 有图片在后台处理时轮询刷新，让「处理中 → 图片就绪」自动出现。
   useEffect(() => {
@@ -730,7 +694,7 @@ export function App() {
     }
     else if (page === 'users') void loadUsers();
     else if (page === 'audit') void loadAuditLogs();
-    else if (page === 'match') void loadMatchSettings();
+    else if (page === 'match') setChangelogRefreshKey(key => key + 1);
     else if (page === 'changelog') setChangelogRefreshKey((key) => key + 1);
     else void loadBags();
   };
@@ -806,94 +770,7 @@ export function App() {
               }}
             />
           ) : page === 'match' ? (
-            <>
-              <Card title="扫描匹配设置" style={{ maxWidth: 760 }}>
-                <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
-                  用户在上传页打开「扫描匹配」拍照时，系统会提取照片特征与官方袋库比对：
-                  相似度达到 <Typography.Text strong>自动入库阈值</Typography.Text> 就直接收进收藏（零操作）；
-                  达到 <Typography.Text strong>候选阈值</Typography.Text> 则弹出候选让用户点选；
-                  两个都不到就视为未命中，转成手动上传。保存后立刻生效，不需要重启服务。
-                </Typography.Paragraph>
-                {matchSettings ? (
-                  <Form layout="vertical" style={{ maxWidth: 460 }}>
-                    <Form.Item
-                      label="自动入库阈值"
-                      extra="调松会把不相干的袋子自动塞进用户收藏 —— 那种错比让用户多点一下难受得多。"
-                    >
-                      <InputNumber
-                        min={0}
-                        max={1}
-                        step={0.01}
-                        style={{ width: '100%' }}
-                        value={matchSettings.autoThreshold}
-                        onChange={(value) =>
-                          setMatchSettings({ ...matchSettings, autoThreshold: value ?? 0 })
-                        }
-                      />
-                    </Form.Item>
-                    <Form.Item
-                      label="候选阈值"
-                      extra="低于它就算未命中。必须不高于上面的自动入库阈值，否则中间那段区间形同虚设。"
-                    >
-                      <InputNumber
-                        min={0}
-                        max={1}
-                        step={0.01}
-                        style={{ width: '100%' }}
-                        value={matchSettings.candidateThreshold}
-                        onChange={(value) =>
-                          setMatchSettings({ ...matchSettings, candidateThreshold: value ?? 0 })
-                        }
-                      />
-                    </Form.Item>
-                    <Form.Item label="候选数量" extra="弹给用户点选的候选条数。">
-                      <InputNumber
-                        min={1}
-                        max={10}
-                        step={1}
-                        style={{ width: '100%' }}
-                        value={matchSettings.candidateLimit}
-                        onChange={(value) => setMatchSettings({ ...matchSettings, candidateLimit: value ?? 1 })}
-                      />
-                    </Form.Item>
-                    <Button
-                      type="primary"
-                      loading={savingMatchSettings}
-                      onClick={() => {
-                        if (matchSettings.autoThreshold < matchSettings.candidateThreshold) {
-                          message.error('自动入库阈值不能低于候选阈值');
-                          return;
-                        }
-                        void saveMatchSettings(matchSettings);
-                      }}
-                    >
-                      保存
-                    </Button>
-                  </Form>
-                ) : (
-                  <Spin />
-                )}
-              </Card>
-
-              <Card title="怎么定这两个值" style={{ maxWidth: 760, marginTop: 16 }}>
-                <Typography.Paragraph style={{ marginBottom: 8 }}>
-                  没有理论上的正确答案，只能拿真实数据试。办法是：自己拿几只袋子用「扫描匹配」拍一遍，
-                  看命中结果落在哪一档，再据此收紧或放宽：
-                </Typography.Paragraph>
-                <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
-                  · 同一个袋子扫出来却只给候选（或干脆没匹配到）→ 阈值定高了，往下调；
-                  <br />
-                  · 扫 A 袋子却自动入库成了 B 袋子 → 阈值定松了，往上调；
-                  <br />
-                  · 想看清实际分数，可直接调接口 <Typography.Text code>POST /api/official-bags/match</Typography.Text>，
-                  返回里每个候选都带 <Typography.Text code>score</Typography.Text>，那就是真实的相似度。
-                </Typography.Paragraph>
-                <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-                  另外提醒：还没算出向量的袋子不参与比对。刚导入或刚换过图的袋子，
-                  可以到「官方袋子库」点一次「补算袋子向量」，或等 worker 的定时对账补上。
-                </Typography.Paragraph>
-              </Card>
-            </>
+            <ScanSettingsPage key={changelogRefreshKey} />
           ) : page === 'brands' ? (
             <>
               <Card style={{ marginBottom: 16 }}>
@@ -1997,6 +1874,7 @@ function BagEditor({
           onPressEnter={() => void quickAddBrand()}
         />
       </Modal>
+      {bag && <ReferenceImages bagId={bag.id} />}
     </Modal>
   );
 }

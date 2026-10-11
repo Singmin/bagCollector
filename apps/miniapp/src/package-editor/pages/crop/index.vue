@@ -25,6 +25,7 @@ function onColor(key: 'brightness' | 'contrast' | 'saturation', event: any) {
   else saturation.value = value;
 }
 const id = ref(''); const loading = ref(true); const zoomValue = ref(1); const rotation = ref<Rotation>(0); const submitting = ref(false);
+const scanOnly = ref(false);
 /* 加载阶段文案（真机排查用：显示当前走到哪一步） */
 const loadingStage = ref('');
 /* 该图是否已抠过图：已抠图时「同时抠图」开关失效（/matte 会 409），本次提交改走 /crop，
@@ -282,6 +283,15 @@ async function submit() {
     saturation: Math.round(saturation.value * 100) / 100
   };
   submitting.value = true;
+  if (scanOnly.value) {
+    // Emit geometry only. A scan retry must not rewrite collectible images or spend manual matting quota.
+    const page = getCurrentPages().slice(-1)[0] as unknown as { getOpenerEventChannel: () => { emit: (event: string, data: unknown) => void } };
+    page.getOpenerEventChannel().emit('scanCropConfirmed', {
+      x: payload.x, y: payload.y, width: payload.width, height: payload.height, rotation: payload.rotation
+    });
+    uni.navigateBack();
+    return;
+  }
   try {
     /* 勾了「同时抠图」且本图未抠过才走 /matte，否则一律 /crop（已抠图则顺带重抠） */
     const willMatte = useMatte.value;
@@ -296,6 +306,7 @@ async function submit() {
 /* 取消 = 放弃本次调整返回上一页（不提交任何参数） */
 function goBack() { uni.navigateBack({ delta: 1 }); }
 onLoad((query) => {
+  scanOnly.value = query?.scan === '1';
   if (typeof query?.id !== 'string') {
     loadError.value = '裁剪页面参数无效';
     return;
@@ -397,14 +408,14 @@ onUnload(() => clearLoadWatch());
     </view>
     <!-- 抠图：未抠图给开关（勾选则一次提交跑完「裁剪 + 抠图」，省一次往返）；
          已抠图改为弱提示（本次会按当前构图重新生成抠图，不重复扣费） -->
-    <view v-if="!matted" class="matte-row">
+    <view v-if="!scanOnly && !matted" class="matte-row">
       <view class="matte-row__text">
         <text class="matte-row__title">同时自动抠图</text>
         <text class="matte-row__hint">每张图片仅一次，抠图后还能重新裁剪</text>
       </view>
       <switch :checked="matteAlong" color="#141414" @change="onMatteAlong" />
     </view>
-    <view v-else-if="matted" class="matte-row matte-row--note">
+    <view v-else-if="!scanOnly && matted" class="matte-row matte-row--note">
       <text class="matte-row__hint">已自动抠图，本次会按新构图重新生成抠图</text>
     </view>
     <!-- 底部确认条：主流修图 App 式 左 ✕ 取消 / 右 ✓ 应用（圆形轻量钮，替代原大胶囊）；

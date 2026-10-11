@@ -1,4 +1,5 @@
 import { z } from 'zod';
+export * from './scans.js';
 
 export const shelfThemes = ['SAGE', 'AMBER', 'SKY', 'ROSE', 'GRAPHITE'] as const;
 export const processingStatuses = [
@@ -319,7 +320,7 @@ export interface OfficialClaimResultDto {
   processingStatus: ProcessingStatus;
 }
 
-/** 匹配结果的三种形态。 */
+/** MATCHED is retained for old decoders; current endpoints only emit CANDIDATES/NONE. */
 export const officialBagMatchResults = ['MATCHED', 'CANDIDATES', 'NONE'] as const;
 export type OfficialBagMatchResult = (typeof officialBagMatchResults)[number];
 
@@ -331,7 +332,7 @@ export interface OfficialBagMatchCandidateDto {
 
 export interface OfficialBagMatchDto {
   result: OfficialBagMatchResult;
-  /** result = MATCHED：命中的袋子，前端直接走 claim 入库。 */
+  /** @deprecated Compatibility field; servers no longer emit automatic matches. */
   matched?: OfficialBagDto;
   /** result = CANDIDATES：按相似度降序的候选，交给用户点选。 */
   candidates?: OfficialBagMatchCandidateDto[];

@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
-import { claimOfficialBagSchema, matchOfficialBagSchema } from '@bagcollect/contracts';
+import { claimOfficialBagSchema, matchOfficialBagSchema, createMatchScanSchema, scanFeedbackSchema } from '@bagcollect/contracts';
+import { MatchScansService } from './match-scans.service.js';
 import { AuthGuard } from '../auth/auth.guard.js';
 import { CurrentUser, type AuthUser } from '../common/current-user.js';
 import { parseBody } from '../common/zod.js';
@@ -8,7 +9,14 @@ import { OfficialBagsService } from './official-bags.service.js';
 @Controller('official-bags')
 @UseGuards(AuthGuard)
 export class OfficialBagsController {
-  constructor(private readonly officialBags: OfficialBagsService) {}
+  constructor(private readonly officialBags: OfficialBagsService, private readonly scans: MatchScansService) {}
+
+  @Post('match-scans')
+  createScan(@CurrentUser() user: AuthUser, @Body() body: unknown) { return this.scans.create(user.userId, parseBody(createMatchScanSchema, body)); }
+  @Get('match-scans/:scanId')
+  scan(@CurrentUser() user: AuthUser, @Param('scanId') scanId: string) { return this.scans.result(user.userId, scanId); }
+  @Post('match-scans/:scanId/feedback')
+  feedback(@CurrentUser() user: AuthUser, @Param('scanId') scanId: string, @Body() body: unknown) { return this.scans.feedback(user.userId, scanId, parseBody(scanFeedbackSchema, body)); }
 
   @Get()
   list(
@@ -39,7 +47,7 @@ export class OfficialBagsController {
 
   /**
    * 「拍照扫描袋子」：拿刚上传的那条收藏的照片比对官方袋子库。
-   * 命中 / 候选 / 未命中三档由服务端判定，前端据此决定自动入库还是让用户点选。
+   * Compatibility endpoint: all matches require explicit user confirmation.
    */
   @Post('match')
   match(@CurrentUser() user: AuthUser, @Body() body: unknown) {

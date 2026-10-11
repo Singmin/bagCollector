@@ -8,6 +8,11 @@ import { IMAGE_QUEUE, type ImageJobName } from './queue.js';
 export class QueueService implements OnModuleDestroy {
   private readonly connection = new Redis(env().REDIS_URL, { maxRetriesPerRequest: null });
   readonly images = new Queue(IMAGE_QUEUE, { connection: this.connection });
+  readonly scans = new Queue('bagcollect-scans', { connection: this.connection });
+
+  async addScan(scanId: string) {
+    return this.scans.add('scan', { scanId }, { jobId: scanId, attempts: 1, removeOnComplete: 500, removeOnFail: 1000 });
+  }
 
   async add(name: ImageJobName, data: object, jobId?: string) {
     // cleanup 与 official-claim 是纯复制/删除操作，可安全重试；
@@ -25,6 +30,7 @@ export class QueueService implements OnModuleDestroy {
 
   async onModuleDestroy() {
     await this.images.close();
+    await this.scans.close();
     await this.connection.quit();
   }
 }

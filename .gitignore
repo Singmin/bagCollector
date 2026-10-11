@@ -46,3 +46,8 @@ testIMG.jpg
 
 # Local dev runtime logs
 *.log
+# Local inference/export dependencies and model artifacts (never commit installed packages or weights).
+.runtime/
+__pycache__/
+*.pyc
+data/vision-models/

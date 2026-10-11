@@ -132,3 +132,9 @@ export interface OfficialBagMatch {
   /** 本次实际参与比对的官方袋子数（0 = 库为空或向量未生成） */
   compared: number;
 }
+
+export interface MatchScan {
+  scanId: string; stage: 'QUEUED' | 'RECOGNIZING' | 'ENHANCING' | 'DONE' | 'FAILED';
+  reason?: string; enhancement: string; elapsedMs?: number; compared: number;
+  result: 'CANDIDATES' | 'NONE'; candidates: OfficialBagMatchCandidate[];
+}
