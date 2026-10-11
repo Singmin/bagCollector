@@ -44,6 +44,7 @@ jobs:
       - run: pnpm db:deploy
       - run: pnpm verify
       - run: pnpm test:integration
+      - run: pnpm test:scan
       - name: Build Docker targets
         run: |
           # api 这个 target 同时承载 api 与 worker 两个容器（compose 用 command 区分），

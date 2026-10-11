@@ -1,6 +1,9 @@
 .git
 .github
 node_modules
+.runtime
+data
+**/__pycache__
 **/node_modules
 **/dist
 **/*.tsbuildinfo

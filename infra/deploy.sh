@@ -99,9 +99,10 @@ current_image() {
 # 时留意这一点。
 previous_server=$(current_image api)
 previous_admin=$(current_image admin)
+previous_scan=$(current_image scan-worker)
 
-# 抠图走腾讯云数据万象，部署里没有推理服务容器，因此回滚只需恢复应用镜像。
-# 历史上存在过的 rembg 容器由下面的 --remove-orphans 清理。详见 docs/TENCENT_CI_MATTING.md。
+# Scan-worker may not exist in a pre-upgrade image. Restore its own prior image,
+# or stop it on the first upgrade rollback; additive migrations remain in place.
 rollback() {
   exit_code=$?
   trap - EXIT
@@ -109,6 +110,11 @@ rollback() {
     echo "部署失败；正在恢复上一组应用镜像。数据库迁移是单向的，不会回退。"
     API_IMAGE="$previous_server" ADMIN_IMAGE="$previous_admin" \
       compose up -d --remove-orphans api worker admin || true
+    if [ -n "$previous_scan" ]; then
+      API_IMAGE="$previous_scan" compose up -d --no-deps scan-worker || true
+    else
+      compose stop scan-worker || true
+    fi
   fi
   exit "$exit_code"
 }
@@ -195,8 +201,13 @@ echo "执行数据库迁移"
 # 整条命令也非 0 退出，trap 里的回滚才会被触发。
 compose up --no-deps --exit-code-from migrate migrate
 
+if grep -Eq '^VISION_ENABLED=1$' "$ENV_FILE"; then
+  export COMPOSE_PROFILES=vision
+  compose up -d --wait vision
+fi
+
 echo "切换应用容器"
-compose up -d --remove-orphans api worker admin
+compose up -d --remove-orphans api worker scan-worker admin
 
 # ---------------------------------------------------------------------------
 # 7. 等待 API 就绪

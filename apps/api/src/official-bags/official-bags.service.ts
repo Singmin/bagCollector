@@ -192,14 +192,8 @@ export class OfficialBagsService {
   /**
    * 「拍照扫描袋子」：拿用户刚拍的照片去比对官方袋子库。
    *
-   * 判定分三档（阈值见 env）：
-   *   MATCHED    相似度足够高 —— 认定是同一只袋子，前端零操作直接入库；
-   *   CANDIDATES 有若干相近 —— 交给用户点选（颜色相近的不同款靠这一步兜住）；
-   *   NONE       都不像 —— 官方库没有这只袋子。
-   *
-   * 为什么不干脆只留「命中/未命中」两档：特征以颜色为主导，同品牌不同配色/相近款
-   * 容易互相混淆，直接取 top-1 自动入库会把错误的袋子塞进用户收藏，用户还得去删 ——
-   * 比多点一下难受得多。所以模糊区间必须交给人。
+   * Legacy clients always receive CANDIDATES or NONE. Every candidate must pass
+   * the threshold independently, including a single high-confidence result.
    *
    * 比对是「查询向量 × 全库向量」的一次线性扫描：官方库是人工维护的规模（百到千级），
    * 几百维点积是毫秒级，不需要向量索引，也就不需要 pgvector 之类的额外组件。
@@ -249,23 +243,13 @@ export class OfficialBagsService {
     });
     const byId = new Map<string, BagWithBrand>(bags.map((bag) => [bag.id, bag]));
 
-    if (best.score >= settings.autoThreshold) {
-      const bag = byId.get(best.item);
-      if (bag) {
-        return {
-          result: 'MATCHED',
-          matched: await this.toDto(bag, await this.isClaimed(userId, bag.id)),
-          compared
-        };
-      }
-    }
-
     const candidates: OfficialBagMatchCandidateDto[] = [];
     for (const entry of ranked) {
+      if (entry.score < settings.candidateThreshold) continue;
       const bag = byId.get(entry.item);
       if (!bag) continue;
       /* score 原样带回去：阈值是经验值，调它的时候要能看到真实分布 */
-      candidates.push({ bag: await this.toDto(bag), score: Number(entry.score.toFixed(4)) });
+      candidates.push({ bag: await this.toDto(bag, await this.isClaimed(userId, bag.id)), score: Number(entry.score.toFixed(4)) });
     }
     if (!candidates.length) return { result: 'NONE', compared };
     return { result: 'CANDIDATES', candidates, compared };

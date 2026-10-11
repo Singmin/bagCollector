@@ -1,4 +1,7 @@
 import { Injectable } from '@nestjs/common';
+import { COLOR_SCAN_MODEL, DEFAULT_SCAN_SETTINGS, DINO_SCAN_MODEL, type ScanSettings } from '@bagcollect/bag-vision';
+import { scanSettingsSchema } from '@bagcollect/contracts';
+import { ApiError } from '../common/api-error.js';
 import type { MatchSettingsDto, MatchSettingsInput } from '@bagcollect/contracts';
 import { env } from '../common/env.js';
 import { PrismaService } from '../database/prisma.service.js';
@@ -21,6 +24,48 @@ const KEY_LIMIT = 'match.candidateLimit';
 @Injectable()
 export class SettingsService {
   constructor(private readonly prisma: PrismaService) {}
+
+  async scanSettings(): Promise<ScanSettings> {
+    const row = await this.prisma.appSetting.findUnique({ where: { key: 'scan.settings' } });
+    try {
+      return scanSettingsSchema.parse({ ...DEFAULT_SCAN_SETTINGS, ...(row ? JSON.parse(row.value) : {}) });
+    } catch { return { ...DEFAULT_SCAN_SETTINGS }; }
+  }
+
+  async scanCoverage(engine: 'color' | 'dino' = 'dino') {
+    const model = engine === 'dino' ? DINO_SCAN_MODEL : COLOR_SCAN_MODEL;
+    const bags = await this.prisma.officialBag.findMany({
+      where: { status: 'PUBLISHED', processStatus: 'READY' },
+      select: { id: true, version: true, images: { where: { status: 'AVAILABLE', kind: { in: ['CUTOUT', 'DISPLAY'] } }, select: { version: true, kind: true } },
+        scanEmbeddings: { where: { model, referenceKey: 'primary' }, select: { sourceVersion: true, sourceKind: true, vector: true, colorVector: true } } }
+    });
+    const ready = bags.filter(b => {
+      const source = b.images.find(i => i.version === b.version && i.kind === 'CUTOUT') ?? b.images.find(i => i.version === b.version && i.kind === 'DISPLAY');
+      return source && b.scanEmbeddings.some(e => e.sourceVersion === source.version && e.sourceKind === source.kind &&
+        e.vector.length === (engine === 'dino' ? 384 : 389) && e.colorVector.length === 389 && [...e.vector, ...e.colorVector].every(Number.isFinite));
+    }).length;
+    return { model, total: bags.length, ready, missing: bags.length - ready };
+  }
+
+  async updateScanSettings(adminId: string, input: ScanSettings) {
+    const old = await this.scanSettings();
+    if (input.engine !== old.engine && input.engine === 'dino') {
+      const coverage = await this.scanCoverage();
+      if (!coverage.total || coverage.missing) throw new ApiError('CONFLICT', '新模型主参考向量尚未全部就绪，请先补算', 409);
+      try {
+        const serviceUrl = process.env.VISION_SERVICE_URL;
+        if (!serviceUrl) throw new Error('not configured');
+        const response = await fetch(`${serviceUrl.replace(/\/$/, '')}/health/ready`, { signal: AbortSignal.timeout(3000) });
+        const health = await response.json() as { model?: string };
+        if (!response.ok || health.model !== DINO_SCAN_MODEL) throw new Error('model not ready');
+      } catch { throw new ApiError('CONFLICT', 'DINO 模型服务尚未就绪或版本不一致', 409); }
+    }
+    await this.prisma.$transaction([
+      this.prisma.appSetting.upsert({ where: { key: 'scan.settings' }, create: { key: 'scan.settings', value: JSON.stringify(input) }, update: { value: JSON.stringify(input) } }),
+      this.prisma.auditLog.create({ data: { adminId, action: 'SCAN_SETTINGS_UPDATE', targetId: 'settings', metadata: { ...input } } })
+    ]);
+    return input;
+  }
 
   private defaults(): MatchSettingsDto {
     const config = env();

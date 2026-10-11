@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref } from 'vue';
-import { onLoad } from '@dcloudio/uni-app';
-import type { Collectible, OfficialBag, OfficialBagMatchCandidate, Shelf, UploadPolicy } from '../../../types';
+import { ref, getCurrentInstance } from 'vue';
+import { onLoad, onUnload, onHide, onShow } from '@dcloudio/uni-app';
+import type { OfficialBag, OfficialBagMatchCandidate, UploadPolicy } from '../../../types';
+import { previewCrop, type Rect } from '../../../services/scan-crop';
 import { api, authorizedHeaders } from '../../../services/http';
 import { dataService } from '../../../services/data';
 
@@ -22,11 +23,18 @@ const uploading = ref(false);
 const compressing = ref(false);
 const progress = ref(0);
 const errorMessage = ref('');
+const instance = getCurrentInstance();
+const recognitionStage = ref('');
+const matchMessage = ref('');
+let pageAlive = true;
+let pageVisible = true;
+let pollingGeneration = 0;
+let pendingCrop: { x: number; y: number; width: number; height: number; rotation: number } | undefined;
+const scanId = ref('');
 
 /* ── 扫描匹配 ──
    打开时，拍照后先拿这张照片去比对官方袋子库：
-   相似度足够高就直接入库（用户不用填任何信息），有相近的就让用户点选，
-   都不像则提示后转入手工上传。关闭时维持原来的「拍完填信息」流程。 */
+   所有候选由用户点选确认；未找到时允许调整裁剪或继续手工上传。 */
 const scanMode = ref(false);
 /** result = CANDIDATES 时的待选列表 */
 const candidates = ref<OfficialBagMatchCandidate[]>([]);
@@ -92,6 +100,8 @@ function compress(path: string, size?: { width: number; height: number }) {
 
 // 压缩失败、平台不支持或压缩后反而更大时，一律回退原图，不能让压缩挡掉上传。
 async function prepareUpload(path: string) {
+  // Preserve the exact original, its EXIF orientation and transparency for scan retries.
+  if (scanMode.value) return path;
   let originalSize = 0;
   try {
     originalSize = await fileSize(path);
@@ -211,32 +221,66 @@ async function submit(sourcePath: string) {
 /**
  * 扫描匹配：拍完先比对官方袋子库。
  *
- * 命中就直接把这袋子收进收藏（用户零操作）；有相近的就让用户点一个；
- * 都不像则提示「未匹配成功，请手动上传」，并把刚拍的这张直接带进填写信息页 ——
- * 照片这时已经在库里了，不该让用户白拍一次。
+ * 所有结果先展示候选供用户确认。没有候选时仍保留照片，允许裁剪重试或手动上传。
  */
-async function submitAndMatch(sourcePath: string) {
+async function submitAndMatch(sourcePath: string, source: 'camera' | 'album', crop?: { x: number; y: number; width: number; height: number; rotation: number }) {
   if (uploading.value) return;
   try {
     const id = await uploadAndPrepare(sourcePath);
     scannedCollectibleId.value = id;
-    uploading.value = false;
-    const match = await dataService.matchOfficialBag(id);
-    if (match.result === 'MATCHED' && match.matched) {
-      /* 「已经拥有」不算匹配失败，但确实没有可入库的东西了 —— 先说清原因，
-         再让照片按手动上传走下去（用户可能就是想把它记下来）。 */
-      if (match.matched.claimed) return void goManual('你已经拥有这只袋子了，继续手动上传');
-      return void (await adoptMatch(match.matched));
-    }
-    if (match.result === 'CANDIDATES' && match.candidates?.length) {
-      candidates.value = match.candidates;
-      showCandidates.value = true;
-      return;
-    }
-    return void goManual('未匹配到官方袋子，请手动填写信息');
+    await recognize(id, source, crop);
   } catch (error) {
-    failUpload(error, '扫描失败，请重试');
+    uploading.value = false; recognitionStage.value = '';
+    if (scannedCollectibleId.value) {
+      matchMessage.value = error instanceof Error ? error.message : '识别暂时不可用';
+      candidates.value = []; showCandidates.value = true;
+    } else failUpload(error, '扫描失败，请重试');
   }
+}
+
+const scanReasons: Record<string, string> = {
+  LIBRARY_EMPTY: '官方袋子库暂时没有可匹配的袋子', INDEX_NOT_READY: '袋子识别数据尚未准备好，请稍后重试',
+  NO_CANDIDATES: '暂未找到相似款，可以调整裁剪范围再试', TIMEOUT: '识别超时，可以重试或继续手动上传',
+  SERVICE_UNAVAILABLE: '识别服务暂时不可用，可以稍后重试', INVALID_IMAGE: '没有识别到主体，请调整裁剪范围',
+  SOURCE_REMOVED: '照片已被删除，请重新上传', QUEUE_UNAVAILABLE: '识别服务暂时不可用'
+};
+async function recognize(id: string, source: 'camera' | 'album', crop?: { x: number; y: number; width: number; height: number; rotation: number }) {
+  uploading.value = true; showCandidates.value = false; recognitionStage.value = '正在识别';
+  try {
+    const created = await dataService.createMatchScan({ collectibleId: id, source, crop, requestId: `scan-${Date.now()}-${Math.random().toString(36).slice(2)}` });
+    scanId.value = created.scanId;
+    await pollScan(created.scanId);
+  } catch (error) { uploading.value = false; recognitionStage.value = ''; throw error; }
+}
+async function pollScan(id: string) {
+    const generation = ++pollingGeneration;
+    uploading.value = true; recognitionStage.value = '正在识别';
+    const deadline = Date.now() + 45_000;
+    try {
+    while (pageAlive && pageVisible && generation === pollingGeneration && Date.now() < deadline) {
+      const result = await dataService.matchScan(id);
+      if (!pageAlive || !pageVisible || generation !== pollingGeneration) return;
+      recognitionStage.value = result.stage === 'ENHANCING' ? '正在增强识别' : '正在识别';
+      if (result.stage === 'DONE' || result.stage === 'FAILED') {
+        candidates.value = result.candidates;
+        matchMessage.value = result.candidates.length ? '选一个收进收藏，或继续手动上传' : scanReasons[result.reason ?? ''] ?? '暂未找到相似款';
+        showCandidates.value = true; return;
+      }
+      await sleep(POLL_INTERVAL_MS);
+    }
+    if (pageAlive && pageVisible && generation === pollingGeneration) { candidates.value = []; matchMessage.value = scanReasons.TIMEOUT; showCandidates.value = true; }
+    } catch (error) { if (generation === pollingGeneration && pageVisible && pageAlive) throw error; }
+    finally { if (generation === pollingGeneration) { uploading.value = false; recognitionStage.value = ''; } }
+}
+
+function adjustAndRetry() {
+  const id = scannedCollectibleId.value;
+  if (!id || uploading.value) return;
+  showCandidates.value = false;
+  uni.navigateTo({ url: `/package-editor/pages/crop/index?id=${id}&scan=1`,
+    events: { scanCropConfirmed: (crop: { x: number; y: number; width: number; height: number; rotation: number }) => { pendingCrop = crop; } },
+    fail: () => { showCandidates.value = true; }
+  });
 }
 
 /**
@@ -244,9 +288,12 @@ async function submitAndMatch(sourcePath: string) {
  * 认领是引用模式（图片直接读官方库、不占用户存储），落库即就绪，所以立刻能在收藏里看到。
  */
 async function adoptMatch(bag: OfficialBag) {
-  showCandidates.value = false;
+  if (uploading.value || bag.claimed) return;
+  uploading.value = true;
   try {
-    const { collectibleId } = await dataService.claimOfficialBag(bag.id);
+    await dataService.claimOfficialBag(bag.id);
+    if (scanId.value) await dataService.scanFeedback(scanId.value, 'SELECTED', bag.id).catch(() => undefined);
+    showCandidates.value = false;
     /* 临时记录使命已尽。删失败不阻断体验：用户已经拿到袋子，
        留一条草稿总好过在这一步弹错误、让他以为没成功。 */
     const stale = scannedCollectibleId.value;
@@ -254,15 +301,15 @@ async function adoptMatch(bag: OfficialBag) {
     if (stale) await dataService.removeCollectible(stale).catch(() => undefined);
     uni.showToast({ title: `已匹配到「${bag.name}」`, icon: 'none', duration: 1200 });
     setTimeout(() => uni.switchTab({ url: '/pages/library/index' }), 1200);
-  } catch {
-    /* 绝大多数是「已经拥有过」（服务端 CONFLICT）；按未匹配处理，
-       不把它当错误弹给用户。 */
-    await goManual('这只袋子已经在你的收藏里了，继续手动上传');
-  }
+  } catch (error) {
+    uni.showToast({ title: error instanceof Error ? error.message : '收进收藏失败，请重试', icon: 'none' });
+  } finally { uploading.value = false; }
 }
 
 /** 未匹配：提示后转入手工上传流程，把刚拍的这张继续用下去（不必重拍）。 */
 async function goManual(message: string) {
+  if (uploading.value) return;
+  if (scanId.value) await dataService.scanFeedback(scanId.value, 'NONE').catch(() => undefined);
   showCandidates.value = false;
   const id = scannedCollectibleId.value;
   scannedCollectibleId.value = '';
@@ -272,8 +319,20 @@ async function goManual(message: string) {
 }
 
 /** 拍照 / 选图后的统一分流：扫描模式走匹配，否则走原来的填写流程。 */
-function handleShot(path: string) {
-  return scanMode.value ? submitAndMatch(path) : submit(path);
+function handleShot(path: string, source: 'camera' | 'album' = 'album', crop?: { x: number; y: number; width: number; height: number; rotation: number }) {
+  return scanMode.value ? submitAndMatch(path, source, crop) : submit(path);
+}
+
+async function shotCrop(path: string) {
+  const info = await new Promise<{ width: number; height: number; orientation?: string }>((resolve, reject) => uni.getImageInfo({ src: path, success: resolve, fail: reject }));
+  const rects = await new Promise<Rect[]>((resolve) => {
+    const query = uni.createSelectorQuery().in(instance?.proxy as any);
+    query.select('.capture-stage').boundingClientRect(); query.select('.guide-frame').boundingClientRect();
+    query.exec(result => resolve(result as Rect[]));
+  });
+  if (!rects[0] || !rects[1]) throw new Error('无法读取取景框，请重试');
+  const rotated = info.orientation?.startsWith('left') || info.orientation?.startsWith('right');
+  return previewCrop(rects[0], rects[1], rotated ? info.height : info.width, rotated ? info.width : info.height);
 }
 
 function toggleScanMode() {
@@ -288,7 +347,8 @@ function takePhoto() {
     quality: 'high',
     success: async (result) => {
       try {
-        await handleShot(result.tempImagePath);
+        const crop = scanMode.value ? await shotCrop(result.tempImagePath) : undefined;
+        await handleShot(result.tempImagePath, 'camera', crop);
       } catch (error) {
         errorMessage.value = error instanceof Error ? error.message : '拍照失败';
       } finally {
@@ -362,6 +422,19 @@ onLoad(() => {
     errorMessage.value = error instanceof Error ? error.message : '分类加载失败';
   });
 });
+onHide(() => { pageVisible = false; pollingGeneration++; if (recognitionStage.value) uploading.value = false; });
+onUnload(() => { pageAlive = false; pageVisible = false; });
+onShow(() => {
+  pageVisible = true;
+  if (pendingCrop) {
+    const crop = pendingCrop; pendingCrop = undefined;
+    void recognize(scannedCollectibleId.value, 'album', crop).catch(error => {
+      matchMessage.value = error instanceof Error ? error.message : '识别失败'; candidates.value = []; showCandidates.value = true;
+    });
+  } else if (scanId.value && scannedCollectibleId.value && !showCandidates.value && !uploading.value) {
+    void pollScan(scanId.value).catch(error => { matchMessage.value = String(error); candidates.value = []; showCandidates.value = true; });
+  }
+});
 </script>
 
 <template>
@@ -401,7 +474,7 @@ onLoad(() => {
       </view>
       <view v-if="uploading" class="upload-mask">
         <view class="upload-spinner" />
-        <text>{{ compressing ? '正在压缩照片' : progress < 100 ? `正在上传 ${progress}%` : '正在处理图片' }}</text>
+        <text>{{ recognitionStage || (compressing ? '正在压缩照片' : progress < 100 ? `正在上传 ${progress}%` : '正在处理图片') }}</text>
       </view>
     </view>
 
@@ -419,22 +492,23 @@ onLoad(() => {
       </button>
     </view>
 
-    <!-- 扫描到相近的袋子：交给用户点选。只有一个候选也走这里 ——
-         相似度没到「自动入库」的把握，让人确认一下比猜错强。 -->
+    <!-- 所有候选都由用户确认，包括只有一个候选的情况。 -->
     <view v-if="showCandidates" class="match-mask">
       <view class="match-sheet">
-        <text class="match-title">找到几个相似的袋子</text>
-        <text class="match-subtitle">选一个收进收藏，或继续手动上传</text>
+        <text class="match-title">{{ candidates.length ? '找到相似的袋子' : '暂未完成匹配' }}</text>
+        <text class="match-subtitle">{{ matchMessage }}</text>
         <scroll-view class="match-list" scroll-y>
           <view v-for="item in candidates" :key="item.bag.id" class="match-item" @tap="adoptMatch(item.bag)">
             <image class="match-thumb" :src="item.bag.thumbnailUrl" mode="aspectFit" />
             <view class="match-info">
               <text class="match-name">{{ item.bag.name }}</text>
               <text v-if="item.bag.brand" class="match-brand">{{ item.bag.brand }}</text>
+              <text v-if="item.bag.claimed" class="match-brand">已收藏</text>
             </view>
           </view>
         </scroll-view>
-        <button class="match-cancel" @tap="goManual('请手动填写信息完成上传')">都不是，手动上传</button>
+        <button class="match-cancel" :disabled="uploading" @tap="adjustAndRetry">调整裁剪后重试</button>
+        <button class="match-cancel" :disabled="uploading" @tap="goManual('请手动填写信息完成上传')">继续手动上传</button>
       </view>
     </view>
   </view>

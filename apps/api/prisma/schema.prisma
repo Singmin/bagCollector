@@ -90,6 +90,12 @@ enum Visibility {
   PUBLIC
 }
 
+// 版本记录状态：PLANNED = 计划中（下期改动），DONE = 已完成上线
+enum ReleaseNoteStatus {
+  PLANNED
+  DONE
+}
+
 model Brand {
   id        String       @id @default(cuid())
   name      String       @unique
@@ -120,6 +126,7 @@ model User {
   auditLogs         AuditLog[]
   officialClaims    OfficialClaim[]
   wishlistItems     WishlistItem[]
+  matchScans        MatchScan[]
 }
 
 model Session {
@@ -276,6 +283,8 @@ model Admin {
   auditLogs             AuditLog[]
   officialBags          OfficialBag[]
   reviewedSubmissions   Collectible[]
+  releaseNotes          ReleaseNote[]
+  planItems             PlanItem[]
 }
 
 model OfficialBag {
@@ -301,6 +310,8 @@ model OfficialBag {
   brand         Brand?              @relation(fields: [brandId], references: [id], onDelete: SetNull)
   images        OfficialBagImage[]
   embeddings    BagEmbedding[]
+  scanEmbeddings ScanEmbedding[]
+  references    BagReferenceImage[]
   claims        OfficialClaim[]
   wishlistedBy  WishlistItem[]
   /* 由哪个用户上传的袋子「纳入」而来（审核后台），一个用户袋子最多纳入一次 */
@@ -352,6 +363,74 @@ model BagEmbedding {
 
   @@unique([officialBagId, model])
   @@index([model])
+}
+
+model ScanEmbedding {
+  id            String      @id @default(cuid())
+  officialBagId String
+  /* Same bag/model supports a primary vector plus independent reference vectors. */
+  model         String
+  referenceKey  String      @default("primary")
+  colorVector   Float[]     @default([])
+  /* 已 L2 归一化的特征向量：比对时点积即余弦相似度。维度由模型决定。 */
+  vector        Float[]
+  /* 向量提取自哪张官方图及其版本：官方图换版后据此识别并重算。 */
+  sourceKind    AssetKind
+  sourceVersion Int
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  officialBag   OfficialBag @relation(fields: [officialBagId], references: [id], onDelete: Cascade)
+
+  @@unique([officialBagId, model, referenceKey])
+  @@index([model])
+}
+
+model BagReferenceImage {
+  id            String   @id @default(cuid())
+  officialBagId String
+  objectKey     String   @unique
+  contentType   String
+  version       Int      @default(1)
+  createdAt     DateTime @default(now())
+  officialBag   OfficialBag @relation(fields: [officialBagId], references: [id], onDelete: Cascade)
+  @@index([officialBagId])
+}
+
+model MatchScan {
+  id                String   @id @default(cuid())
+  userId            String
+  collectibleId     String
+  requestId         String
+  source            String
+  sourceKey         String
+  sourceVersion     Int
+  crop              Json?
+  model             String
+  settings          Json
+  stage             String   @default("QUEUED")
+  reason            String?
+  scores            Json     @default("[]")
+  compared          Int      @default(0)
+  enhancement       String   @default("NOT_NEEDED")
+  enhancementIssued Boolean  @default(false)
+  temporaryKeys     String[] @default([])
+  selectedBagId     String?
+  feedback          String?
+  elapsedMs         Int?
+  finishedAt        DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  user              User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@unique([userId, requestId])
+  @@index([createdAt])
+  @@index([userId, createdAt])
+}
+
+model ScanEnhancementUsage {
+  day   String
+  scope String
+  count Int @default(0)
+  @@id([day, scope])
 }
 
 // 心愿袋：用户对官方袋子的「想要」标记（发现页 ♥）。袋子下架/删除时级联清除。
@@ -406,4 +485,47 @@ model AppSetting {
   key       String   @id
   value     String
   updatedAt DateTime @updatedAt
+}
+
+/* 版本改动记录：每次发版新增一条，正文写本次改了什么。
+   版本号是给人看的自由文本（如 v1.3.0 / 10.11），不强约束格式。 */
+model ReleaseNote {
+  id          String            @id @default(cuid())
+  version     String
+  title       String
+  content     String            @default("")
+  status      ReleaseNoteStatus @default(PLANNED)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  createdById String?
+  createdBy   Admin?            @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  comments    ReleaseComment[]
+
+  @@index([status, createdAt])
+  @@index([createdAt])
+}
+
+/* 版本记录下的留言。作者存名字快照：即使管理员账号被删，历史留言仍可读。 */
+model ReleaseComment {
+  id            String      @id @default(cuid())
+  releaseNoteId String
+  authorName    String
+  content       String
+  createdAt     DateTime    @default(now())
+  releaseNote   ReleaseNote @relation(fields: [releaseNoteId], references: [id], onDelete: Cascade)
+
+  @@index([releaseNoteId, createdAt])
+}
+
+/* 下期改动计划：运营记下「下期要做什么」，做完打勾。 */
+model PlanItem {
+  id          String   @id @default(cuid())
+  title       String
+  done        Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createdById String?
+  createdBy   Admin?   @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([done, createdAt])
 }

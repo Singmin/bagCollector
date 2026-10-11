@@ -8,3 +8,4 @@ export {
 } from './features.js';
 
 export { cosineSimilarity, rankBySimilarity, type RankedCandidate, type VectorLike } from './similarity.js';
+export * from './scan.js';

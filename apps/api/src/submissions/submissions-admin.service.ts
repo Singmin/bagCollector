@@ -9,6 +9,8 @@ import {
   SubmissionStatus
 } from '@prisma/client';
 import type {
+  ClaimPageDto,
+  ClaimedBagRankDto,
   PromoteSubmissionInput,
   RejectSubmissionInput,
   SubmissionDto,
@@ -134,6 +136,13 @@ export class SubmissionsAdminService {
     };
   }
 
+  /** openid 脱敏：保留首 4 尾 4，中间打码；过短则收窄到首 2 尾 2（与用户管理页同一口径）。 */
+  private maskOpenid(openid: string) {
+    const head = openid.length <= 8 ? 2 : 4;
+    const tail = openid.length <= 8 ? 2 : 4;
+    return `${openid.slice(0, head)}***${openid.slice(-tail)}`;
+  }
+
   private async audit(adminId: string, action: string, targetId: string, metadata?: Prisma.InputJsonValue) {
     await this.prisma.auditLog.create({
       data: { adminId, action, targetId, ...(metadata !== undefined ? { metadata } : {}) }
@@ -175,6 +184,9 @@ export class SubmissionsAdminService {
               ]
             : null;
     const where = {
+      /* 认领官方袋子生成的收藏（sourceOfficialBagId 非空）不是用户上传，
+         不参与审核 —— 它们展示在「认领收藏」页签。 */
+      sourceOfficialBagId: null,
       ...(query.status ? { submissionStatus: query.status } : {}),
       ...(processStatuses ? { processingStatus: { in: processStatuses } } : {}),
       ...(fromDate || toDate
@@ -367,5 +379,79 @@ export class SubmissionsAdminService {
       include: { shelf: { select: { name: true } }, tags: { include: { tag: true } } }
     });
     return this.toDto(row, images.get(id)!);
+  }
+
+  /* ------------------------------ 认领收藏 ------------------------------ */
+
+  /** 用户在发现页点「标记已有」生成的认领记录（ OfficialClaim），按认领时间倒序。 */
+  async listClaims(query: { search?: string; page?: number; pageSize?: number }): Promise<ClaimPageDto> {
+    const pageSize = Math.min(Math.max(query.pageSize ?? 30, 1), 200);
+    const currentPage = Math.max(query.page ?? 1, 1);
+    const search = query.search?.trim();
+    const where = search
+      ? {
+          OR: [
+            { officialBag: { name: { contains: search, mode: 'insensitive' as const } } },
+            { officialBag: { brand: { name: { contains: search, mode: 'insensitive' as const } } } },
+            { user: { openid: { contains: search, mode: 'insensitive' as const } } }
+          ]
+        }
+      : undefined;
+    const [items, totalCount] = await Promise.all([
+      this.prisma.officialClaim.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (currentPage - 1) * pageSize,
+        take: pageSize,
+        include: {
+          officialBag: { include: { brand: { select: { name: true } } } },
+          user: { select: { openid: true } }
+        }
+      }),
+      this.prisma.officialClaim.count({ where })
+    ]);
+    return {
+      items: items.map((claim) => ({
+        id: claim.id,
+        userId: claim.userId,
+        openidMasked: this.maskOpenid(claim.user.openid),
+        bagId: claim.officialBagId,
+        bagName: claim.officialBag.name,
+        ...(claim.officialBag.brand ? { brandName: claim.officialBag.brand.name } : {}),
+        collectibleId: claim.collectibleId,
+        claimedAt: claim.createdAt.toISOString()
+      })),
+      totalCount
+    };
+  }
+
+  /** 被认领最多的官方袋子排行：按 OfficialClaim 分组统计，认领次数降序。 */
+  async topClaimedBags(limit = 50): Promise<ClaimedBagRankDto[]> {
+    const groups = await this.prisma.officialClaim.groupBy({
+      by: ['officialBagId'],
+      _count: { officialBagId: true },
+      _max: { createdAt: true },
+      orderBy: { _count: { officialBagId: 'desc' } },
+      take: Math.min(Math.max(limit, 1), 200)
+    });
+    if (!groups.length) return [];
+    const bags = await this.prisma.officialBag.findMany({
+      where: { id: { in: groups.map((group) => group.officialBagId) } },
+      include: { brand: { select: { name: true } } }
+    });
+    const bagById = new Map(bags.map((bag) => [bag.id, bag]));
+    return groups.flatMap((group) => {
+      const bag = bagById.get(group.officialBagId);
+      if (!bag) return [];
+      return [
+        {
+          bagId: bag.id,
+          bagName: bag.name,
+          ...(bag.brand ? { brandName: bag.brand.name } : {}),
+          claimCount: group._count.officialBagId,
+          latestClaimedAt: (group._max.createdAt ?? bag.createdAt).toISOString()
+        }
+      ];
+    });
   }
 }

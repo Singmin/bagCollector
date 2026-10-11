@@ -35,6 +35,7 @@ docker info >/dev/null 2>&1 || {
 
 API_IMAGE="bagcollect-api:$IMAGE_TAG"
 ADMIN_IMAGE="bagcollect-admin:$IMAGE_TAG"
+VISION_IMAGE="bagcollect-vision:$IMAGE_TAG"
 
 # 版本号（git commit SHA）与构建时间注入前端静态资源，后台右上角据此核对线上版本。
 BUILD_VERSION="$IMAGE_TAG"
@@ -57,13 +58,20 @@ DOCKER_BUILDKIT=1 docker build --progress=plain \
   --file "$RELEASE_DIR/infra/Dockerfile" \
   "$RELEASE_DIR"
 
+# Model files live in the persistent deployment directory; runtime never downloads them.
+if grep -Eq '^VISION_ENABLED=1$' "$DEPLOY_DIR/infra/.env.deploy"; then
+  [ -f "$DEPLOY_DIR/data/vision-models/dinov2-small.onnx" ] || { echo "缺少预先准备的 DINO 模型" >&2; exit 1; }
+  [ -f "$DEPLOY_DIR/data/vision-models/manifest.json" ] || { echo "缺少模型校验清单" >&2; exit 1; }
+  docker build --file "$RELEASE_DIR/apps/vision/Dockerfile" --tag "$VISION_IMAGE" "$RELEASE_DIR"
+fi
+
 # 两个镜像都构建成功后才更新稳定部署定义；构建失败不会碰当前运行环境。
 mkdir -p "$DEPLOY_DIR/infra"
 cp "$RELEASE_DIR/infra/docker-compose.yml" "$DEPLOY_DIR/infra/docker-compose.yml"
 cp "$RELEASE_DIR/infra/deploy.sh" "$DEPLOY_DIR/infra/deploy.sh"
 cp "$RELEASE_DIR/infra/.env.deploy.example" "$DEPLOY_DIR/infra/.env.deploy.example"
 
-export API_IMAGE ADMIN_IMAGE
+export API_IMAGE ADMIN_IMAGE VISION_IMAGE
 export BAGCOLLECT_DEPLOY_DIR="$DEPLOY_DIR"
 export SKIP_IMAGE_PULL=1
 

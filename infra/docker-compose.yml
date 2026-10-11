@@ -133,6 +133,41 @@ services:
       redis:
         condition: service_healthy
 
+  scan-worker:
+    image: ${API_IMAGE:?set API_IMAGE}
+    restart: unless-stopped
+    logging: *default-logging
+    command: ["node", "apps/worker/dist/scan-main.js"]
+    env_file: ${BAGCOLLECT_RUNTIME_ENV_FILE:-.env.deploy}
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-bagcollect}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bagcollect}
+      REDIS_URL: redis://redis:6379
+      STORAGE_DRIVER: cos
+      NODE_ENV: production
+      TZ: Asia/Shanghai
+      VISION_SERVICE_URL: ${VISION_SERVICE_URL:-}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  vision:
+    profiles: ["vision"]
+    image: ${VISION_IMAGE:-bagcollect-vision:local}
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 768m
+    cpus: 1
+    volumes:
+      - ../data/vision-models:/models:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
   # ---------------------------------------------------------------------------
   # 自托管 rembg + BiRefNet 抠图服务。已不在主链路上（worker 不依赖它），
   # 定义保留未删除，需要单独跑推理服务时再启用。

@@ -45,6 +45,24 @@ export class SubmissionsAdminController {
     });
   }
 
+  @Get('claims/top')
+  claimsTop() {
+    return this.submissions.topClaimedBags();
+  }
+
+  @Get('claims')
+  claims(
+    @Query('search') search?: string,
+    @Query('page') rawPage?: string,
+    @Query('pageSize') rawPageSize?: string
+  ) {
+    return this.submissions.listClaims({
+      search,
+      page: rawPage ? Number(rawPage) : undefined,
+      pageSize: rawPageSize ? Number(rawPageSize) : undefined
+    });
+  }
+
   @Post(':id/promote')
   promote(@Req() request: FastifyRequest & { adminAuth?: AdminAuth }, @Param('id') id: string, @Body() body: unknown) {
     return this.submissions.promote(currentAdmin(request).adminId, id, parseBody(promoteSubmissionSchema, body));
