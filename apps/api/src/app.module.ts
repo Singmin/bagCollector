@@ -11,6 +11,7 @@ import { FeedModule } from './feed/feed.module.js';
 import { HealthController } from './health.controller.js';
 import { JobsModule } from './jobs/jobs.module.js';
 import { OfficialBagsModule } from './official-bags/official-bags.module.js';
+import { ReleasesModule } from './releases/releases.module.js';
 import { SettingsModule } from './settings/settings.module.js';
 import { ShelvesModule } from './shelves/shelves.module.js';
 import { SubmissionsModule } from './submissions/submissions.module.js';
@@ -33,7 +34,8 @@ import { UsersModule } from './users/users.module.js';
     SubmissionsModule,
     FeedModule,
     UsersModule,
-    SettingsModule
+    SettingsModule,
+    ReleasesModule
   ],
   controllers: [HealthController]
 })

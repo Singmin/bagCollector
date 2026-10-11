@@ -24,6 +24,7 @@ import {
   Statistic,
   Switch,
   Table,
+  Tabs,
   Tag,
   Tooltip,
   Typography,
@@ -35,6 +36,7 @@ import {
   AuditOutlined,
   DashboardOutlined,
   FileImageOutlined,
+  HistoryOutlined,
   LogoutOutlined,
   MenuFoldOutlined,
   PlusOutlined,
@@ -45,6 +47,9 @@ import {
   TeamOutlined,
   UploadOutlined
 } from '@ant-design/icons';
+import { api, TOKEN_KEY } from './api';
+import { ClaimStats } from './ClaimStats';
+import { ChangelogPage } from './ChangelogPage';
 
 interface Overview {
   users: number;
@@ -174,31 +179,10 @@ interface JobPage {
   totalCount: number;
 }
 
-const TOKEN_KEY = 'bagcollect:admin-token';
-
 /** 是否为手机端（< 768px），用于切换导航形态与控件宽度。 */
 function useIsMobile() {
   const screens = Grid.useBreakpoint();
   return !screens.md;
-}
-
-async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const token = sessionStorage.getItem(TOKEN_KEY);
-  // 只有真的带 JSON body 时才声明 Content-Type：DELETE 这类没有 body 的请求
-  // 若带上 application/json，Fastify 会按「空 JSON body」直接返回 400。
-  const hasJsonBody =
-    options.body !== undefined && options.body !== null && !(options.body instanceof FormData);
-  const response = await fetch(`/api/admin${path}`, {
-    ...options,
-    headers: {
-      ...(hasJsonBody ? { 'Content-Type': 'application/json' } : {}),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...options.headers
-    }
-  });
-  const body = await response.json().catch(() => null);
-  if (!response.ok) throw new Error(body?.error?.message || body?.message || '请求失败');
-  return body as T;
 }
 
 function formatBytes(bytes: number) {
@@ -265,7 +249,7 @@ const userStatusColors: Record<AdminUser['status'], string> = {
 /** 列表上的处理进度分档。三档展开成具体状态的事在服务端做，见 submissions-admin.service。 */
 type ProcessFilter = 'ALL' | 'READY' | 'PROCESSING' | 'FAILED';
 
-type PageKey = 'overview' | 'bags' | 'brands' | 'submissions' | 'users' | 'audit' | 'match';
+type PageKey = 'overview' | 'bags' | 'brands' | 'submissions' | 'users' | 'audit' | 'match' | 'changelog';
 
 /** 拍照扫描袋子的判定阈值（存库、后台可改、保存即生效）。 */
 interface MatchSettings {
@@ -331,6 +315,8 @@ export function App() {
   const [savingMatchSettings, setSavingMatchSettings] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
+  /** 版本改动页的刷新：自增 key 强制重挂载，让页面重新拉取数据。 */
+  const [changelogRefreshKey, setChangelogRefreshKey] = useState(0);
   const [brands, setBrands] = useState<Brand[]>([]);
   const [editingBrand, setEditingBrand] = useState<Brand | 'new' | null>(null);
   const [submissions, setSubmissions] = useState<Submission[]>([]);
@@ -343,6 +329,10 @@ export function App() {
   const [promoting, setPromoting] = useState<Submission | null>(null);
   const [rejecting, setRejecting] = useState<Submission | null>(null);
   const [processFilter, setProcessFilter] = useState<ProcessFilter>('ALL');
+  /** 用户上传审核页的子页签：uploads = 用户上传，claims = 认领收藏。 */
+  const [submissionTab, setSubmissionTab] = useState('uploads');
+  /** 认领收藏页签的刷新：自增 key 强制重挂载，让组件重新拉取数据。 */
+  const [claimsRefreshKey, setClaimsRefreshKey] = useState(0);
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [userStatusFilter, setUserStatusFilter] = useState<'' | AdminUser['status']>('');
   const [userSearch, setUserSearch] = useState('');
@@ -525,6 +515,9 @@ export function App() {
       else if (page === 'users') void loadUsers();
       else if (page === 'audit') void loadAuditLogs();
       else if (page === 'match') void loadMatchSettings();
+      else if (page === 'changelog') {
+        // 版本改动页自己管理数据加载，这里不触发任何主组件的 load。
+      }
       else void loadBrands();
     }, 0);
     return () => window.clearTimeout(timer);
@@ -701,7 +694,8 @@ export function App() {
     { key: 'submissions', icon: <FileImageOutlined />, label: '用户上传审核' },
     { key: 'users', icon: <TeamOutlined />, label: '用户管理' },
     { key: 'audit', icon: <AuditOutlined />, label: '审计日志' },
-    { key: 'match', icon: <SettingOutlined />, label: '匹配设置' }
+    { key: 'match', icon: <SettingOutlined />, label: '匹配设置' },
+    { key: 'changelog', icon: <HistoryOutlined />, label: '版本改动' }
   ];
 
   const pageTitles: Record<PageKey, string> = {
@@ -711,7 +705,8 @@ export function App() {
     submissions: '用户上传审核',
     users: '用户管理',
     audit: '审计日志',
-    match: '匹配设置'
+    match: '匹配设置',
+    changelog: '版本改动'
   };
 
   const navMenu = (
@@ -729,10 +724,14 @@ export function App() {
   const refresh = () => {
     if (page === 'overview') void load();
     else if (page === 'brands') void loadBrands();
-    else if (page === 'submissions') void loadSubmissions();
+    else if (page === 'submissions') {
+      if (submissionTab === 'claims') setClaimsRefreshKey((key) => key + 1);
+      else void loadSubmissions();
+    }
     else if (page === 'users') void loadUsers();
     else if (page === 'audit') void loadAuditLogs();
     else if (page === 'match') void loadMatchSettings();
+    else if (page === 'changelog') setChangelogRefreshKey((key) => key + 1);
     else void loadBags();
   };
 
@@ -791,7 +790,9 @@ export function App() {
         <Layout.Content className="app-content">
           {error && <Alert type="error" showIcon message={error} style={{ marginBottom: 16 }} />}
 
-          {page === 'overview' ? (
+          {page === 'changelog' ? (
+            <ChangelogPage key={changelogRefreshKey} />
+          ) : page === 'overview' ? (
             <OverviewPage
               overview={overview}
               jobs={jobs}
@@ -946,7 +947,15 @@ export function App() {
               />
             </>
           ) : page === 'submissions' ? (
-            <>
+            <Tabs
+              activeKey={submissionTab}
+              onChange={setSubmissionTab}
+              items={[
+                {
+                  key: 'uploads',
+                  label: '用户上传',
+                  children: (
+                    <>
               <Card style={{ marginBottom: 16 }}>
                 <Space wrap direction={isMobile ? 'vertical' : 'horizontal'} style={{ width: isMobile ? '100%' : undefined }}>
                   <Select<'' | Submission['submissionStatus']>
@@ -1139,7 +1148,16 @@ export function App() {
                   void loadSubmissions();
                 }}
               />
-            </>
+                    </>
+                  )
+                },
+                {
+                  key: 'claims',
+                  label: '认领收藏',
+                  children: <ClaimStats key={claimsRefreshKey} />
+                }
+              ]}
+            />
           ) : page === 'users' ? (
             <>
               <Card style={{ marginBottom: 16 }}>

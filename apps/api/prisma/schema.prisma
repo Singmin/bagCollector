@@ -90,6 +90,12 @@ enum Visibility {
   PUBLIC
 }
 
+// 版本记录状态：PLANNED = 计划中（下期改动），DONE = 已完成上线
+enum ReleaseNoteStatus {
+  PLANNED
+  DONE
+}
+
 model Brand {
   id        String       @id @default(cuid())
   name      String       @unique
@@ -276,6 +282,8 @@ model Admin {
   auditLogs             AuditLog[]
   officialBags          OfficialBag[]
   reviewedSubmissions   Collectible[]
+  releaseNotes          ReleaseNote[]
+  planItems             PlanItem[]
 }
 
 model OfficialBag {
@@ -406,4 +414,47 @@ model AppSetting {
   key       String   @id
   value     String
   updatedAt DateTime @updatedAt
+}
+
+/* 版本改动记录：每次发版新增一条，正文写本次改了什么。
+   版本号是给人看的自由文本（如 v1.3.0 / 10.11），不强约束格式。 */
+model ReleaseNote {
+  id          String            @id @default(cuid())
+  version     String
+  title       String
+  content     String            @default("")
+  status      ReleaseNoteStatus @default(PLANNED)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  createdById String?
+  createdBy   Admin?            @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  comments    ReleaseComment[]
+
+  @@index([status, createdAt])
+  @@index([createdAt])
+}
+
+/* 版本记录下的留言。作者存名字快照：即使管理员账号被删，历史留言仍可读。 */
+model ReleaseComment {
+  id            String      @id @default(cuid())
+  releaseNoteId String
+  authorName    String
+  content       String
+  createdAt     DateTime    @default(now())
+  releaseNote   ReleaseNote @relation(fields: [releaseNoteId], references: [id], onDelete: Cascade)
+
+  @@index([releaseNoteId, createdAt])
+}
+
+/* 下期改动计划：运营记下「下期要做什么」，做完打勾。 */
+model PlanItem {
+  id          String   @id @default(cuid())
+  title       String
+  done        Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createdById String?
+  createdBy   Admin?   @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([done, createdAt])
 }

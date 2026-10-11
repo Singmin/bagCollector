@@ -14,6 +14,7 @@ export const officialBagStatuses = ['DRAFT', 'PUBLISHED', 'OFFLINE'] as const;
 export const officialProcessStatuses = ['PENDING', 'PROCESSING', 'READY', 'FAILED'] as const;
 export const submissionStatuses = ['PENDING', 'APPROVED', 'REJECTED'] as const;
 export const userStatuses = ['ACTIVE', 'SUSPENDED'] as const;
+export const releaseNoteStatuses = ['PLANNED', 'DONE'] as const;
 
 export type ShelfTheme = (typeof shelfThemes)[number];
 export type ProcessingStatus = (typeof processingStatuses)[number];
@@ -21,6 +22,7 @@ export type OfficialBagStatus = (typeof officialBagStatuses)[number];
 export type OfficialProcessStatus = (typeof officialProcessStatuses)[number];
 export type SubmissionStatus = (typeof submissionStatuses)[number];
 export type UserStatus = (typeof userStatuses)[number];
+export type ReleaseNoteStatus = (typeof releaseNoteStatuses)[number];
 
 /* 裁剪几何 + 调色：只描述「怎么裁」，不含「要不要抠图」——
    抠图是独立端点（POST /collectibles/:id/matte），两个动作互不夹带 */
@@ -376,6 +378,32 @@ export interface SubmissionPageDto {
   totalCount: number;
 }
 
+/** 管理后台：用户「标记已有」认领官方袋子的记录行。 */
+export interface ClaimRowDto {
+  id: string;
+  userId: string;
+  openidMasked: string;
+  bagId: string;
+  bagName: string;
+  brandName?: string;
+  collectibleId: string;
+  claimedAt: string;
+}
+
+export interface ClaimPageDto {
+  items: ClaimRowDto[];
+  totalCount: number;
+}
+
+/** 管理后台：被认领最多的官方袋子排行行。 */
+export interface ClaimedBagRankDto {
+  bagId: string;
+  bagName: string;
+  brandName?: string;
+  claimCount: number;
+  latestClaimedAt: string;
+}
+
 export type UpdateUserQuotaInput = z.infer<typeof updateUserQuotaSchema>;
 
 /** 管理后台：用户列表行。openid 脱敏展示，不落完整值给前端。 */
@@ -451,6 +479,73 @@ export interface ApiErrorBody {
     message: string;
     details?: unknown;
   };
+}
+
+/**
+ * 「版本改动」功能（管理后台菜单）。
+ * ReleaseNote 是每次发版的改动记录，正文自由书写；留言挂在其下；PlanItem 是「下期要做什么」的待办。
+ */
+export const createReleaseSchema = z.object({
+  version: z.string().trim().min(1).max(40),
+  title: z.string().trim().min(1).max(120),
+  content: z.string().max(10_000).optional(),
+  status: z.enum(releaseNoteStatuses).optional()
+});
+
+export const updateReleaseSchema = createReleaseSchema.partial();
+
+export const createReleaseCommentSchema = z.object({
+  content: z.string().trim().min(1).max(2000)
+});
+
+export const createPlanItemSchema = z.object({
+  title: z.string().trim().min(1).max(200)
+});
+
+export const updatePlanItemSchema = z
+  .object({
+    title: z.string().trim().min(1).max(200).optional(),
+    done: z.boolean().optional()
+  })
+  .refine((value) => value.title !== undefined || value.done !== undefined, {
+    message: '至少指定一项要更新的内容'
+  });
+
+export type CreateReleaseInput = z.infer<typeof createReleaseSchema>;
+export type UpdateReleaseInput = z.infer<typeof updateReleaseSchema>;
+export type CreateReleaseCommentInput = z.infer<typeof createReleaseCommentSchema>;
+export type CreatePlanItemInput = z.infer<typeof createPlanItemSchema>;
+export type UpdatePlanItemInput = z.infer<typeof updatePlanItemSchema>;
+
+export interface ReleaseCommentDto {
+  id: string;
+  authorName: string;
+  content: string;
+  createdAt: string;
+}
+
+export interface ReleaseNoteDto {
+  id: string;
+  version: string;
+  title: string;
+  content: string;
+  status: ReleaseNoteStatus;
+  commentCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ReleaseNotePageDto {
+  items: ReleaseNoteDto[];
+  totalCount: number;
+}
+
+export interface PlanItemDto {
+  id: string;
+  title: string;
+  done: boolean;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export const errorCodes = {
