@@ -148,7 +148,7 @@ fi
 #    TLS handshake timeout / i/o timeout 才是网络 —— 误判会把排查带偏。
 # ---------------------------------------------------------------------------
 if [ "${SKIP_IMAGE_PULL:-0}" = "1" ]; then
-  echo "使用服务器本地构建镜像，跳过镜像仓库拉取"
+  echo "使用已校验的本地镜像，跳过镜像仓库拉取"
   docker image inspect "${API_IMAGE:?set API_IMAGE}" >/dev/null 2>&1 || die "本地不存在镜像 $API_IMAGE"
   docker image inspect "${ADMIN_IMAGE:?set ADMIN_IMAGE}" >/dev/null 2>&1 || die "本地不存在镜像 $ADMIN_IMAGE"
 else

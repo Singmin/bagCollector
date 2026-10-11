@@ -1,9 +1,6 @@
 name: Build and deploy
 
-# main 分支每次合并：先跑完整验证（复用 ci.yml），再把已验证 commit 的源码传到
-# 生产服务器，同时复用 verify 编译的 Admin 静态产物。服务器只编译后端、打包后台，避免 GitHub 海外 Runner
-# 向国内镜像仓库推送百 MB 镜像时长期卡在 exporting to image。
-# 手动触发（workflow_dispatch）走同一条链路，只是不需要新的 commit。
+# All image builds run in CI. Production validates and imports the verified images.
 on:
   push:
     branches: [main]
@@ -30,20 +27,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download verified Admin artifact
+      - name: Download verified production images
         uses: actions/download-artifact@v4
         with:
-          name: admin-${{ github.sha }}
-          path: admin-artifact/
-
-      - name: Package verified source and Admin artifact
-        run: |
-          test -s admin-artifact/assets/index.html
-          test "$(cat admin-artifact/source-sha)" = "$GITHUB_SHA"
-          ARCHIVE="bagcollect-source-${GITHUB_SHA}.tar"
-          git archive --format=tar --output="$ARCHIVE" "$GITHUB_SHA"
-          tar -rf "$ARCHIVE" admin-artifact
-          gzip "$ARCHIVE"
+          name: production-images-${{ github.sha }}
+          path: production-images/
 
       - name: Preflight SSH connectivity check
         env:
@@ -105,10 +93,41 @@ jobs:
           fi
           echo "主机指纹采集成功"
 
-      - name: Copy verified source to the server
-        # 源码来自固定 commit 的 git archive，另附同次 verify 的 Admin 产物；不会包含
-        # 本机 .env、密钥、node_modules 或未提交文件。每次 run 使用独立目录。
-        # 用 Runner 自带的 OpenSSH 而非 scp-action：报错信息完整，失败快速可见。
+      - name: Check optional vision service
+        id: server
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          enabled=$(ssh -i ~/.ssh/deploy_key -p "$DEPLOY_PORT" -o ConnectTimeout=45 -o BatchMode=yes -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST" "test -f '$DEPLOY_PATH/infra/.env.deploy' || exit 1; if grep -Eq '^VISION_ENABLED=1$' '$DEPLOY_PATH/infra/.env.deploy'; then echo 1; else echo 0; fi")
+          test "$enabled" = 0 || test "$enabled" = 1
+          echo "vision=$enabled" >> "$GITHUB_OUTPUT"
+
+      - name: Download verified vision image
+        if: steps.server.outputs.vision == '1'
+        uses: actions/download-artifact@v4
+        with:
+          name: vision-images-${{ github.sha }}
+          path: vision-images/
+
+      - name: Package verified source and images
+        run: |
+          test "$(cat production-images/source-sha)" = "$GITHUB_SHA"
+          (cd production-images && sha256sum -c SHA256SUMS)
+          ARCHIVE="bagcollect-release-${GITHUB_SHA}.tar"
+          git archive --format=tar --output="$ARCHIVE" "$GITHUB_SHA" infra
+          tar -rf "$ARCHIVE" production-images
+          if [ -d vision-images ]; then
+            test "$(cat vision-images/source-sha)" = "$GITHUB_SHA"
+            (cd vision-images && sha256sum -c SHA256SUMS)
+            tar -rf "$ARCHIVE" vision-images
+          fi
+          du -h "$ARCHIVE"
+
+      - name: Copy verified release to the server
+        # Bundle contains only tracked infra files and this run's verified images.
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
@@ -117,38 +136,37 @@ jobs:
         run: |
           KEY="$HOME/.ssh/deploy_key"
           COMMON="-i $KEY -o ConnectTimeout=45 -o BatchMode=yes -o StrictHostKeyChecking=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
-          ARCHIVE="bagcollect-source-${GITHUB_SHA}.tar.gz"
+          ARCHIVE="bagcollect-release-${GITHUB_SHA}.tar"
           echo "===== 1/3 远程建目录 ====="
           timeout 60 ssh $COMMON -v -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$TARGET_DIR'"
-          echo "===== 2/3 上传源码包（-v 详细握手日志见 stderr；海外→国内链路偶发卡死，最多重试 3 次每次 10 分钟）====="
+          echo "===== 2/3 上传压缩镜像发布包（-v 详细握手日志见 stderr；海外→国内链路偶发卡死，最多重试 3 次每次 20 分钟）====="
           uploaded=0
+          started=$SECONDS
           for attempt in 1 2 3; do
             echo "--- scp 第 $attempt 次尝试 ---"
-            if timeout 600 scp $COMMON -P "$DEPLOY_PORT" "$ARCHIVE" "$DEPLOY_USER@$DEPLOY_HOST:$TARGET_DIR/"; then
+            if timeout 1200 scp $COMMON -P "$DEPLOY_PORT" "$ARCHIVE" "$DEPLOY_USER@$DEPLOY_HOST:$TARGET_DIR/"; then
               uploaded=1
               break
             fi
-            echo "scp 第 $attempt 次失败（10 分钟超时或中断），5 秒后重试"
+            echo "scp 第 $attempt 次失败（20 分钟超时或中断），5 秒后重试"
             sleep 5
           done
           [ "$uploaded" -eq 1 ] || { echo "::error::scp 连续 3 次上传失败" >&2; exit 1; }
+          echo "发布包传输耗时：$((SECONDS - started)) 秒"
           echo "===== 3/3 校验文件完整性 ====="
+          checksum=$(sha256sum "$ARCHIVE" | cut -d' ' -f1)
           timeout 60 ssh $COMMON -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
-            "test -s '$TARGET_DIR/$ARCHIVE' && echo '源码包已上传并通过完整性检查：$TARGET_DIR/$ARCHIVE'"
+            "cd '$TARGET_DIR' && echo '$checksum  $ARCHIVE' | sha256sum -c - && test -s '$TARGET_DIR/$ARCHIVE' && echo '发布包已上传并通过完整性检查：$TARGET_DIR/$ARCHIVE'"
 
-      - name: Build and deploy fixed source SHA on the server
-        # 首次服务器构建需要拉基础镜像并安装依赖；后续命中 Docker BuildKit 缓存会快很多。
-        # 海外 Runner -> 国内服务器的 SSH 链路偶发「Timeout, server not responding」
-        # （exit 255，连接被掐断）。构建在服务器上通过 nohup 脱离会话运行，不会因此中断，
-        # 所以这里允许断线重连：只要后台任务还没写状态文件，重连后继续轮询等结果，
-        # 不重复启动构建；其余退出码视为真实部署失败，立即终止。
+      - name: Import verified images and deploy on the server
+        # Detached deployment may survive SSH loss; its state is unknown until rechecked.
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
           attempt=0
-          max_attempts=6
+          max_attempts=3
           while :; do
             attempt=$((attempt+1))
             echo "===== SSH 连接（第 $attempt/$max_attempts 次）====="
@@ -160,19 +178,19 @@ jobs:
             set -eu
             DEPLOY_DIR="${{ secrets.DEPLOY_PATH }}"
             TRANSFER_DIR="$DEPLOY_DIR/incoming/${{ github.run_id }}-${{ github.run_attempt }}"
-            ARCHIVE="$TRANSFER_DIR/bagcollect-source-${{ github.sha }}.tar.gz"
+            ARCHIVE="$TRANSFER_DIR/bagcollect-release-${{ github.sha }}.tar"
             RELEASE_DIR="$DEPLOY_DIR/releases/${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}"
 
             LOG=/tmp/bagcollect-deploy.log
             STATUS_FILE="/tmp/bagcollect-deploy-${{ github.run_id }}-${{ github.run_attempt }}.status"
             LAUNCHED_FILE="$STATUS_FILE.launched"
 
-            # 只在第一次连接时解压并启动后台构建；重连时直接跳到轮询，
+            # 只在第一次连接时解压并启动后台部署；重连时直接跳到轮询，
             # 避免把同一个 commit 的构建启动两遍。
             if [ ! -f "$STATUS_FILE" ] && [ ! -f "$LAUNCHED_FILE" ]; then
-              [ -f "$ARCHIVE" ] || { echo "找不到源码包：$ARCHIVE" >&2; exit 1; }
+              [ -f "$ARCHIVE" ] || { echo "找不到发布包：$ARCHIVE" >&2; exit 1; }
               mkdir -p "$RELEASE_DIR"
-              tar -xzf "$ARCHIVE" -C "$RELEASE_DIR"
+              tar -xf "$ARCHIVE" -C "$RELEASE_DIR"
               rm -f "$LOG" "$STATUS_FILE" "$LAUNCHED_FILE"
               nohup sh -c '
                 status=0
@@ -180,36 +198,35 @@ jobs:
                   BAGCOLLECT_DEPLOY_DIR="$2" \
                   BAGCOLLECT_RELEASE_DIR="$3" \
                   BAGCOLLECT_IMAGE_TAG="$4" \
-                  sh "$3/infra/build-and-deploy.sh" || status=$?
+                  sh "$3/infra/load-and-deploy.sh" || status=$?
                 printf "%s\n" "$status" > "$1.tmp"
                 mv "$1.tmp" "$1"
               ' sh "$STATUS_FILE" "$DEPLOY_DIR" "$RELEASE_DIR" "${{ github.sha }}" \
                 </dev/null >"$LOG" 2>&1 &
               touch "$LAUNCHED_FILE"
-              echo "已在服务器后台启动构建/部署，日志：$LOG"
+              echo "已在服务器后台启动导入/部署，日志：$LOG"
             else
-              echo "检测到之前的后台构建，继续跟进（不重复启动）"
+              echo "检测到之前的后台部署，继续跟进（不重复启动）"
             fi
 
-            # 构建和部署都脱离 SSH 会话。即使连接中断，服务器仍会继续完成；
-            # 每分钟回显一次末尾日志，GitHub 页面不会再长时间看起来像卡死。
-            for i in $(seq 1 260); do
+            # Detached tasks can survive SSH loss, but server state must be rechecked.
+            for i in $(seq 1 80); do
               [ ! -f "$STATUS_FILE" ] || break
               if [ $((i % 3)) -eq 0 ]; then
-                echo "--- 服务器构建/部署仍在进行（最近日志）---"
+                echo "--- 服务器导入/部署仍在进行（最近日志）---"
                 tail -n 12 "$LOG" || true
               fi
               sleep 20
             done
 
             if [ ! -f "$STATUS_FILE" ]; then
-              echo "本次连接等待超时；服务器后台任务仍会继续，重连后继续跟进，日志见 $LOG" >&2
+              echo "本次连接等待超时；后台任务是否存活需要重新检查，日志见 $LOG" >&2
               exit 124
             fi
             status=$(cat "$STATUS_FILE")
             tail -n 80 "$LOG"
             if [ "$status" -ne 0 ]; then
-              echo "服务器构建/部署失败（exit $status），完整日志见 $LOG" >&2
+              echo "服务器导入/部署失败（exit $status），完整日志见 $LOG" >&2
               exit 1
             fi
             grep -q "部署完成" "$LOG" || { echo "未在日志中找到『部署完成』标记" >&2; exit 1; }
@@ -220,10 +237,9 @@ jobs:
             if [ "$rc" -eq 0 ]; then
               break
             fi
-            # 255：SSH 连接被掐断；124：单次连接等待上限。两种情况下服务器后台
-            # 构建仍在跑，重连跟进即可。其余退出码是真实的部署失败，直接终止。
+            # Reconnect to inspect status without launching the deployment twice.
             if [ "$attempt" -lt "$max_attempts" ] && { [ "$rc" -eq 255 ] || [ "$rc" -eq 124 ]; }; then
-              echo "SSH 连接中断（exit $rc），服务器后台构建未受影响；30 秒后重连跟进" >&2
+              echo "SSH 连接中断（exit $rc），服务器状态未知，可能资源耗尽或网络中断；30 秒后尝试重新检查" >&2
               sleep 30
               continue
             fi
