@@ -1,0 +1,33 @@
+name: Image footprint
+on:
+  pull_request:
+    paths:
+      - infra/Dockerfile
+      - apps/vision/Dockerfile
+      - .github/workflows/image-footprint.yml
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build API and vision images for measurement
+        run: |
+          docker build --target api --tag bagcollect-footprint-api -f infra/Dockerfile .
+          docker build --tag bagcollect-footprint-vision -f apps/vision/Dockerfile .
+      - name: Measure image layers and largest directories
+        run: |
+          for image in bagcollect-footprint-api bagcollect-footprint-vision; do
+            echo "===== $image ====="
+            docker image inspect --format 'Uncompressed image bytes: {{.Size}}' "$image"
+            docker history --no-trunc --format '{{.Size}}  {{.CreatedBy}}' "$image"
+            docker run --rm --entrypoint sh "$image" -c '
+              echo "===== root directories ====="
+              du -kx -d 2 /app /root /usr/local 2>/dev/null | sort -n | tail -n 25
+              echo "===== largest pnpm packages ====="
+              du -sk /app/node_modules/.pnpm/* 2>/dev/null | sort -n | tail -n 25
+              echo "===== largest individual files ====="
+              find /app /root /usr/local -type f -size +10M -exec ls -l {} \; 2>/dev/null
+            '
+          done
