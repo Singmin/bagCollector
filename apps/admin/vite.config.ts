@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react';
 import { execSync } from 'node:child_process';
 
 // 构建时注入版本号与时间戳，后台右上角据此核对线上运行的是哪份代码。
-// 生产构建由 Docker build-arg 传入 BUILD_VERSION（git commit SHA）/ BUILD_TIME；
+// 生产构建在 CI Runner 读取 BUILD_VERSION（git commit SHA）/ BUILD_TIME；
 // 本地开发回退到当前 git HEAD 短哈希与本地时间。
 function resolveVersion(): string {
   const fromEnv = process.env.BUILD_VERSION;

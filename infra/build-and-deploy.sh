@@ -1,5 +1,5 @@
 #!/bin/sh
-# 在生产服务器上从 GitHub Actions 传来的、已验证的 commit 源码构建镜像，然后调用
+# 在生产服务器上从已验证的 commit 源码与 CI 编译的 Admin 产物构建镜像，然后调用
 # deploy.sh 完成备份、迁移、容器切换、健康检查和失败回滚。
 set -eu
 
@@ -20,6 +20,16 @@ esac
   echo "构建中止：找不到 $RELEASE_DIR/infra/Dockerfile" >&2
   exit 1
 }
+# 必须在任何镜像构建/部署之前检查产物，避免缺失或混入其他 commit 的后台。
+[ -s "$RELEASE_DIR/admin-artifact/assets/index.html" ] || {
+  echo "构建中止：缺少 CI 编译的 Admin 产物" >&2
+  exit 1
+}
+[ -f "$RELEASE_DIR/admin-artifact/source-sha" ] && \
+  [ "$(cat "$RELEASE_DIR/admin-artifact/source-sha")" = "$IMAGE_TAG" ] || {
+  echo "构建中止：Admin 产物与部署 commit 不一致" >&2
+  exit 1
+}
 [ -f "$DEPLOY_DIR/infra/.env.deploy" ] || {
   echo "构建中止：找不到 $DEPLOY_DIR/infra/.env.deploy" >&2
   exit 1
@@ -37,22 +47,15 @@ API_IMAGE="bagcollect-api:$IMAGE_TAG"
 ADMIN_IMAGE="bagcollect-admin:$IMAGE_TAG"
 VISION_IMAGE="bagcollect-vision:$IMAGE_TAG"
 
-# 版本号（git commit SHA）与构建时间注入前端静态资源，后台右上角据此核对线上版本。
-BUILD_VERSION="$IMAGE_TAG"
-BUILD_TIME=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-BUILD_ARGS="--build-arg BUILD_VERSION=$BUILD_VERSION --build-arg BUILD_TIME=$BUILD_TIME"
-
 echo "构建 API/Worker 镜像：$API_IMAGE"
 DOCKER_BUILDKIT=1 docker build --progress=plain \
-  $BUILD_ARGS \
   --target api \
   --tag "$API_IMAGE" \
   --file "$RELEASE_DIR/infra/Dockerfile" \
   "$RELEASE_DIR"
 
-echo "构建 Admin 镜像：$ADMIN_IMAGE"
+echo "打包 CI 编译的 Admin 产物：$ADMIN_IMAGE"
 DOCKER_BUILDKIT=1 docker build --progress=plain \
-  $BUILD_ARGS \
   --target admin \
   --tag "$ADMIN_IMAGE" \
   --file "$RELEASE_DIR/infra/Dockerfile" \

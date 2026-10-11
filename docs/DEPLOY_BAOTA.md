@@ -2,7 +2,7 @@
 
 面向宝塔面板（aaPanel）+ Docker 的部署手册。CI/CD 由 GitHub Actions 驱动，仓库里已经配好，本文只讲怎么把它接到你的服务器上。
 
-抠图走腾讯云数据万象，是云端按次计费接口，**服务器上不需要任何推理服务**。应用运行时 2 核 2G 可以承载；现在镜像改为服务器本地构建，建议 4G 内存，2G 机器至少配置 swap 并顺序构建。
+抠图走腾讯云数据万象，是云端按次计费接口，**服务器上不需要任何推理服务**。应用运行时 2 核 2G 可以承载；服务器仍需编译 API/Worker，建议 4G 内存，2G 机器至少配置 swap 并顺序构建。Admin 已改为在 GitHub Runner 编译，服务器只打包静态产物。
 
 相关文档：
 - 环境变量与腾讯云凭据：[腾讯云数据万象抠图实施方案](TENCENT_CI_MATTING.md)、[腾讯云凭据获取教程](TENCENT_CLOUD_SETUP.md)
@@ -17,10 +17,10 @@ GitHub 仓库 (main)
    │  push / 手动触发
    ▼
 GitHub Actions
-  ├─ verify   复用 ci.yml：lint → typecheck → 单测 → 迁移 → 构建
-   └─ deploy   git archive 固定 commit → SCP 约 2MB 源码包 → SSH 到服务器
+  ├─ verify   复用 ci.yml：lint → typecheck → 单测 → 迁移 → 构建 → 保存 Admin 产物
+   └─ deploy   git archive 固定 commit + 同 SHA 的 Admin 产物 → SCP → SSH 到服务器
                   └─ sh infra/build-and-deploy.sh
-                        顺序构建 api / admin 本地镜像（SHA 标签）
+                        编译 api/worker + 打包 Admin 静态资源（SHA 标签）
                         → 备份库 → 起 postgres/redis → 跑迁移
                         → 切 api/worker/admin → 等健康检查 → 失败则回滚
 
@@ -39,7 +39,7 @@ GitHub Actions
 
 **关于「数据库也是容器」**：`postgres` 与 `redis` 由同一个 compose 文件统一下发，跑在你宝塔那台机器的 Docker 里。它们和 api/worker/admin 是同一个 docker daemon，因此在宝塔面板的 **Docker 管理器里能看到、能进终端、能看日志**（容器名前缀是 `infra-`，即 compose 文件所在的目录名）。之所以不让你在面板里手搓容器，是因为手搓出来的容器不在 compose 的管理范围内，下次部署对不上，且新机器要重来一遍。以 compose 文件为准，你要改数据库参数就改 `.env.deploy`。
 
-**生产镜像在服务器本地构建**：GitHub 海外 Runner 推送广州 TCR 时，较大的 API 镜像曾长期卡在 `exporting to image`；服务器本地构建只需先传约 2MB 的已验证源码，并复用 Docker BuildKit 缓存，不再经过跨境镜像传输。TCR 仍由独立的小程序上传流水线使用。
+**生产镜像在服务器本地构建**：GitHub 海外 Runner 推送广州 TCR 时，较大的 API 镜像曾长期卡在 `exporting to image`。现在传输已验证源码和 Runner 编译的 Admin 静态产物；服务器只编译 API/Worker，Admin 镜像直接复制产物，不执行 Vite。后端安装仅包含后端 workspace，构建缓存不再受 Admin/小程序源码或每次变化的构建时间影响。TCR 仍由独立的小程序上传流水线使用。
 
 **端口一个都不对公网开放**：三个应用和两个数据库全部只绑 `127.0.0.1`，公网流量只能经宝塔 Nginx 进来。这样即使云安全组配漏了，服务也不会裸奔。
 
@@ -138,7 +138,7 @@ openssl rand -base64 48  # → JWT_SECRET
 
 ## 4. 准备服务器本地构建环境
 
-生产部署不再从镜像仓库拉 API/Admin，而是在服务器从固定 commit 的源码包本地构建。服务器需要：
+生产部署不再从镜像仓库拉 API/Admin，而是在服务器从固定 commit 源码和 CI 编译的 Admin 产物本地构建。服务器需要：
 
 - Docker daemon 正常运行，并支持 BuildKit；
 - Docker Compose v2；
@@ -146,13 +146,26 @@ openssl rand -base64 48  # → JWT_SECRET
 - `/var/lib/docker` 建议至少预留 8–10GB；
 - 能访问 Docker Hub 与 npm registry。首次构建需要下载基础镜像和依赖，后续会命中本机 BuildKit 缓存。
 
-工作流用 `git archive $GITHUB_SHA` 生成源码包，只包含该 commit 的已跟踪文件，不包含 `.env`、密钥、`node_modules` 或本机未提交文件。源码解压到：
+工作流用 `git archive $GITHUB_SHA` 生成源码，再附上同次 CI 运行保存的 `admin-artifact/`（静态资源与 `source-sha` 标识）。源码只包含该 commit 的已跟踪文件，不包含 `.env`、密钥、`node_modules` 或本机未提交文件。服务器构建前检查 `assets/index.html` 存在且 `source-sha` 与镜像标签一致；不匹配时中止，不回退为服务器编译。发布包解压到：
 
 ```text
 /www/wwwroot/bagcollect/releases/<commit>-<run>-<attempt>/
 ```
 
 两个镜像都构建成功后，`build-and-deploy.sh` 才会把新版 compose/deploy 定义复制到稳定目录并调用 `deploy.sh`。因此编译失败不会改动正在运行的容器。
+
+本地手工构建 Docker target 时，先准备后台产物（`BUILD_VERSION` 和 `BUILD_TIME` 由 Vite 注入，CI 会自动设置）：
+
+```bash
+BUILD_VERSION=$(git rev-parse HEAD) BUILD_TIME=$(date -u '+%Y-%m-%dT%H:%M:%SZ') pnpm --filter @bagcollect/admin build
+mkdir -p admin-artifact/assets
+cp -R apps/admin/dist/. admin-artifact/assets/
+git rev-parse HEAD > admin-artifact/source-sha
+docker build --target admin -f infra/Dockerfile .
+docker build --target api -f infra/Dockerfile .
+```
+
+`admin-artifact/` 是忽略提交的临时产物目录，Docker 构建上下文会包含它；Admin target 只使用其中的 `assets/`。`pnpm build:server` 仍可用于本地同时构建后端和后台，Docker 后端改用 `pnpm build:backend`。
 
 TCR 配置现在只供 `upload-miniapp.yml` 使用。如果暂时不用自动上传小程序，可以不配置 TCR；需要时再按腾讯云控制台提供的账号 ID、访问密码、命名空间配置仓库级 `TCR_USERNAME`、`TCR_PASSWORD`、`TCR_NAMESPACE`。
 
@@ -233,7 +246,7 @@ ssh-keygen -t ed25519 -C "github-actions-deploy" -f ~/.ssh/bagcollect_deploy -N 
 - **推荐**：GitHub → Actions → **Build and deploy** → Run workflow（选 `main`）。
 - 或者往 `main` 推一个 commit。
 
-它会自动完成「验证 → 打包固定 commit 源码 → 上传约 2MB 源码包 → 服务器本地构建镜像 → SSH 部署」。首次服务器构建需要下载基础镜像和 pnpm 依赖，后续部署会复用 Docker 缓存。首次部署时数据库是空的，`deploy.sh` 会打印「postgres 容器未运行（首次部署），跳过备份」，这是正常的。
+它会自动完成「验证并编译 Admin → 打包固定 commit 源码与同 SHA 后台产物 → 上传发布包 → 服务器编译后端、打包后台 → 部署」。首次服务器构建需要下载基础镜像和后端 pnpm 依赖，后续部署会复用 Docker 缓存；Admin 不再在服务器重复编译。首次部署时数据库是空的，`deploy.sh` 会打印「postgres 容器未运行（首次部署），跳过备份」，这是正常的。
 
 部署成功后创建管理员账号：
 
@@ -303,6 +316,7 @@ sh infra/deploy.sh
 ### 服务器构建慢 / 失败
 
 - 首次构建下载基础镜像和 pnpm 依赖会比后续慢；每分钟可在 Actions 页面看到最近日志。
+- Admin 的 `vite build` 应只出现在 verify 日志中；服务器 Admin target 只复制静态产物。若报产物缺失或 SHA 不一致，重新运行完整流水线以重新生成同 commit 的产物（artifact 保留 7 天）。
 - 服务器上直接查看完整进度：`tail -f /tmp/bagcollect-deploy.log`。
 - 出现 exit code 137 / `Killed` 通常是内存不足：增加 swap，或升级到 4GB 内存。
 - Docker Hub 或 npm 下载慢时，给服务器 Docker/npm 配可用的国内镜像源；这和应用镜像大小无关。

@@ -21,18 +21,24 @@ COPY packages/bag-vision/package.json packages/bag-vision/package.json
 COPY packages/contracts/package.json packages/contracts/package.json
 RUN pnpm install --frozen-lockfile
 
-FROM deps AS build
-ARG BUILD_VERSION
-ARG BUILD_TIME
-COPY tsconfig.base.json eslint.config.mjs vitest.config.ts ./
+# 后端只安装自身 workspace 依赖，不安装 Admin / 小程序的前端依赖。
+# deps stage 保留给独立的小程序上传镜像；生产 api 不再依赖它。
+FROM base AS backend-deps
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY apps/api/package.json apps/api/package.json
+COPY apps/worker/package.json apps/worker/package.json
+COPY packages/bag-vision/package.json packages/bag-vision/package.json
+COPY packages/contracts/package.json packages/contracts/package.json
+RUN pnpm install --frozen-lockfile
+
+FROM backend-deps AS build
+COPY tsconfig.base.json ./
 COPY packages ./packages
-COPY apps ./apps
-# 版本号与构建时间注入到 admin 前端静态资源（vite.config.ts 读取这两个环境变量）。
-ENV BUILD_VERSION=${BUILD_VERSION} BUILD_TIME=${BUILD_TIME}
-# 只构建服务端产物。根 `build` 脚本还会构建小程序，但服务器镜像里用不到它，
-# 每个矩阵 target 都白跑一遍、还要求 VITE_API_BASE_URL —— 那是 upload-miniapp
-# 工作流（miniapp-uploader target）自己负责的事。
-RUN pnpm db:generate && pnpm build:server
+COPY apps/api ./apps/api
+COPY apps/worker ./apps/worker
+# Admin 在 CI 验证阶段编译并传入静态产物；不再把前端编译和每次变化的
+# BUILD_TIME 放进后端缓存层。Admin / 小程序源码变化不会使此阶段失效。
+RUN pnpm db:generate && pnpm build:backend
 
 # ---------------------------------------------------------------------------
 # 生产依赖裁剪。
@@ -104,7 +110,9 @@ CMD ["node", "apps/api/dist/main.js"]
 
 FROM nginx:1.27-alpine AS admin
 COPY infra/nginx/admin.conf /etc/nginx/conf.d/default.conf
-COPY --from=build /app/apps/admin/dist /usr/share/nginx/html
+# 构建上下文中的 admin-artifact 由 CI 提供，与已验证源码使用同一个 SHA。
+# 此 target 只打包静态资源，不依赖 Node、pnpm 或后端 build stage。
+COPY admin-artifact/assets/ /usr/share/nginx/html/
 
 # ---------------------------------------------------------------------------
 # 自托管 rembg + BiRefNet 推理镜像。已不在主链路上（Worker 不依赖它），
