@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, getCurrentInstance, nextTick, onBeforeUnmount, ref, watch } from 'vue';
-import { onHide, onShow, onShareAppMessage, onShareTimeline } from '@dcloudio/uni-app';
+import { onHide, onShow, onResize, onShareAppMessage, onShareTimeline } from '@dcloudio/uni-app';
 import type { Collectible, CollectibleSummary, Shelf } from '../../types';
 import { dataService } from '../../services/data';
 import { collectionRevision, shouldRefreshCollection, markCollectionDataStale } from '../../services/collection-state';
@@ -9,6 +9,8 @@ import { resolveCollectibleThumbnail } from '../../services/images';
 import { maskPageChrome } from '../../services/overlay';
 import { syncTabBar, setTabBarHidden } from '../../services/tab-bar';
 import { createLibraryCardMotion, type CardMotionFrame, type CardRect } from '../../services/library-card-motion';
+import LibraryCardSurface from '../../components/LibraryCardSurface.vue';
+import { validSurfaceBounds, type LibraryCardSurfaceHandle } from '../../services/library-card-surface';
 
 interface ShelfGroup extends Shelf { items: CollectibleSummary[] }
 
@@ -347,6 +349,7 @@ const detailAtEnd = ref(false);
 let detailClientHeight = 0;
 
 function onDetailScroll(event: { detail: { scrollTop: number; scrollHeight: number } }) {
+  detailSurface.value?.notifyScroll?.();
   if (!detailClientHeight) return;
   detailAtEnd.value = event.detail.scrollHeight - event.detail.scrollTop - detailClientHeight <= 2;
 }
@@ -452,12 +455,15 @@ const detailItem = ref<CollectibleSummary | null>(null);
 const detailData = ref<Collectible | null>(null);
 const detailArtwork = ref('');
 const detailLoading = ref(false);
+const detailSurface = ref<LibraryCardSurfaceHandle | null>(null);
+const detailSurfaceBounds = ref<CardRect | null>(null);
 const detailMotion = ref<CardMotionFrame>({ phase: 'idle', x: 0, y: 0, scaleX: 1, scaleY: 1, angle: 0, opacity: 0 });
 let pendingDetail: { token: number; detail: Collectible } | null = null;
 let detailMeasureTimer: ReturnType<typeof setTimeout> | undefined;
 let detailOpeningToken: number | null = null;
 const cardMotion = createLibraryCardMotion((frame) => {
   detailMotion.value = frame;
+  if (frame.phase === 'open' && !detailSurfaceBounds.value) measureDetailSurface();
   if (frame.phase === 'open' && pendingDetail) {
     const pending = pendingDetail;
     pendingDetail = null;
@@ -487,6 +493,21 @@ const detailRotateStyle = computed(() => ({
   transform: `rotateY(${detailMotion.value.angle}deg)`,
   '--card-flip-duration': `${detailMotion.value.animation?.duration ?? 0}ms`
 }));
+function measureDetailSurface() {
+  const token = detailOpeningToken;
+  nextTick(() => {
+    if (token !== detailOpeningToken || detailMotion.value.phase !== 'open') return;
+    try {
+      const query = uni.createSelectorQuery().in(pageInstance?.proxy);
+      query.select('#library-detail-motion').boundingClientRect();
+      query.exec((rows) => {
+        if (token !== detailOpeningToken || detailMotion.value.phase !== 'open') return;
+        const bounds = (rows?.[0] as CardRect | null) ?? null;
+        detailSurfaceBounds.value = validSurfaceBounds(bounds) ? bounds : null;
+      });
+    } catch { /* Sensors and idle sway still work without touch bounds. */ }
+  });
+}
 function cardNodeId(layout: 'shelf' | 'grid' | 'wish', id: string) {
   return `library-card-${layout}-${Array.from(id).map((char) => char.codePointAt(0)!.toString(16)).join('-')}`;
 }
@@ -622,7 +643,7 @@ function detailSource(): Collectible | null {
 /* 轻点图区看大图：弹出自定义预览浮层（比系统全屏小一档，袋子不撑满整屏）。
    优先给原图（display → 卡片当前展示图）。 */
 function previewDetailArtwork() {
-  if (detailBusy.value || !detailArtwork.value) return;
+  if (detailBusy.value || !detailArtwork.value || detailSurface.value?.allowTap?.() === false) return;
   previewShow.value = true;
 }
 
@@ -705,6 +726,7 @@ function open(item: CollectibleSummary, sourceId: string) {
   const motionToken = cardMotion.prepare(item.id);
   if (motionToken === null) return;
   detailOpeningToken = motionToken;
+  detailSurfaceBounds.value = null;
   const cached = detailCache.get(`${item.id}:${item.updatedAt}`);
   detailItem.value = item;
   detailData.value = cached ?? null;
@@ -728,6 +750,7 @@ function open(item: CollectibleSummary, sourceId: string) {
     if (detailOpeningToken !== motionToken || detailMotion.value.phase !== 'measuring') return;
     clearTimeout(detailMeasureTimer);
     detailMeasureTimer = undefined;
+    detailSurfaceBounds.value = validSurfaceBounds(destination) ? destination : null;
     cardMotion.open(motionToken, source, destination);
   };
   detailMeasureTimer = setTimeout(() => startMotion(null, null), 200);
@@ -745,12 +768,20 @@ function open(item: CollectibleSummary, sourceId: string) {
 }
 
 function closeDetail() {
+  // The closing phase also freezes the surface. A temporarily unavailable
+  // native component ref must never prevent the explicit Done/backdrop close.
+  try { detailSurface.value?.freeze?.(); }
+  catch (error) { console.warn('detail surface freeze failed', error); }
   clearTimeout(detailMeasureTimer);
   detailMeasureTimer = undefined;
   detailToken += 1;
   previewShow.value = false;
   // Editing is a separate half-sheet: it has no visible card to retreat.
   cardMotion.close(editing.value);
+}
+
+function closeDetailFromCard() {
+  if (detailSurface.value?.allowTap?.() !== false) closeDetail();
 }
 
 function onDetailMotionEnd(event: {
@@ -773,6 +804,7 @@ function clearDetail() {
   detailMeasureTimer = undefined;
   detailToken += 1;
   detailItem.value = null;
+  detailSurfaceBounds.value = null;
   detailData.value = null;
   detailArtwork.value = '';
   detailLoading.value = false;
@@ -1147,8 +1179,12 @@ onShow(() => {
   if (!initialized.value || shouldRefreshCollection(loadedAt, loadedRevision)) void load();
 });
 /* 页面被切走（跳编辑页、切 tab）时收起浮层，回来不会还压着一层 */
-onHide(() => { cardMotion.close(true); closeSettings(); if (markShow.value) markShow.value = false; });
-onBeforeUnmount(() => { cardMotion.destroy(); clearTimeout(detailMeasureTimer); });
+watch(() => editing.value || previewShow.value, (paused) => {
+  if (!paused && detailMotion.value.phase === 'open') measureDetailSurface();
+});
+onResize(() => { if (detailMotion.value.phase === 'open' && !editing.value) measureDetailSurface(); });
+onHide(() => { detailSurface.value?.suspend?.(); cardMotion.close(true); closeSettings(); if (markShow.value) markShow.value = false; });
+onBeforeUnmount(() => { detailSurface.value?.suspend?.(); cardMotion.destroy(); clearTimeout(detailMeasureTimer); });
 /* 分享：转发给朋友 / 分享到朋友圈 */
 onShareAppMessage(() => ({
   title: '袋袋集 · 我的纸袋收藏架',
@@ -1464,21 +1500,22 @@ function onScrollToLower() {
       <!-- 编辑半窗拉起时卡片让位关闭（半窗 + 遮罩独占屏幕） -->
       <view v-show="!editing" id="library-detail-motion" class="detail-motion-frame">
         <view class="detail-translater" :class="{ 'is-opening': detailMotion.animation && detailMotion.phase === 'opening', 'is-closing': detailMotion.animation && detailMotion.phase === 'closing' }" :style="detailTranslateStyle" :data-motion-token="detailMotion.animation?.token" @animationend="onDetailMotionEnd">
+          <LibraryCardSurface ref="detailSurface" :phase="detailMotion.phase" :paused="editing || previewShow" :bounds="detailSurfaceBounds">
           <view class="detail-rotator" :class="{ 'is-flipping': detailFlipping }" :style="detailRotateStyle">
-            <view class="detail-card-back" :style="{ opacity: detailBackVisible ? 1 : 0 }" @tap.stop="closeDetail">
+            <view class="detail-card-back" :style="{ opacity: detailBackVisible ? 1 : 0 }" @tap.stop="closeDetailFromCard">
               <text class="detail-card-back__label">BAGCOLLECT</text>
               <text class="detail-card-back__name">{{ detailItem.name }}</text>
               <text class="detail-card-back__brand">{{ isWishDetail ? (detailItem.ownerName ?? '官方精选') : detailItem.shelfName }}</text>
             </view>
-            <view class="detail-card" :style="{ opacity: detailBackVisible ? 0 : 1 }" @tap.stop="closeDetail">
+            <view class="detail-card" :style="{ opacity: detailBackVisible ? 0 : 1 }" @tap.stop="closeDetailFromCard">
         <!-- 右上角快捷操作（同首页大卡）：♥ 红实心=已在心愿袋 / 空心=未加入；
              靶心 红环=已拥有 / 黑◎=未拥有（点按选展架直接收进） -->
-        <view class="detail-quick">
-          <view v-if="isWishDetail" class="detail-quick__btn" hover-class="is-pressed" :hover-stay-time="80" @tap.stop="toggleDetailWish">
-            <image class="detail-quick__icon like-icon" :class="{ 'is-pop': wishPop, 'is-shrink': wishShrink }" src="/static/figma/heart-active.svg" mode="aspectFit" />
+        <view class="detail-quick" data-surface-control="true">
+          <view v-if="isWishDetail" class="detail-quick__btn" data-surface-control="true" hover-class="is-pressed" :hover-stay-time="80" @tap.stop="toggleDetailWish">
+            <image class="detail-quick__icon like-icon" data-surface-control="true" :class="{ 'is-pop': wishPop, 'is-shrink': wishShrink }" src="/static/figma/heart-active.svg" mode="aspectFit" />
           </view>
-          <view class="detail-quick__btn" hover-class="is-pressed" :hover-stay-time="80" @tap.stop="markFromDetail">
-            <image class="detail-quick__icon" :src="isOwnedDetail ? '/static/figma/target-marked.svg' : '/static/figma/target.svg'" mode="aspectFit" />
+          <view class="detail-quick__btn" data-surface-control="true" hover-class="is-pressed" :hover-stay-time="80" @tap.stop="markFromDetail">
+            <image class="detail-quick__icon" data-surface-control="true" :src="isOwnedDetail ? '/static/figma/target-marked.svg' : '/static/figma/target.svg'" mode="aspectFit" />
           </view>
         </view>
         <view class="detail-glass">
@@ -1527,14 +1564,15 @@ function onScrollToLower() {
         </scroll-view>
 
         <!-- 底部动作区：详情态 [编辑][完成]；心愿条目只读，仅 [完成] -->
-        <view class="detail-actions" @tap.stop="blockScroll">
-          <button v-if="!isWishDetail" class="detail-edit" @tap.stop="startEdit()">编辑</button>
-          <button class="detail-done" @tap.stop="closeDetail()">完成</button>
+        <view class="detail-actions" data-surface-control="true" @tap.stop="blockScroll">
+          <button v-if="!isWishDetail" class="detail-edit" data-surface-control="true" @tap.stop="startEdit()">编辑</button>
+          <button class="detail-done" data-surface-control="true" @tap.stop="closeDetail">完成</button>
         </view>
             </view>
             <!-- Block native detail controls while moving, but allow retreat. -->
             <view v-if="detailBusy" class="detail-motion-hit" @tap.stop="closeDetail" @touchmove.stop.prevent="blockScroll" />
           </view>
+          </LibraryCardSurface>
         </view>
       </view>
     </view>
