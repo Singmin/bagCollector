@@ -136,6 +136,8 @@ jobs:
         run: |
           bash infra/export-images.sh production-images "bagcollect-api:$GITHUB_SHA" "bagcollect-admin:$GITHUB_SHA"
           bash infra/export-images.sh vision-images "bagcollect-vision:$GITHUB_SHA"
+      - name: Verify ordinary API and Admin changes reuse large layers
+        run: bash scripts/test-business-image-delta.sh
       - name: Verify image archive import
         run: |
           docker image rm "bagcollect-api:$GITHUB_SHA" "bagcollect-admin:$GITHUB_SHA" "bagcollect-vision:$GITHUB_SHA"
