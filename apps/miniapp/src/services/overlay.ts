@@ -17,11 +17,11 @@ import { setTabBarHidden } from './tab-bar';
 const NAV_BAR_BG = '#f2f3f7';
 const NAV_BAR_DIMMED = '#a1a0a2';
 
-export function maskPageChrome(masked: boolean) {
+export function maskPageChrome(masked: boolean, duration = 300) {
   setTabBarHidden(masked);
   uni.setNavigationBarColor({
     frontColor: '#000000',
     backgroundColor: masked ? NAV_BAR_DIMMED : NAV_BAR_BG,
-    animation: { duration: 300, timingFunc: 'easeIn' }
+    animation: { duration, timingFunc: 'easeIn' }
   });
 }

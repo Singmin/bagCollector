@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, getCurrentInstance, nextTick, ref, watch } from 'vue';
-import { onHide, onShow, onShareAppMessage, onShareTimeline } from '@dcloudio/uni-app';
+import { computed, getCurrentInstance, nextTick, onBeforeUnmount, ref, watch } from 'vue';
+import { onHide, onShow, onResize, onShareAppMessage, onShareTimeline } from '@dcloudio/uni-app';
 import type { Collectible, CollectibleSummary, Shelf } from '../../types';
 import { dataService } from '../../services/data';
 import { collectionRevision, shouldRefreshCollection, markCollectionDataStale } from '../../services/collection-state';
@@ -8,6 +8,9 @@ import { daysAgoText, formattedDate } from '../../services/format';
 import { resolveCollectibleThumbnail } from '../../services/images';
 import { maskPageChrome } from '../../services/overlay';
 import { syncTabBar, setTabBarHidden } from '../../services/tab-bar';
+import { createLibraryCardMotion, type CardMotionFrame, type CardRect } from '../../services/library-card-motion';
+import LibraryCardSurface from '../../components/LibraryCardSurface.vue';
+import { validSurfaceBounds, type LibraryCardSurfaceHandle } from '../../services/library-card-surface';
 
 interface ShelfGroup extends Shelf { items: CollectibleSummary[] }
 
@@ -346,6 +349,7 @@ const detailAtEnd = ref(false);
 let detailClientHeight = 0;
 
 function onDetailScroll(event: { detail: { scrollTop: number; scrollHeight: number } }) {
+  detailSurface.value?.notifyScroll?.();
   if (!detailClientHeight) return;
   detailAtEnd.value = event.detail.scrollHeight - event.detail.scrollTop - detailClientHeight <= 2;
 }
@@ -451,6 +455,62 @@ const detailItem = ref<CollectibleSummary | null>(null);
 const detailData = ref<Collectible | null>(null);
 const detailArtwork = ref('');
 const detailLoading = ref(false);
+const detailSurface = ref<LibraryCardSurfaceHandle | null>(null);
+const detailSurfaceBounds = ref<CardRect | null>(null);
+const detailMotion = ref<CardMotionFrame>({ phase: 'idle', x: 0, y: 0, scaleX: 1, scaleY: 1, angle: 0, opacity: 0 });
+let pendingDetail: { token: number; detail: Collectible } | null = null;
+let detailMeasureTimer: ReturnType<typeof setTimeout> | undefined;
+let detailOpeningToken: number | null = null;
+const cardMotion = createLibraryCardMotion((frame) => {
+  detailMotion.value = frame;
+  if (frame.phase === 'open' && !detailSurfaceBounds.value) measureDetailSurface();
+  if (frame.phase === 'open' && pendingDetail) {
+    const pending = pendingDetail;
+    pendingDetail = null;
+    if (pending.token === detailToken && detailItem.value?.id === pending.detail.id) applyLoadedDetail(pending.detail);
+  }
+}, clearDetail);
+const detailBusy = computed(() => detailMotion.value.phase !== 'open');
+const detailBackVisible = computed(() => Math.cos(detailMotion.value.angle * Math.PI / 180) < 0);
+const detailFlipping = computed(() => detailMotion.value.phase === 'opening' && detailMotion.value.animation?.to.angle === 360);
+function detailTransform(pose: Pick<CardMotionFrame, 'x' | 'y' | 'scaleX' | 'scaleY'>) {
+  return `translate3d(${pose.x}px, ${pose.y}px, 0) scale(${pose.scaleX}, ${pose.scaleY})`;
+}
+const detailTranslateStyle = computed(() => {
+  const frame = detailMotion.value;
+  const motion = frame.animation;
+  return {
+    transform: detailTransform(frame),
+    opacity: frame.opacity,
+    '--card-motion-from': detailTransform(motion?.from ?? frame),
+    '--card-motion-to': detailTransform(motion?.to ?? frame),
+    '--card-opacity-from': String(motion?.from.opacity ?? frame.opacity),
+    '--card-opacity-to': String(motion?.to.opacity ?? frame.opacity),
+    '--card-motion-duration': `${motion?.duration ?? 0}ms`
+  };
+});
+const detailRotateStyle = computed(() => ({
+  transform: `rotateY(${detailMotion.value.angle}deg)`,
+  '--card-flip-duration': `${detailMotion.value.animation?.duration ?? 0}ms`
+}));
+function measureDetailSurface() {
+  const token = detailOpeningToken;
+  nextTick(() => {
+    if (token !== detailOpeningToken || detailMotion.value.phase !== 'open') return;
+    try {
+      const query = uni.createSelectorQuery().in(pageInstance?.proxy);
+      query.select('#library-detail-motion').boundingClientRect();
+      query.exec((rows) => {
+        if (token !== detailOpeningToken || detailMotion.value.phase !== 'open') return;
+        const bounds = (rows?.[0] as CardRect | null) ?? null;
+        detailSurfaceBounds.value = validSurfaceBounds(bounds) ? bounds : null;
+      });
+    } catch { /* Sensors and idle sway still work without touch bounds. */ }
+  });
+}
+function cardNodeId(layout: 'shelf' | 'grid' | 'wish', id: string) {
+  return `library-card-${layout}-${Array.from(id).map((char) => char.codePointAt(0)!.toString(16)).join('-')}`;
+}
 /* 大图预览浮层：点图区打开，点遮罩/图片任意处关闭（可双指缩放，见模板） */
 const previewShow = ref(false);
 /* 详情缓存按「id + updatedAt」存：收藏被改名/换架后 updatedAt 会变，
@@ -534,6 +594,15 @@ function collectibleNo(item: CollectibleSummary) {
 /* 补拉详情（标签 / 备注 / 大图）。返回 null 表示这次没拿到。
    打开卡片的「先画后用详情补」和点「编辑」前的「必须拿到才能进表单」都走这里，
    两处只有「拿不到怎么办」不同，取数逻辑别再写第二遍。 */
+function applyLoadedDetail(detail: Collectible) {
+  detailData.value = detail;
+  // Keep the already displayed source image. The full-resolution URL belongs
+  // to the explicit large-image preview, not an automatic post-flip swap.
+  if (!detailArtwork.value) detailArtwork.value = detail.displayImageUrl || detail.thumbnailUrl || '';
+  detailLoading.value = false;
+  bumpTagCounts(detail.tags);
+}
+
 async function loadDetail(item: CollectibleSummary) {
   const cacheKey = `${item.id}:${item.updatedAt}`;
   const cached = detailCache.get(cacheKey);
@@ -544,10 +613,9 @@ async function loadDetail(item: CollectibleSummary) {
     detailCache.set(cacheKey, detail);
     /* 序号或目标藏品对不上说明用户已经换了一张（或关了卡片），这份就当没取过 */
     if (token !== detailToken || detailItem.value?.id !== item.id) return detail;
-    detailData.value = detail;
-    if (detail.displayImageUrl) detailArtwork.value = detail.displayImageUrl;
-    detailLoading.value = false;
-    bumpTagCounts(detail.tags);
+    // Fetch in parallel, but keep detail layout updates out of the flip.
+    if (detailMotion.value.phase === 'open') applyLoadedDetail(detail);
+    else if (detailMotion.value.phase === 'measuring' || detailMotion.value.phase === 'opening') pendingDetail = { token, detail };
     return detail;
   } catch {
     if (token === detailToken) {
@@ -575,7 +643,7 @@ function detailSource(): Collectible | null {
 /* 轻点图区看大图：弹出自定义预览浮层（比系统全屏小一档，袋子不撑满整屏）。
    优先给原图（display → 卡片当前展示图）。 */
 function previewDetailArtwork() {
-  if (!detailArtwork.value) return;
+  if (detailBusy.value || !detailArtwork.value || detailSurface.value?.allowTap?.() === false) return;
   previewShow.value = true;
 }
 
@@ -598,6 +666,7 @@ function playWishEffect(added: boolean) {
   });
 }
 async function toggleDetailWish() {
+  if (detailBusy.value) return;
   const item = detailItem.value; if (!item) return;
   if (isWishDetail.value) { playWishEffect(false); return void removeWish(item); }
   const source = detailSource(); if (!source) return;
@@ -615,6 +684,7 @@ async function toggleDetailWish() {
 const markShow = ref(false);
 const markItem = ref<Collectible | null>(null);
 function markFromDetail() {
+  if (detailBusy.value) return;
   const item = detailItem.value; if (!item) return;
   /* 靶心点击语义与右上角图标（isOwnedDetail）严格一致 ——
      旧版只认 justMarkedMap（仅记录本次会话刚标记的心愿条目），导致「我的」收藏条目
@@ -651,13 +721,22 @@ function onMarkSaved(source: Collectible, createdId: string) {
   wishlistItems.value = wishlistItems.value.filter((current) => current.id !== source.id);
 }
 
-function open(item: CollectibleSummary) {
+function open(item: CollectibleSummary, sourceId: string) {
+  if (cardGestureBlocked || Date.now() < suppressCardTapUntil) return;
+  const motionToken = cardMotion.prepare(item.id);
+  if (motionToken === null) return;
+  detailOpeningToken = motionToken;
+  detailSurfaceBounds.value = null;
   const cached = detailCache.get(`${item.id}:${item.updatedAt}`);
   detailItem.value = item;
   detailData.value = cached ?? null;
-  /* 大图先用列表已下好的缩略图顶着（秒出），详情回来再换 displayImageUrl；
-     心愿条目不在 thumbnailUrls 里，回退用条目自带图 */
-  detailArtwork.value = thumbnailUrls.value[item.id] ?? item.thumbnailUrl ?? (item as Collectible).displayImageUrl ?? '';
+  /* 详情卡复用点击入口已经展示的图，翻转结束后不切换 src；
+     心愿袋入口显示的是 displayImageUrl，展架/宫格优先用已缓存缩略图。
+     高清地址保留给大图预览；入口没有图片时才用缓存详情补图。 */
+  const wishSource = sourceId.startsWith('library-card-wish-');
+  detailArtwork.value = wishSource
+    ? (item as Collectible).displayImageUrl || item.thumbnailUrl || cached?.displayImageUrl || cached?.thumbnailUrl || ''
+    : thumbnailUrls.value[item.id] || item.thumbnailUrl || cached?.thumbnailUrl || cached?.displayImageUrl || (item as Collectible).displayImageUrl || '';
   detailLoading.value = !cached;
   editing.value = false;
   detailAtEnd.value = false;
@@ -665,13 +744,67 @@ function open(item: CollectibleSummary) {
   /* 底栏与原生导航栏在页面之外，遮罩盖不到，交给 maskPageChrome 一起蒙上 */
   maskPageChrome(true);
   if (!cached) void loadDetail(item);
+  // Measure the untransformed shell, not the rotating face. The hidden source
+  // still occupies its original slot and can be measured after nextTick.
+  const startMotion = (source: CardRect | null, destination: CardRect | null) => {
+    if (detailOpeningToken !== motionToken || detailMotion.value.phase !== 'measuring') return;
+    clearTimeout(detailMeasureTimer);
+    detailMeasureTimer = undefined;
+    detailSurfaceBounds.value = validSurfaceBounds(destination) ? destination : null;
+    cardMotion.open(motionToken, source, destination);
+  };
+  detailMeasureTimer = setTimeout(() => startMotion(null, null), 200);
+  nextTick(() => {
+    if (detailOpeningToken !== motionToken || detailMotion.value.phase !== 'measuring') return;
+    try {
+      const query = uni.createSelectorQuery().in(pageInstance?.proxy);
+      query.select(`#${sourceId}`).boundingClientRect();
+      query.select('#library-detail-motion').boundingClientRect();
+      query.exec((rows) => startMotion((rows?.[0] as CardRect | null) ?? null, (rows?.[1] as CardRect | null) ?? null));
+    } catch {
+      startMotion(null, null);
+    }
+  });
 }
 
 function closeDetail() {
+  // The closing phase also freezes the surface. A temporarily unavailable
+  // native component ref must never prevent the explicit Done/backdrop close.
+  try { detailSurface.value?.freeze?.(); }
+  catch (error) { console.warn('detail surface freeze failed', error); }
+  clearTimeout(detailMeasureTimer);
+  detailMeasureTimer = undefined;
   detailToken += 1;
-  if (detailItem.value) maskPageChrome(false);
-  setTabBarHidden(false);
+  previewShow.value = false;
+  // Editing is a separate half-sheet: it has no visible card to retreat.
+  cardMotion.close(editing.value);
+}
+
+function closeDetailFromCard() {
+  if (detailSurface.value?.allowTap?.() !== false) closeDetail();
+}
+
+function onDetailMotionEnd(event: {
+  detail?: { animationName?: string };
+  animationName?: string;
+  currentTarget?: { dataset?: { motionToken?: number | string } };
+}) {
+  // Filter opacity/child animations and use the run token to reject stale events.
+  const name = event.detail?.animationName ?? event.animationName ?? '';
+  if (!name.startsWith('library-card-retreat')) return;
+  const token = Number(event.currentTarget?.dataset?.motionToken);
+  if (Number.isFinite(token)) cardMotion.finishClosing(token);
+}
+
+function clearDetail() {
+  const hadDetail = !!detailItem.value;
+  pendingDetail = null;
+  detailOpeningToken = null;
+  clearTimeout(detailMeasureTimer);
+  detailMeasureTimer = undefined;
+  detailToken += 1;
   detailItem.value = null;
+  detailSurfaceBounds.value = null;
   detailData.value = null;
   detailArtwork.value = '';
   detailLoading.value = false;
@@ -681,6 +814,10 @@ function closeDetail() {
   editNameFocused.value = false;
   focusedField.value = '';
   hideSuggests();
+  // The backdrop has already faded: do not append another chrome fade or send
+  // duplicate tab-bar updates after the card's closing animation finishes.
+  if (hadDetail) maskPageChrome(false, 0);
+  else setTabBarHidden(false);
 }
 
 /* ── 长按删除（展架槽 / 宫格两视图共用）──
@@ -689,11 +826,47 @@ function closeDetail() {
 /* 多指手势（双指缩放 / 两指误触）不应触发长按删除：
    touchstart 记录指头数，>1 指则本次交互屏蔽删除（longpress 在手指按住时触发） */
 let multiTouchActive = false;
+let cardGestureBlocked = false;
+let suppressCardTapUntil = 0;
+let cardTouchOrigin: { x: number; y: number } | null = null;
+function cardTouchPoint(event: Event) {
+  const touches = (event as unknown as { touches?: Array<{ clientX?: number; clientY?: number; x?: number; y?: number }> }).touches;
+  const touch = touches?.[0];
+  return touch ? { x: touch.clientX ?? touch.x ?? 0, y: touch.clientY ?? touch.y ?? 0 } : null;
+}
 function onItemTouchStart(event: Event) {
   const touches = (event as unknown as { touches?: unknown[] }).touches;
-  multiTouchActive = (touches?.length ?? 0) > 1;
+  if ((touches?.length ?? 0) > 1) {
+    multiTouchActive = true;
+    cardGestureBlocked = true;
+  } else {
+    multiTouchActive = false;
+    cardGestureBlocked = false;
+    cardTouchOrigin = cardTouchPoint(event);
+  }
 }
-function onItemTouchEnd() { multiTouchActive = false; }
+function onItemTouchMove(event: Event) {
+  const point = cardTouchPoint(event);
+  const touches = (event as unknown as { touches?: unknown[] }).touches;
+  if ((touches?.length ?? 0) > 1) multiTouchActive = true;
+  if (multiTouchActive || (point && cardTouchOrigin && Math.hypot(point.x - cardTouchOrigin.x, point.y - cardTouchOrigin.y) > 8)) cardGestureBlocked = true;
+}
+function onItemTouchEnd() {
+  if (cardGestureBlocked) suppressCardTapUntil = Date.now() + 350;
+  cardTouchOrigin = null;
+  // Keep the gesture result until the next touchstart; tap can follow touchend.
+}
+function onItemTouchCancel() {
+  cardGestureBlocked = true;
+  onItemTouchEnd();
+}
+function onCardLongPress(item: CollectibleSummary, wish = false) {
+  if (multiTouchActive || cardGestureBlocked) return;
+  cardGestureBlocked = true;
+  suppressCardTapUntil = Date.now() + 350;
+  if (wish) removeWish(item);
+  else void confirmRemove(item);
+}
 
 async function confirmRemove(item: CollectibleSummary) {
   if (multiTouchActive) return;
@@ -732,11 +905,12 @@ function goAdd() {
    表单里要填标签与备注，而列表摘要里没有这两样：详情还没回来就先去取一份，
    取不到就不进编辑态 —— 否则一保存会把标签和备注一起清空（这是最贵的一种失手）。 */
 async function startEdit() {
+  if (detailBusy.value) return;
   const item = detailItem.value;
   if (!item) return;
   const detail = detailData.value ?? await loadDetail(item);
   if (!detail) return void uni.showToast({ title: '标签与备注还没读出来，稍后再试', icon: 'none' });
-  if (detailItem.value?.id !== item.id) return;
+  if (detailItem.value?.id !== item.id || detailBusy.value) return;
   editName.value = detail.name;
   editShelf.value = detail.shelfName;
   editTags.value = [...detail.tags];
@@ -906,6 +1080,8 @@ function pinchDistance(touches: Array<{ x: number; y: number }>) {
 function gridTouchStart(event: Event) {
   const touches = (event as unknown as { touches?: Array<{ x?: number; clientX?: number; y?: number; clientY?: number }> }).touches;
   if (!touches || touches.length !== 2) return;
+  cardGestureBlocked = true;
+  multiTouchActive = true;
   pinchStartDist = pinchDistance(touches.map((t) => ({ x: t.x ?? t.clientX ?? 0, y: t.y ?? t.clientY ?? 0 })));
   pinchStartCols = gridCols.value;
 }
@@ -1003,7 +1179,12 @@ onShow(() => {
   if (!initialized.value || shouldRefreshCollection(loadedAt, loadedRevision)) void load();
 });
 /* 页面被切走（跳编辑页、切 tab）时收起浮层，回来不会还压着一层 */
-onHide(() => { closeDetail(); closeSettings(); if (markShow.value) markShow.value = false; });
+watch(() => editing.value || previewShow.value, (paused) => {
+  if (!paused && detailMotion.value.phase === 'open') measureDetailSurface();
+});
+onResize(() => { if (detailMotion.value.phase === 'open' && !editing.value) measureDetailSurface(); });
+onHide(() => { detailSurface.value?.suspend?.(); cardMotion.close(true); closeSettings(); if (markShow.value) markShow.value = false; });
+onBeforeUnmount(() => { detailSurface.value?.suspend?.(); cardMotion.destroy(); clearTimeout(detailMeasureTimer); });
 /* 分享：转发给朋友 / 分享到朋友圈 */
 onShareAppMessage(() => ({
   title: '袋袋集 · 我的纸袋收藏架',
@@ -1179,7 +1360,7 @@ function onScrollToLower() {
           @touchend="snapShelf(group.id)"
         >
           <view class="shelf-items">
-            <button v-for="item in group.items" :key="item.id" class="shelf-item" @tap="open(item)" @longpress="confirmRemove(item)" @touchstart="onItemTouchStart" @touchend="onItemTouchEnd" @touchcancel="onItemTouchEnd">
+            <button v-for="item in group.items" :key="item.id" :id="cardNodeId('shelf', item.id)" class="shelf-item" :class="{ 'is-card-source': detailItem?.id === item.id }" @tap="open(item, cardNodeId('shelf', item.id))" @longpress="onCardLongPress(item)" @touchstart="onItemTouchStart" @touchmove="onItemTouchMove" @touchend="onItemTouchEnd" @touchcancel="onItemTouchCancel">
               <image
                 v-if="thumbnailUrls[item.id] && !failedThumbnails[item.id]"
                 class="shelf-image"
@@ -1221,13 +1402,16 @@ function onScrollToLower() {
           <button
             v-for="item in gridItems"
             :key="item.id"
+            :id="cardNodeId('grid', item.id)"
             class="grid-item"
+            :class="{ 'is-card-source': detailItem?.id === item.id }"
             :style="{ width: `${gridW}rpx`, height: `${gridCardH}rpx`, borderRadius: `${gridRadius}rpx` }"
-            @tap="open(item)"
-            @longpress="confirmRemove(item)"
+            @tap="open(item, cardNodeId('grid', item.id))"
+            @longpress="onCardLongPress(item)"
             @touchstart="onItemTouchStart"
+            @touchmove="onItemTouchMove"
             @touchend="onItemTouchEnd"
-            @touchcancel="onItemTouchEnd"
+            @touchcancel="onItemTouchCancel"
           >
             <image
               v-if="thumbnailUrls[item.id] && !failedThumbnails[item.id]"
@@ -1276,13 +1460,16 @@ function onScrollToLower() {
             <button
               v-for="item in wishGridItems"
               :key="item.id"
+              :id="cardNodeId('wish', item.id)"
               class="grid-item grid-item--wish"
+              :class="{ 'is-card-source': detailItem?.id === item.id }"
               :style="{ width: `${gridW}rpx`, height: `${gridCardH}rpx`, borderRadius: `${gridRadius}rpx` }"
-              @tap="open(item)"
-              @longpress="removeWish(item)"
+              @tap="open(item, cardNodeId('wish', item.id))"
+              @longpress="onCardLongPress(item, true)"
               @touchstart="onItemTouchStart"
+              @touchmove="onItemTouchMove"
               @touchend="onItemTouchEnd"
-              @touchcancel="onItemTouchEnd"
+              @touchcancel="onItemTouchCancel"
             >
               <image
                 v-if="item.displayImageUrl || item.thumbnailUrl"
@@ -1308,18 +1495,27 @@ function onScrollToLower() {
     <!-- 详情浮层：轻点收藏原地弹出（对齐 H5 的 .detail-card）。
          三层结构照搬 H5：玻璃背景层 / 滚动内容层 / 固定按钮层 —— 按钮独立成层
          才不会被内容滚走。 -->
-    <view v-if="detailItem" class="detail-layer">
+    <view v-if="detailItem" class="detail-layer" :class="{ 'is-closing': detailMotion.phase === 'closing' }">
       <view class="detail-backdrop" @tap="closeDetail" @touchmove.stop.prevent="blockScroll" />
       <!-- 编辑半窗拉起时卡片让位关闭（半窗 + 遮罩独占屏幕） -->
-      <view v-show="!editing" class="detail-card">
+      <view v-show="!editing" id="library-detail-motion" class="detail-motion-frame">
+        <view class="detail-translater" :class="{ 'is-opening': detailMotion.animation && detailMotion.phase === 'opening', 'is-closing': detailMotion.animation && detailMotion.phase === 'closing' }" :style="detailTranslateStyle" :data-motion-token="detailMotion.animation?.token" @animationend="onDetailMotionEnd">
+          <LibraryCardSurface ref="detailSurface" :phase="detailMotion.phase" :paused="editing || previewShow" :bounds="detailSurfaceBounds">
+          <view class="detail-rotator" :class="{ 'is-flipping': detailFlipping }" :style="detailRotateStyle">
+            <view class="detail-card-back" :style="{ opacity: detailBackVisible ? 1 : 0 }" @tap.stop="closeDetailFromCard">
+              <text class="detail-card-back__label">BAGCOLLECT</text>
+              <text class="detail-card-back__name">{{ detailItem.name }}</text>
+              <text class="detail-card-back__brand">{{ isWishDetail ? (detailItem.ownerName ?? '官方精选') : detailItem.shelfName }}</text>
+            </view>
+            <view class="detail-card" :style="{ opacity: detailBackVisible ? 0 : 1 }" @tap.stop="closeDetailFromCard">
         <!-- 右上角快捷操作（同首页大卡）：♥ 红实心=已在心愿袋 / 空心=未加入；
              靶心 红环=已拥有 / 黑◎=未拥有（点按选展架直接收进） -->
-        <view class="detail-quick">
-          <view v-if="isWishDetail" class="detail-quick__btn" hover-class="is-pressed" :hover-stay-time="80" @tap.stop="toggleDetailWish">
-            <image class="detail-quick__icon like-icon" :class="{ 'is-pop': wishPop, 'is-shrink': wishShrink }" src="/static/figma/heart-active.svg" mode="aspectFit" />
+        <view class="detail-quick" data-surface-control="true">
+          <view v-if="isWishDetail" class="detail-quick__btn" data-surface-control="true" hover-class="is-pressed" :hover-stay-time="80" @tap.stop="toggleDetailWish">
+            <image class="detail-quick__icon like-icon" data-surface-control="true" :class="{ 'is-pop': wishPop, 'is-shrink': wishShrink }" src="/static/figma/heart-active.svg" mode="aspectFit" />
           </view>
-          <view class="detail-quick__btn" hover-class="is-pressed" :hover-stay-time="80" @tap.stop="markFromDetail">
-            <image class="detail-quick__icon" :src="isOwnedDetail ? '/static/figma/target-marked.svg' : '/static/figma/target.svg'" mode="aspectFit" />
+          <view class="detail-quick__btn" data-surface-control="true" hover-class="is-pressed" :hover-stay-time="80" @tap.stop="markFromDetail">
+            <image class="detail-quick__icon" data-surface-control="true" :src="isOwnedDetail ? '/static/figma/target-marked.svg' : '/static/figma/target.svg'" mode="aspectFit" />
           </view>
         </view>
         <view class="detail-glass">
@@ -1339,9 +1535,10 @@ function onScrollToLower() {
           enhanced
           :show-scrollbar="false"
           @scroll="onDetailScroll"
+          @tap.stop="blockScroll"
         >
           <!-- 顶部大图：编辑表单已移入半窗，卡片始终展示完整图区；轻点看大图 -->
-          <view class="detail-artwork" @tap="previewDetailArtwork">
+          <view class="detail-artwork" @tap.stop="previewDetailArtwork">
             <image v-if="detailArtwork" :src="detailArtwork" mode="aspectFit" />
             <view v-else class="detail-artwork__placeholder" />
           </view>
@@ -1367,9 +1564,15 @@ function onScrollToLower() {
         </scroll-view>
 
         <!-- 底部动作区：详情态 [编辑][完成]；心愿条目只读，仅 [完成] -->
-        <view class="detail-actions">
-          <button v-if="!isWishDetail" class="detail-edit" @tap="startEdit()">编辑</button>
-          <button class="detail-done" @tap="closeDetail()">完成</button>
+        <view class="detail-actions" data-surface-control="true" @tap.stop="blockScroll">
+          <button v-if="!isWishDetail" class="detail-edit" data-surface-control="true" @tap.stop="startEdit()">编辑</button>
+          <button class="detail-done" data-surface-control="true" @tap.stop="closeDetail">完成</button>
+        </view>
+            </view>
+            <!-- Block native detail controls while moving, but allow retreat. -->
+            <view v-if="detailBusy" class="detail-motion-hit" @tap.stop="closeDetail" @touchmove.stop.prevent="blockScroll" />
+          </view>
+          </LibraryCardSurface>
         </view>
       </view>
     </view>
@@ -1773,6 +1976,7 @@ function onScrollToLower() {
 .grid-item image, .grid-image-placeholder { position: relative; z-index: 1; }
 /* 心愿袋网格卡：与「我的」宫格同尺寸同滚动，仅边框改虚线 + 素底 —— 标识「还未收入」 */
 .grid-item--wish { border: 2rpx dashed rgba(20,20,20,.28); background: rgba(255,255,255,.55); box-shadow: inset 0 0 0 2rpx rgba(255,255,255,.9); }
+.shelf-item.is-card-source, .grid-item.is-card-source { visibility: hidden; }
 .grid-item image { filter: drop-shadow(0 4px 10px rgba(0,0,0,.18)); }
 .grid-image-placeholder { width: 100rpx; height: 168rpx; border-radius: 20rpx; background: rgba(255,255,255,.62); }
 /* 渲染量封顶提示（H5 .grid-overflow-note） */
@@ -1805,6 +2009,9 @@ function onScrollToLower() {
    下面的自定义底栏与上面的原生导航栏（`bottom: 0` 只到页面视口底），
    那两块由 services/overlay.ts 的 maskPageChrome() 一起蒙。 */
 .detail-layer { position: fixed; z-index: 950; top: 0; left: 0; right: 0; bottom: 0; }
+/* Fade with the returning card instead of leaving a static blurred screen. */
+.detail-layer.is-closing .detail-backdrop { animation: library-detail-dismiss .3s linear both; }
+@keyframes library-detail-dismiss { from { opacity: 1; } to { opacity: 0; } }
 
 /* 大图预览浮层：压在详情卡（950）之上；图片给一个「比整屏小一档」的尺寸，
    袋子不撑满屏幕，留出四周空间看轮廓与投影。 */
@@ -1821,8 +2028,60 @@ function onScrollToLower() {
 
 /* 浮层本体：定宽定高 + inset 0 + margin auto 居中（H5 也是这么做的，
    用 left/top + translate 会和 scale 入场动效抢 transform）。 */
-.detail-card { position: absolute; z-index: 1; top: 0; right: 0; bottom: 0; left: 0; width: 633rpx; height: 1019rpx; max-height: calc(100vh - 175rpx); margin: auto; overflow: hidden; border: 2rpx solid rgba(255,255,255,.62); border-radius: 55rpx; background: linear-gradient(160deg, #ffffff 0%, #fafbfd 56%, #f2f4f8 100%); box-shadow: inset 0 2rpx 0 rgba(255,255,255,1), inset 0 -2rpx 0 rgba(255,255,255,.34), inset 0 0 0 2rpx rgba(255,255,255,.9), 0 29rpx 65rpx rgba(52,66,92,.16), 0 5rpx 18rpx rgba(52,66,92,.07), 0 55rpx 145rpx rgba(0,0,0,.26); animation: detail-in .3s cubic-bezier(.2,.78,.22,1) both; }
-@keyframes detail-in { from { opacity: 0; transform: scale(.92); } to { opacity: 1; transform: scale(1); } }
+/* Keep the original content dimensions plus its 2rpx border on each side.
+   This shell stays untransformed so boundingClientRect yields the destination. */
+.detail-motion-frame { position: absolute; z-index: 1; top: 0; right: 0; bottom: 0; left: 0; width: 637rpx; height: 1023rpx; max-height: calc(100vh - 171rpx); margin: auto; perspective: 600px; }
+.detail-translater, .detail-rotator { position: absolute; top: 0; right: 0; bottom: 0; left: 0; transform-origin: center; transform-style: preserve-3d; }
+.detail-translater { will-change: transform, opacity; }
+.detail-rotator { perspective: 600px; will-change: transform; }
+.detail-translater.is-opening { animation: library-card-enter var(--card-motion-duration) cubic-bezier(.333333,1.216667,.666667,1) both, library-card-show var(--card-motion-duration) linear both; }
+.detail-translater.is-closing { animation: library-card-retreat var(--card-motion-duration) cubic-bezier(.333333,0,.666667,.333333) both, library-card-hide var(--card-motion-duration) linear both; }
+.detail-rotator.is-flipping { animation: library-card-flip var(--card-flip-duration) linear both; }
+/* These animations run in the view layer. JS sends only the two endpoint poses.
+   X control points at 1/3 and 2/3 make CSS easing match the interruption sampler. */
+@keyframes library-card-enter {
+  from { transform: var(--card-motion-from); }
+  to { transform: var(--card-motion-to); }
+}
+@keyframes library-card-retreat {
+  from { transform: var(--card-motion-from); }
+  to { transform: var(--card-motion-to); }
+}
+@keyframes library-card-show {
+  0% { opacity: var(--card-opacity-from); }
+  33.333%, 100% { opacity: var(--card-opacity-to); }
+}
+@keyframes library-card-hide {
+  0% { opacity: var(--card-opacity-from); }
+  80%, 100% { opacity: var(--card-opacity-to); }
+}
+@keyframes library-card-flip {
+  0% { transform: rotateY(0deg); animation-timing-function: cubic-bezier(.333333,0,.666667,0); }
+  50% { transform: rotateY(180deg); animation-timing-function: cubic-bezier(.333333,1,.666667,1); }
+  100% { transform: rotateY(360deg); }
+}
+/* Swap at the cubic flip's 90/270-degree crossings, without JS frame updates.
+   Keep explicit face masking for miniapp engines with unreliable backface hiding. */
+.is-flipping > .detail-card { animation: library-card-front var(--card-flip-duration) steps(1, end) both; }
+.is-flipping > .detail-card-back { animation: library-card-back var(--card-flip-duration) steps(1, end) both; }
+@keyframes library-card-front {
+  0% { opacity: 1; }
+  39.685% { opacity: 0; }
+  60.315%, 100% { opacity: 1; }
+}
+@keyframes library-card-back {
+  0% { opacity: 0; }
+  39.685% { opacity: 1; }
+  60.315%, 100% { opacity: 0; }
+}
+.detail-card { position: absolute; z-index: 2; top: 0; right: 0; bottom: 0; left: 0; width: 100%; height: 100%; box-sizing: border-box; overflow: hidden; border: 2rpx solid rgba(255,255,255,.62); border-radius: 55rpx; background: linear-gradient(160deg, #ffffff 0%, #fafbfd 56%, #f2f4f8 100%); box-shadow: inset 0 2rpx 0 rgba(255,255,255,1), inset 0 -2rpx 0 rgba(255,255,255,.34), inset 0 0 0 2rpx rgba(255,255,255,.9), 0 29rpx 65rpx rgba(52,66,92,.16), 0 5rpx 18rpx rgba(52,66,92,.07), 0 55rpx 145rpx rgba(0,0,0,.26); }
+/* Explicitly switch faces at 90/270 degrees, as on the existing showcase card;
+   do not rely on miniapp backface-visibility for hiding mirrored text. */
+.detail-card-back { position: absolute; z-index: 1; top: 0; right: 0; bottom: 0; left: 0; box-sizing: border-box; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 28rpx; padding: 60rpx; border: 2rpx solid rgba(255,255,255,.72); border-radius: 55rpx; background: linear-gradient(160deg, #fbfbfd, #eef0f4); box-shadow: inset 0 0 0 14rpx rgba(255,255,255,.45), 0 29rpx 65rpx rgba(52,66,92,.16); transform: rotateY(180deg); }
+.detail-card-back__label { color: #c50405; font-size: 24rpx; font-weight: 700; letter-spacing: 6rpx; }
+.detail-card-back__name { color: #1d1a15; font-family: Georgia, "Iowan Old Style", "Songti SC", serif; font-size: var(--wc-font-headline); font-weight: 600; line-height: 1.4; text-align: center; }
+.detail-card-back__brand { color: #6f6a62; font-size: var(--wc-font-description); text-align: center; }
+.detail-motion-hit { position: absolute; z-index: 20; top: 0; right: 0; bottom: 0; left: 0; border-radius: 55rpx; }
 @keyframes detail-fade { from { opacity: 0; } to { opacity: 1; } }
 
 /* 玻璃背景层：只出材质，不接手势（H5 .detail-glass） */
