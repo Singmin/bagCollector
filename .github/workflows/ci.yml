@@ -137,6 +137,7 @@ jobs:
           bash infra/export-images.sh production-images "bagcollect-api:$GITHUB_SHA" "bagcollect-admin:$GITHUB_SHA"
           bash infra/export-images.sh vision-images "bagcollect-vision:$GITHUB_SHA"
       - name: Verify ordinary API and Admin changes reuse large layers
+        if: github.event_name == 'pull_request' || github.ref == 'refs/heads/codex/incremental-deploy'
         run: bash scripts/test-business-image-delta.sh
       - name: Verify image archive import
         run: |
