@@ -126,5 +126,7 @@ echo "CI 镜像已校验并导入，开始部署"
 cd "$DEPLOY_DIR"
 sh infra/deploy.sh
 if [ -f "$RELEASE_DIR/production-images/manifest.json" ]; then
+  printf '%s\n' "$IMAGE_TAG" > "$RELEASE_DIR/.applied.tmp"
+  mv "$RELEASE_DIR/.applied.tmp" "$RELEASE_DIR/.applied"
   python3 "$RELEASE_DIR/infra/release-retention.py" --root "$DEPLOY_DIR" --release "$RELEASE_DIR" --sha "$IMAGE_TAG" || echo "部署已成功，但本项目缓存清理失败，请查看日志" >&2
 fi

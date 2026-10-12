@@ -21,7 +21,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Test incremental archive integrity and cache reuse
-        run: python3 scripts/test-image-bundle.py
+        run: |
+          python3 scripts/test-image-bundle.py
+          python3 scripts/test-release-retention.py
       - name: Test interrupted release transfer and checkpoint integrity
         run: bash scripts/test-release-transfer.sh
       - name: Verify image identity across Docker storage backends

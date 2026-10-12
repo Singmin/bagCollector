@@ -36,6 +36,8 @@ def run():
     records.append({"sha": args.sha, "release": str(release), "time": time.time()})
     retained = records[-3:]
     protected_shas = {r["sha"] for r in retained}
+    successful_shas = {r["sha"] for r in records}
+    canonical = {r["sha"]: Path(r["release"]).resolve() for r in retained}
     ids = subprocess.check_output(["docker", "ps", "-aq"], text=True).split()
     protected_images = set()
     if ids:
@@ -51,7 +53,8 @@ def run():
         if old["source_sha"] in protected_shas:
             referenced.update(old.get("objects", []))
     releases = root / "releases"
-    for directory in releases.iterdir():
+    candidates = []
+    for directory in sorted(releases.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
         if directory.is_symlink() or not directory.is_dir():
             continue
         manifests = list(directory.glob("*-images/manifest.json"))
@@ -59,11 +62,23 @@ def run():
             continue
         loaded = [bundle.load(path.parent) for path in manifests]
         sha = loaded[0]["source_sha"]
-        recent_pending = (directory / ".v2-release").is_file() and directory.stat().st_mtime > time.time() - 7 * 86400
-        if sha in protected_shas or recent_pending:
+        if any(m["source_sha"] != sha for m in loaded):
+            raise ValueError("mixed release SHAs")
+        owned = (directory / ".v2-release").is_file() and (directory / ".v2-release").read_text().strip() == sha and directory.name.startswith(sha + "-")
+        if (directory / ".applied").is_file() and (directory / ".applied").read_text().strip() == sha:
+            successful_shas.add(sha)
+        if sha in protected_shas and sha not in canonical:
+            canonical[sha] = directory.resolve()
+        candidates.append((directory, loaded, sha, owned))
+    for directory, loaded, sha, owned in candidates:
+        # Keep one successful archive per SHA; repeated prepare/retry runs need not
+        # accumulate full reconstructed archives forever. Unfinished new releases
+        # remain resumable for seven days.
+        recent_pending = owned and sha not in successful_shas and directory.stat().st_mtime > time.time() - 7 * 86400
+        if canonical.get(sha) == directory.resolve() or recent_pending or not owned:
             for m in loaded:
                 referenced.update(bundle.chunks(m))
-        elif (directory / ".v2-release").is_file() and (directory / ".v2-release").read_text().strip() == sha and directory.name.startswith(sha + "-"):
+        else:
             expired.append((sha, directory))
     # Update history before cleanup; every recorded release has completed health checks.
     bundle.atomic(state, (json.dumps(retained, sort_keys=True) + "\n").encode())
@@ -78,7 +93,7 @@ def run():
             continue
         for name in ("api", "admin", "vision"):
             image = "bagcollect-" + name + ":" + sha
-            if image not in protected_images:
+            if sha not in protected_shas and image not in protected_images:
                 subprocess.run(["docker", "image", "rm", image], check=False, stdout=subprocess.DEVNULL)
         shutil.rmtree(directory)
     print(f"Retention: {len(retained)} successful versions; removed {removed} unreferenced cached objects")
