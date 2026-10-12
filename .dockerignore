@@ -13,3 +13,9 @@ build
 .env.*
 *.pem
 project.private.config.json
+
+# Native iOS sources are not inputs to any Linux image.
+BagCollect
+BagCollectTests
+BagCollectUITests
+BagCollect.xcodeproj

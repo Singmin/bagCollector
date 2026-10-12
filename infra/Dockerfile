@@ -1,11 +1,11 @@
-FROM node:22.12.0-alpine AS base
+FROM node:22.12.0-alpine@sha256:51eff88af6dff26f59316b6e356188ffa2c422bd3c3b76f2556a2e7e89d080bd AS base
 # 应用镜像在 GitHub Runner 构建，生产服务器只导入镜像。
 # npm 与 corepack 使用官方源，适配海外 Runner。
 RUN npm config set registry https://registry.npmjs.org
 ENV COREPACK_NPM_REGISTRY=https://registry.npmjs.org
 # Node 22.12 内置的 corepack（0.28.x）缺 pnpm 新版签名公钥，直接 prepare 会报
 # "Internal Error: Cannot find matching keyid"。先升 corepack 拿到新 key 再 activate。
-RUN npm install -g corepack@latest \
+RUN npm install -g corepack@0.36.0 \
   && corepack enable \
   && corepack prepare pnpm@10.18.3 --activate
 WORKDIR /app
@@ -88,7 +88,7 @@ RUN node /tmp/prune-runtime-deps.mjs
 # 回退方案：将来若 worker 需要独立发布或独立伸缩，把 worker 的 COPY 段拆回
 # 一个独立 target 即可，prod-deps 已经为两个角色都装好了依赖。
 # ---------------------------------------------------------------------------
-FROM alpine:3.21 AS api
+FROM alpine:3.21@sha256:ce64758a109eb420d874a118f87920e625e12d3634e03b4a5573fd9f6e5d3507 AS api
 RUN apk add --no-cache libstdc++ openssl
 # Only Node is needed at runtime. npm/yarn/corepack/pnpm/cache stay in build stages.
 COPY --from=base /usr/local/bin/node /usr/local/bin/node
@@ -119,7 +119,7 @@ EXPOSE 3001
 # 不依赖这里的默认值。
 CMD ["node", "apps/api/dist/main.js"]
 
-FROM nginx:1.27-alpine AS admin
+FROM nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10 AS admin
 COPY infra/nginx/admin.conf /etc/nginx/conf.d/default.conf
 # 构建上下文中的 admin-artifact 由 CI 提供，与已验证源码使用同一个 SHA。
 # 此 target 只打包静态资源，不依赖 Node、pnpm 或后端 build stage。
@@ -130,7 +130,7 @@ COPY admin-artifact/assets/ /usr/share/nginx/html/
 # CI 与部署矩阵也不构建该 target。定义保留未删除，单独做推理实验时可用。
 # 现行抠图方案见 docs/TENCENT_CI_MATTING.md。
 # ---------------------------------------------------------------------------
-FROM python:3.12-slim AS rembg
+FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS rembg
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

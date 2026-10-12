@@ -37,7 +37,15 @@ for source in 23751 23752; do
   expected=$(DOCKER_HOST="tcp://127.0.0.1:$source" sh infra/image-fingerprint.sh "$image")
   source_id=$(DOCKER_HOST="tcp://127.0.0.1:$source" docker image inspect --format '{{.Id}}' "$image")
   DOCKER_HOST="tcp://127.0.0.1:$source" docker image save "$image" > .runtime/image-store-compat/fixture.tar
-  DOCKER_HOST="tcp://127.0.0.1:$target" docker image load --input .runtime/image-store-compat/fixture.tar
+  bundle=.runtime/image-store-compat/bundle-$source
+  mkdir -p "$bundle"
+  printf '%s\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa > "$bundle/source-sha"
+  printf '%s\n' amd64 > "$bundle/architecture"
+  printf '%s %s\n' "$source_id" "$image" > "$bundle/images.ids"
+  printf '%s %s\n' "$expected" "$image" > "$bundle/images.fingerprints"
+  python3 infra/image-bundle.py pack --archive .runtime/image-store-compat/fixture.tar --bundle "$bundle" --objects .runtime/image-store-compat/objects
+  python3 infra/image-bundle.py rebuild --bundle "$bundle" --objects .runtime/image-store-compat/objects --output "$bundle/reconstructed.tar.gz"
+  DOCKER_HOST="tcp://127.0.0.1:$target" docker image load --input "$bundle/reconstructed.tar.gz"
   actual=$(DOCKER_HOST="tcp://127.0.0.1:$target" sh infra/image-fingerprint.sh "$image")
   target_id=$(DOCKER_HOST="tcp://127.0.0.1:$target" docker image inspect --format '{{.Id}}' "$image")
   echo "source ID=$source_id target ID=$target_id source content=$expected target content=$actual"

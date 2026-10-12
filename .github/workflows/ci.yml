@@ -4,7 +4,13 @@ name: CI
 # 避免「CI 通过」与「部署」并发跑、部署跑在没验过的代码上。
 on:
   pull_request:
+  push:
+    branches: [codex/incremental-deploy]
   workflow_call:
+    inputs:
+      force_cold_build:
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -14,6 +20,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Test incremental archive integrity and cache reuse
+        run: python3 scripts/test-image-bundle.py
       - name: Test interrupted release transfer and checkpoint integrity
         run: bash scripts/test-release-transfer.sh
       - name: Verify image identity across Docker storage backends
@@ -67,11 +75,55 @@ jobs:
           mkdir -p admin-artifact/assets
           cp -R apps/admin/dist/. admin-artifact/assets/
           printf '%s\n' "$GITHUB_SHA" > admin-artifact/source-sha
-      - name: Build production images on the Runner
-        run: |
-          docker build --target api --tag "bagcollect-api:$GITHUB_SHA" -f infra/Dockerfile .
-          docker build --target admin --tag "bagcollect-admin:$GITHUB_SHA" -f infra/Dockerfile .
-          docker build --tag "bagcollect-vision:$GITHUB_SHA" -f apps/vision/Dockerfile .
+      - run: mkdir -p .runtime
+      - uses: docker/setup-buildx-action@v4
+      - name: Build cached api image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: infra/Dockerfile
+          target: api
+          build-args: SOURCE_DATE_EPOCH=1704067200
+          no-cache: ${{ inputs.force_cold_build == true }}
+          outputs: type=docker,dest=.runtime/api.docker.tar,rewrite-timestamp=true
+          platforms: linux/amd64
+          provenance: false
+          tags: bagcollect-api:${{ github.sha }}
+          cache-from: type=gha,scope=bagcollect-api-amd64-v2,version=2
+          cache-to: type=gha,scope=bagcollect-api-amd64-v2,version=2,mode=max
+      - name: Load verified build output for api runtime checks
+        run: docker image load --input .runtime/api.docker.tar
+      - name: Build cached admin image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: infra/Dockerfile
+          target: admin
+          build-args: SOURCE_DATE_EPOCH=1704067200
+          no-cache: ${{ inputs.force_cold_build == true }}
+          outputs: type=docker,dest=.runtime/admin.docker.tar,rewrite-timestamp=true
+          platforms: linux/amd64
+          provenance: false
+          tags: bagcollect-admin:${{ github.sha }}
+          cache-from: type=gha,scope=bagcollect-admin-amd64-v2,version=2
+          cache-to: type=gha,scope=bagcollect-admin-amd64-v2,version=2,mode=max
+      - name: Load verified build output for admin runtime checks
+        run: docker image load --input .runtime/admin.docker.tar
+      - name: Build cached vision image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: apps/vision/Dockerfile
+          build-args: SOURCE_DATE_EPOCH=1704067200
+          no-cache: ${{ inputs.force_cold_build == true }}
+          outputs: type=docker,dest=.runtime/vision.docker.tar,rewrite-timestamp=true
+          platforms: linux/amd64
+          provenance: false
+          tags: bagcollect-vision:${{ github.sha }}
+          cache-from: type=gha,scope=bagcollect-vision-amd64-v2,version=2
+          cache-to: type=gha,scope=bagcollect-vision-amd64-v2,version=2,mode=max
+      - name: Load verified build output for vision runtime checks
+        run: docker image load --input .runtime/vision.docker.tar
       - name: Check runtime image contents
         run: |
           docker run --rm "bagcollect-api:$GITHUB_SHA" sh -c 'test -s apps/api/dist/main.js && test -s apps/worker/dist/main.js && test -s apps/worker/dist/scan-main.js && cd apps/api && node -e "require(\"@prisma/client\")"'
@@ -86,7 +138,9 @@ jobs:
         run: |
           docker image rm "bagcollect-api:$GITHUB_SHA" "bagcollect-admin:$GITHUB_SHA" "bagcollect-vision:$GITHUB_SHA"
           for bundle in production-images vision-images; do
-            docker image load --input "$bundle/images.tar.gz"
+            python3 infra/image-bundle.py verify --bundle "$bundle" --objects image-objects --sha "$GITHUB_SHA" --architecture amd64
+            python3 infra/image-bundle.py rebuild --bundle "$bundle" --objects image-objects --output ".runtime/$bundle.tar.gz"
+            docker image load --input ".runtime/$bundle.tar.gz"
             while read -r expected image; do
               test "$(sh infra/image-fingerprint.sh "$image")" = "$expected"
             done < "$bundle/images.fingerprints"
@@ -109,20 +163,15 @@ jobs:
           done
           echo 'Imported API image did not become ready' >&2
           exit 1
-      - name: Upload verified production images
+      - name: Upload verified incremental image objects
         uses: actions/upload-artifact@v4
         with:
-          name: production-images-${{ github.sha }}
-          path: production-images/
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 7
-          overwrite: true
-      - name: Upload verified vision image
-        uses: actions/upload-artifact@v4
-        with:
-          name: vision-images-${{ github.sha }}
-          path: vision-images/
+          name: verified-images-${{ github.sha }}
+          path: |
+            production-images/
+            vision-images/
+            image-objects/
+            !**/images.tar.gz
           if-no-files-found: error
           compression-level: 0
           retention-days: 7

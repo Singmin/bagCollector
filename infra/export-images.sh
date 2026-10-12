@@ -14,5 +14,5 @@ for image in "$@"; do
   printf '%s %s\n' "$(sh infra/image-fingerprint.sh "$image")" "$image" >> "$output/images.fingerprints"
 done
 docker image save "$@" | gzip -6 > "$output/images.tar.gz"
-(cd "$output" && sha256sum images.tar.gz images.ids images.fingerprints source-sha architecture > SHA256SUMS)
+python3 infra/image-bundle.py pack --archive "$output/images.tar.gz" --bundle "$output" --objects image-objects
 du -h "$output/images.tar.gz"

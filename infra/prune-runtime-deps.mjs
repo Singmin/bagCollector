@@ -65,3 +65,8 @@ for (const file of nativeEngines) {
 }
 console.log(`Removed ${removals.length} unused runtime files/directories (source maps, optional TypeScript, edge WASM and incompatible sharp binaries)`);
 console.log(`Deduplicated ${deduplicatedBytes} native Prisma engine bytes without removing runtime paths`);
+
+// pnpm's installation bookkeeping contains wall-clock dates and is not used by Node.
+// Keep dependency layers reproducible even when a fresh Runner misses the build cache.
+const installMetadata = path.resolve('node_modules/.modules.yaml');
+if (fs.existsSync(installMetadata)) fs.rmSync(installMetadata);

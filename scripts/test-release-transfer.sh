@@ -1,60 +1,64 @@
 #!/usr/bin/env bash
-# Exercise actual rsync sender/receiver locally; only replace the SSH network transport.
+# Real rsync and server-side bundle checks; only SSH network transport is replaced.
 set -euo pipefail
 repo=$(cd "$(dirname "$0")/.." && pwd)
-fixture=$(mktemp -d)
+mkdir -p "$repo/.runtime"
+fixture=$(mktemp -d "$repo/.runtime/release-transfer-XXXXXXXX")
 trap 'rm -rf "$fixture"' EXIT
-mkdir -p "$fixture/bin" "$fixture/server/incoming/1-1"
+mkdir -p "$fixture/bin" "$fixture/server/releases" "$fixture/payload/infra" "$fixture/objects"
 export DEPLOY_HOST=fixture DEPLOY_USER=runner DEPLOY_PATH="$fixture/server"
 export GITHUB_SHA=1111111111111111111111111111111111111111
 export GITHUB_RUN_ID=2 GITHUB_RUN_ATTEMPT=1
-name="bagcollect-release-$GITHUB_SHA.tar"
-archive="$fixture/$name"
-dd if=/dev/urandom of="$archive" bs=1M count=8 status=none
-old="$DEPLOY_PATH/incoming/1-1"
-
-# Interrupt a real transfer and ensure rsync saves a partial checkpoint.
+export IMAGE_OBJECTS_DIR="$fixture/objects"
+cp "$repo/infra/image-bundle.py" "$fixture/payload/infra/"
+python3 - "$fixture" <<'PY'
+import importlib.util,pathlib,sys,tarfile,os,io
+root=pathlib.Path(sys.argv[1])
+spec=importlib.util.spec_from_file_location('bundle',root/'payload/infra/image-bundle.py');b=importlib.util.module_from_spec(spec);spec.loader.exec_module(b)
+folder=root/'payload/production-images';folder.mkdir()
+for name,data in {'source-sha':os.environ['GITHUB_SHA'],'architecture':'amd64','images.ids':'fixture','images.fingerprints':'fixture'}.items(): (folder/name).write_text(data)
+archive=root/'fixture.tar'
+with tarfile.open(archive,'w') as tar:
+    data=os.urandom(8*1024*1024);info=tarfile.TarInfo('layer.tar');info.size=len(data);tar.addfile(info,io.BytesIO(data))
+b.pack(archive,folder,root/'objects')
+PY
+control="$fixture/bagcollect-control-$GITHUB_SHA.tar"
+tar -cf "$control" -C "$fixture/payload" infra production-images
+receiving="$DEPLOY_PATH/.image-cache/v2/receiving"
+mkdir -p "$receiving"
+first=$(find "$fixture/objects" -name '*.gz' -printf '%f\n' | sort | head -n 1)
 set +e
 timeout --kill-after=5 1 rsync --no-whole-file --bwlimit=1024 \
-  --partial-dir=.rsync-partial "$archive" "$old/$name" >"$fixture/interrupted.log" 2>&1
-rc=$?
+  --partial-dir=.rsync-partial "$fixture/objects/$first" "$receiving/$first" >"$fixture/interrupted.log" 2>&1
+result=$?
 set -e
-[ "$rc" -eq 124 ]
-checkpoint="$old/.rsync-partial/$name"
-test -s "$checkpoint"
-test "$(stat -c %s "$checkpoint")" -lt "$(stat -c %s "$archive")"
-checkpoint_digest=$(sha256sum "$checkpoint" | cut -d' ' -f1)
-
+[ "$result" -eq 124 ]
+test -s "$receiving/.rsync-partial/$first"
 cat > "$fixture/bin/ssh" <<'MOCK'
 #!/usr/bin/env bash
 set -eu
 while [[ "$1" = -* ]]; do shift 2; done
-shift # remote host
-if [ "${MOCK_BAD_CHECKSUM:-0}" = 1 ] && [[ "$*" = *'sha256sum -c'* ]]; then exit 1; fi
+shift
 if [ "$1" = bash ]; then exec "$@"; fi
-# Real rsync server, or the helper's fixed checksum command, on the same filesystem.
 exec bash -c "$*"
 MOCK
-chmod +x "$fixture/bin/ssh"
+printf '#!/bin/sh\nexit 1\n' > "$fixture/bin/docker"
+chmod +x "$fixture/bin/ssh" "$fixture/bin/docker"
 export PATH="$fixture/bin:$PATH"
-bash "$repo/infra/transfer-release.sh" "$archive" > "$fixture/resume.log"
-target="$DEPLOY_PATH/incoming/2-1/$name"
-cmp "$archive" "$target"
+bash "$repo/infra/transfer-release.sh" "$control" > "$fixture/resume.log" 2>&1
+module="$DEPLOY_PATH/releases/$GITHUB_SHA-2-1/infra/image-bundle.py"
+bundle="$DEPLOY_PATH/releases/$GITHUB_SHA-2-1/production-images"
+cache="$DEPLOY_PATH/.image-cache/v2/objects"
+python3 "$module" verify --bundle "$bundle" --objects "$cache" --sha "$GITHUB_SHA" --architecture amd64
 grep -Eq 'Matched data: [1-9][0-9,]* bytes' "$fixture/resume.log"
-test "$checkpoint_digest" = "$(sha256sum "$checkpoint" | cut -d' ' -f1)"
-echo 'PASS: interrupted upload resumes using existing bytes; original checkpoint unchanged'
-
-# Same size and mtime must not cause a corrupt completed file to be silently skipped.
-cp -p "$target" "$fixture/timestamp"
-printf 'corruption' | dd of="$target" bs=1 seek=256 conv=notrunc status=none
-touch -r "$fixture/timestamp" "$target"
-bash "$repo/infra/transfer-release.sh" "$archive" > "$fixture/repair.log"
-cmp "$archive" "$target"
-test "$checkpoint_digest" = "$(sha256sum "$checkpoint" | cut -d' ' -f1)"
-echo 'PASS: same-size corrupted upload is repaired and checked'
-
-if MOCK_BAD_CHECKSUM=1 bash "$repo/infra/transfer-release.sh" "$archive" > "$fixture/rejected.log" 2>&1; then
-  echo 'checksum failure was accepted' >&2
-  exit 1
-fi
-echo 'PASS: failed final checksum prevents a successful transfer result'
+echo 'PASS: interrupted object resumes and verified objects survive a new run'
+export GITHUB_RUN_ID=3
+bash "$repo/infra/transfer-release.sh" "$control" > "$fixture/warm.log" 2>&1
+! grep -q '增量传输第' "$fixture/warm.log"
+echo 'PASS: warm release sends control metadata only'
+printf corrupted > "$cache/$first"
+export GITHUB_RUN_ID=4
+bash "$repo/infra/transfer-release.sh" "$control" > "$fixture/repair.log" 2>&1
+python3 "$module" verify --bundle "$bundle" --objects "$cache"
+grep -q '1 个缺失对象' "$fixture/repair.log"
+echo 'PASS: corruption downloads only the damaged object'

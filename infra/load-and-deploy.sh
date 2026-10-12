@@ -1,6 +1,9 @@
 #!/bin/sh
 # Production only imports CI images; never build or install dependencies here.
 set -eu
+mode=${1:---prepare-only}
+case "$mode" in --prepare-only|--apply) ;; *) echo 'Use --prepare-only or --apply' >&2; exit 1 ;; esac
+legacy=${2:-}
 DEPLOY_DIR=${BAGCOLLECT_DEPLOY_DIR:-/www/wwwroot/bagcollect}
 RELEASE_DIR=${BAGCOLLECT_RELEASE_DIR:?set BAGCOLLECT_RELEASE_DIR}
 IMAGE_TAG=${BAGCOLLECT_IMAGE_TAG:?set BAGCOLLECT_IMAGE_TAG}
@@ -26,8 +29,18 @@ esac
 API_IMAGE="bagcollect-api:$IMAGE_TAG"
 ADMIN_IMAGE="bagcollect-admin:$IMAGE_TAG"
 VISION_IMAGE="bagcollect-vision:$IMAGE_TAG"
+CACHE_DIR="$DEPLOY_DIR/.image-cache/v2/objects"
 validate_bundle() {
   bundle=$1
+  if [ -f "$bundle/manifest.json" ]; then
+    command -v python3 >/dev/null || { echo "缺少 Python 3" >&2; exit 1; }
+    nice -n 19 python3 "$RELEASE_DIR/infra/image-bundle.py" verify --bundle "$bundle" --objects "$CACHE_DIR" --sha "$IMAGE_TAG" --architecture "$architecture"
+    if [ "$mode" = --apply ] && [ ! -f "$RELEASE_DIR/.prepared" ]; then
+      echo "发布尚未完成 prepare-only，拒绝上线" >&2; exit 1
+    fi
+  elif [ "$legacy" != --legacy-bundle ]; then
+    echo "需要 v2 增量清单，拒绝自动回退完整发布包" >&2; exit 1
+  fi
   (cd "$bundle" && sha256sum -c SHA256SUMS)
   [ "$(cat "$bundle/source-sha")" = "$IMAGE_TAG" ] || { echo "镜像产物与部署 SHA 不一致" >&2; exit 1; }
   [ "$(cat "$bundle/architecture")" = "$architecture" ] || { echo "镜像架构与服务器不一致" >&2; exit 1; }
@@ -42,6 +55,15 @@ if grep -Eq '^VISION_ENABLED=1$' "$DEPLOY_DIR/infra/.env.deploy"; then
   [ -f "$DEPLOY_DIR/data/vision-models/manifest.json" ] || { echo "缺少模型校验清单" >&2; exit 1; }
   validate_bundle "$RELEASE_DIR/vision-images"
   grep -Eq "^sha256:[0-9a-f]{64} $VISION_IMAGE$" "$RELEASE_DIR/vision-images/images.fingerprints"
+fi
+if [ "$mode" = --prepare-only ] && [ -f "$RELEASE_DIR/production-images/manifest.json" ]; then
+  set -- --bundle "$RELEASE_DIR/production-images"
+  [ "$vision_enabled" -eq 0 ] || set -- "$@" --bundle "$RELEASE_DIR/vision-images"
+  nice -n 19 python3 "$RELEASE_DIR/infra/image-bundle.py" space "$@" --objects "$CACHE_DIR" --root "$RELEASE_DIR" --sha "$IMAGE_TAG" --architecture "$architecture"
+  for bundle in "$RELEASE_DIR/production-images" "$RELEASE_DIR/vision-images"; do
+    [ -f "$bundle/manifest.json" ] || continue
+    nice -n 19 python3 "$RELEASE_DIR/infra/image-bundle.py" rebuild --bundle "$bundle" --objects "$CACHE_DIR" --output "$bundle/images.tar.gz" --sha "$IMAGE_TAG" --architecture "$architecture"
+  done
 fi
 echo "导入前服务器资源："
 free -m || true
@@ -85,6 +107,15 @@ load_bundle() {
 }
 load_bundle "$RELEASE_DIR/production-images"
 [ "$vision_enabled" -eq 0 ] || load_bundle "$RELEASE_DIR/vision-images"
+if [ "$mode" = --prepare-only ]; then
+  printf '%s\n' "$IMAGE_TAG" > "$RELEASE_DIR/.prepared.tmp"
+  mv "$RELEASE_DIR/.prepared.tmp" "$RELEASE_DIR/.prepared"
+  echo "发布准备完成；未执行数据库迁移或切换容器"
+  exit 0
+fi
+if [ -f "$RELEASE_DIR/production-images/manifest.json" ]; then
+  [ "$(cat "$RELEASE_DIR/.prepared")" = "$IMAGE_TAG" ] || { echo "prepare SHA 不一致" >&2; exit 1; }
+fi
 # Only validated images may reach the existing backup/migration/rollback flow.
 cp "$RELEASE_DIR/infra/docker-compose.yml" "$DEPLOY_DIR/infra/docker-compose.yml"
 cp "$RELEASE_DIR/infra/deploy.sh" "$DEPLOY_DIR/infra/deploy.sh"
@@ -94,3 +125,6 @@ export BAGCOLLECT_DEPLOY_DIR="$DEPLOY_DIR" SKIP_IMAGE_PULL=1
 echo "CI 镜像已校验并导入，开始部署"
 cd "$DEPLOY_DIR"
 sh infra/deploy.sh
+if [ -f "$RELEASE_DIR/production-images/manifest.json" ]; then
+  python3 "$RELEASE_DIR/infra/release-retention.py" --root "$DEPLOY_DIR" --release "$RELEASE_DIR" --sha "$IMAGE_TAG" || echo "部署已成功，但本项目缓存清理失败，请查看日志" >&2
+fi

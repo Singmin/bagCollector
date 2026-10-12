@@ -5,6 +5,15 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      prepare_only:
+        description: Only prepare and verify images; leave running services unchanged
+        type: boolean
+        default: true
+      force_cold_build:
+        description: Validate reproducible output without build-cache reuse
+        type: boolean
+        default: false
 
 # 部署必须串行：两个部署同时在服务器上跑 migrate + 切容器会互相踩。
 # 刻意不设 cancel-in-progress —— 中途掐掉部署会留下「镜像已切一半」的状态。
@@ -19,6 +28,8 @@ jobs:
   # 复用 ci.yml，保证「部署的一定是通过了 lint / typecheck / 单测 / 迁移 / 构建的那份代码」。
   verify:
     uses: ./.github/workflows/ci.yml
+    with:
+      force_cold_build: ${{ inputs.force_cold_build == true }}
 
   deploy:
     needs: [verify]
@@ -27,11 +38,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download verified production images
+      - name: Download verified incremental image objects
         uses: actions/download-artifact@v4
         with:
-          name: production-images-${{ github.sha }}
-          path: production-images/
+          name: verified-images-${{ github.sha }}
+          path: .
 
       - name: Preflight SSH connectivity check
         env:
@@ -105,24 +116,17 @@ jobs:
           test "$enabled" = 0 || test "$enabled" = 1
           echo "vision=$enabled" >> "$GITHUB_OUTPUT"
 
-      - name: Download verified vision image
-        if: steps.server.outputs.vision == '1'
-        uses: actions/download-artifact@v4
-        with:
-          name: vision-images-${{ github.sha }}
-          path: vision-images/
-
       - name: Package verified source and images
         run: |
           test "$(cat production-images/source-sha)" = "$GITHUB_SHA"
           (cd production-images && sha256sum -c SHA256SUMS)
-          ARCHIVE="bagcollect-release-${GITHUB_SHA}.tar"
+          ARCHIVE="bagcollect-control-${GITHUB_SHA}.tar"
           git archive --format=tar --output="$ARCHIVE" "$GITHUB_SHA" infra
-          tar -rf "$ARCHIVE" production-images
-          if [ -d vision-images ]; then
+          tar --exclude=images.tar.gz -rf "$ARCHIVE" production-images
+          if [ "${{ steps.server.outputs.vision }}" = 1 ]; then
             test "$(cat vision-images/source-sha)" = "$GITHUB_SHA"
             (cd vision-images && sha256sum -c SHA256SUMS)
-            tar -rf "$ARCHIVE" vision-images
+            tar --exclude=images.tar.gz -rf "$ARCHIVE" vision-images
           fi
           du -h "$ARCHIVE"
 
@@ -132,92 +136,21 @@ jobs:
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
-        run: bash infra/transfer-release.sh "bagcollect-release-${GITHUB_SHA}.tar"
+        run: bash infra/transfer-release.sh "bagcollect-control-${GITHUB_SHA}.tar"
 
-      - name: Import verified images and deploy on the server
-        # Detached deployment may survive SSH loss; its state is unknown until rechecked.
+      - name: Prepare and verify images without changing running services
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-        run: |
-          attempt=0
-          max_attempts=3
-          while :; do
-            attempt=$((attempt+1))
-            echo "===== SSH 连接（第 $attempt/$max_attempts 次）====="
-            set +e
-            ssh -i ~/.ssh/deploy_key -p "$DEPLOY_PORT" \
-              -o ConnectTimeout=45 -o BatchMode=yes -o StrictHostKeyChecking=yes \
-              -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
-              "$DEPLOY_USER@$DEPLOY_HOST" /bin/bash -s <<'REMOTE_SCRIPT'
-            set -eu
-            DEPLOY_DIR="${{ secrets.DEPLOY_PATH }}"
-            TRANSFER_DIR="$DEPLOY_DIR/incoming/${{ github.run_id }}-${{ github.run_attempt }}"
-            ARCHIVE="$TRANSFER_DIR/bagcollect-release-${{ github.sha }}.tar"
-            RELEASE_DIR="$DEPLOY_DIR/releases/${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}"
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: bash infra/run-release.sh prepare
 
-            LOG=/tmp/bagcollect-deploy.log
-            STATUS_FILE="/tmp/bagcollect-deploy-${{ github.run_id }}-${{ github.run_attempt }}.status"
-            LAUNCHED_FILE="$STATUS_FILE.launched"
-
-            # 只在第一次连接时解压并启动后台部署；重连时直接跳到轮询，
-            # 避免把同一个 commit 的构建启动两遍。
-            if [ ! -f "$STATUS_FILE" ] && [ ! -f "$LAUNCHED_FILE" ]; then
-              [ -f "$ARCHIVE" ] || { echo "找不到发布包：$ARCHIVE" >&2; exit 1; }
-              mkdir -p "$RELEASE_DIR"
-              tar -xf "$ARCHIVE" -C "$RELEASE_DIR"
-              rm -f "$LOG" "$STATUS_FILE" "$LAUNCHED_FILE"
-              nohup sh -c '
-                status=0
-                env \
-                  BAGCOLLECT_DEPLOY_DIR="$2" \
-                  BAGCOLLECT_RELEASE_DIR="$3" \
-                  BAGCOLLECT_IMAGE_TAG="$4" \
-                  sh "$3/infra/load-and-deploy.sh" || status=$?
-                printf "%s\n" "$status" > "$1.tmp"
-                mv "$1.tmp" "$1"
-              ' sh "$STATUS_FILE" "$DEPLOY_DIR" "$RELEASE_DIR" "${{ github.sha }}" \
-                </dev/null >"$LOG" 2>&1 &
-              touch "$LAUNCHED_FILE"
-              echo "已在服务器后台启动导入/部署，日志：$LOG"
-            else
-              echo "检测到之前的后台部署，继续跟进（不重复启动）"
-            fi
-
-            # Detached tasks can survive SSH loss, but server state must be rechecked.
-            for i in $(seq 1 80); do
-              [ ! -f "$STATUS_FILE" ] || break
-              if [ $((i % 3)) -eq 0 ]; then
-                echo "--- 服务器导入/部署仍在进行（最近日志）---"
-                tail -n 12 "$LOG" || true
-              fi
-              sleep 20
-            done
-
-            if [ ! -f "$STATUS_FILE" ]; then
-              echo "本次连接等待超时；后台任务是否存活需要重新检查，日志见 $LOG" >&2
-              exit 124
-            fi
-            status=$(cat "$STATUS_FILE")
-            tail -n 80 "$LOG"
-            if [ "$status" -ne 0 ]; then
-              echo "服务器导入/部署失败（exit $status），完整日志见 $LOG" >&2
-              exit 1
-            fi
-            grep -q "部署完成" "$LOG" || { echo "未在日志中找到『部署完成』标记" >&2; exit 1; }
-            echo "本次部署的镜像版本（commit）：${{ github.sha }}"
-          REMOTE_SCRIPT
-            rc=$?
-            set -e
-            if [ "$rc" -eq 0 ]; then
-              break
-            fi
-            # Reconnect to inspect status without launching the deployment twice.
-            if [ "$attempt" -lt "$max_attempts" ] && { [ "$rc" -eq 255 ] || [ "$rc" -eq 124 ]; }; then
-              echo "SSH 连接中断（exit $rc），服务器状态未知，可能资源耗尽或网络中断；30 秒后尝试重新检查" >&2
-              sleep 30
-              continue
-            fi
-            exit "$rc"
-          done
+      - name: Apply prepared release and confirm service health
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.prepare_only == false)
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: bash infra/run-release.sh apply
