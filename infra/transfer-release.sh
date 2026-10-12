@@ -80,7 +80,7 @@ for attempt in 1 2 3; do
       --files-from="$scratch/missing.$worker" --partial-dir=.rsync-partial --timeout=90 \
       --info=progress2 --stats --rsync-path='nice -n 19 rsync' -e "$rsh" \
       "$objects/" "$DEPLOY_USER@$DEPLOY_HOST:$root/.image-cache/v2/receiving/" \
-      > "$scratch/channel.$worker.log" 2>&1 &
+      2>&1 | tr '\r' '\n' | sed -u "s/^/[stream $worker] /" &
     pids+=("$!")
   done
   set +e
@@ -91,7 +91,6 @@ for attempt in 1 2 3; do
     [ "$worker_result" -eq 0 ] || result=$worker_result
   done
   set -e
-  for worker in $(seq 1 "$workers"); do cat "$scratch/channel.$worker.log"; done
   # Cache completed objects even when another file's transfer was interrupted.
   timeout 180 ssh "${ssh_args[@]}" "$DEPLOY_USER@$DEPLOY_HOST" bash -s -- \
     "$root" "$transfer" "$release" "$GITHUB_SHA" <<'REMOTE' > "$scratch/missing.next"
