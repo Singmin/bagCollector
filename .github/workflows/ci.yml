@@ -49,28 +49,73 @@ jobs:
       - run: pnpm test:integration
       - run: pnpm test:scan
       - run: pnpm test:learning
+      - name: Test production image import guards
+        run: |
+          mkdir -p .runtime
+          node scripts/test-deploy-images.mjs
       - name: Prepare verified Admin artifact
         run: |
           test -s apps/admin/dist/index.html
           mkdir -p admin-artifact/assets
           cp -R apps/admin/dist/. admin-artifact/assets/
           printf '%s\n' "$GITHUB_SHA" > admin-artifact/source-sha
-      - name: Build Docker targets
+      - name: Build production images on the Runner
         run: |
-          # api 这个 target 同时承载 api 与 worker 两个容器（compose 用 command 区分），
-          # 所以不单独构建 worker —— 理由见 infra/Dockerfile 顶部注释。
-          docker build --target api -f infra/Dockerfile .
-          docker build --target admin -f infra/Dockerfile .
-          # 抠图已切换到腾讯云数据万象，rembg 不再参与生产链路。
-          # 对应 target 仍保留在 infra/Dockerfile 中作为可回退的兜底实现，
-          # 需要重新启用时取消下面一行注释，并同步恢复 compose 与部署脚本。详见
-          # docs/TENCENT_CI_MATTING.md。
-          # docker build --target rembg -f infra/Dockerfile .
-      - name: Upload verified Admin artifact
+          docker build --target api --tag "bagcollect-api:$GITHUB_SHA" -f infra/Dockerfile .
+          docker build --target admin --tag "bagcollect-admin:$GITHUB_SHA" -f infra/Dockerfile .
+          docker build --tag "bagcollect-vision:$GITHUB_SHA" -f apps/vision/Dockerfile .
+      - name: Check runtime image contents
+        run: |
+          docker run --rm "bagcollect-api:$GITHUB_SHA" sh -c 'test -s apps/api/dist/main.js && test -s apps/worker/dist/main.js && test -s apps/worker/dist/scan-main.js && cd apps/api && node -e "require(\"@prisma/client\")"'
+          docker run --rm "bagcollect-api:$GITHUB_SHA" sh -c 'cd apps/worker && node --input-type=module -e "import sharp from \"sharp\"; await sharp({create:{width:8,height:8,channels:3,background:\"red\"}}).png().toBuffer(); console.log(\"sharp PNG encode OK\")"'
+          docker run --rm "bagcollect-admin:$GITHUB_SHA" nginx -t
+          docker run --rm "bagcollect-vision:$GITHUB_SHA" python -c 'import onnxruntime, fastapi, numpy, PIL'
+      - name: Export verified images
+        run: |
+          bash infra/export-images.sh production-images "bagcollect-api:$GITHUB_SHA" "bagcollect-admin:$GITHUB_SHA"
+          bash infra/export-images.sh vision-images "bagcollect-vision:$GITHUB_SHA"
+      - name: Verify image archive import
+        run: |
+          docker image rm "bagcollect-api:$GITHUB_SHA" "bagcollect-admin:$GITHUB_SHA" "bagcollect-vision:$GITHUB_SHA"
+          for bundle in production-images vision-images; do
+            docker image load --input "$bundle/images.tar.gz"
+            while read -r expected image; do
+              test "$(docker image inspect --format '{{.Id}}' "$image")" = "$expected"
+            done < "$bundle/images.ids"
+          done
+      - name: Check imported API readiness
+        run: |
+          docker run --rm --network host -e DATABASE_URL "bagcollect-api:$GITHUB_SHA" \
+            node apps/api/node_modules/prisma/build/index.js migrate deploy --schema apps/api/prisma/schema.prisma
+          docker run -d --name bagcollect-image-api --network host \
+            -e DATABASE_URL -e REDIS_URL -e JWT_SECRET -e WECHAT_AUTH_MOCK \
+            -e NODE_ENV=test -e STORAGE_DRIVER=local \
+            "bagcollect-api:$GITHUB_SHA"
+          trap 'docker logs bagcollect-image-api; docker rm -f bagcollect-image-api' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:3001/api/health/ready; then
+              exit 0
+            fi
+            test "$(docker inspect --format '{{.State.Running}}' bagcollect-image-api)" = true
+            sleep 2
+          done
+          echo 'Imported API image did not become ready' >&2
+          exit 1
+      - name: Upload verified production images
         uses: actions/upload-artifact@v4
         with:
-          name: admin-${{ github.sha }}
-          path: admin-artifact/
+          name: production-images-${{ github.sha }}
+          path: production-images/
           if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+          overwrite: true
+      - name: Upload verified vision image
+        uses: actions/upload-artifact@v4
+        with:
+          name: vision-images-${{ github.sha }}
+          path: vision-images/
+          if-no-files-found: error
+          compression-level: 0
           retention-days: 7
           overwrite: true

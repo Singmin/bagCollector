@@ -52,3 +52,6 @@ testIMG.jpg
 __pycache__/
 *.pyc
 data/vision-models/
+
+production-images/
+vision-images/

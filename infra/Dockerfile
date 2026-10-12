@@ -1,9 +1,8 @@
 FROM node:22.12.0-alpine AS base
-# 该镜像只在生产服务器（国内）构建使用：npm 官方源走海外链路极慢，统一切 npmmirror。
-# corepack 拉 pnpm 也要走镜像，需同步设置 COREPACK_NPM_REGISTRY。
-# tarball 内容与官方源一致，pnpm lockfile 的 integrity 校验不受影响。
-RUN npm config set registry https://registry.npmmirror.com
-ENV COREPACK_NPM_REGISTRY=https://registry.npmmirror.com
+# 应用镜像在 GitHub Runner 构建，生产服务器只导入镜像。
+# npm 与 corepack 使用官方源，适配海外 Runner。
+RUN npm config set registry https://registry.npmjs.org
+ENV COREPACK_NPM_REGISTRY=https://registry.npmjs.org
 # Node 22.12 内置的 corepack（0.28.x）缺 pnpm 新版签名公钥，直接 prepare 会报
 # "Internal Error: Cannot find matching keyid"。先升 corepack 拿到新 key 再 activate。
 RUN npm install -g corepack@latest \
@@ -48,9 +47,9 @@ RUN pnpm db:generate && pnpm build:backend
 # 压出一个 203.5MB 的层，大陆服务器拉 GHCR 时几乎必然超时。
 # 这里重新做一次「只装 api+worker 生产依赖」的过滤安装（--prod + --filter），
 # 该 node_modules 层由下面的运行时镜像独占（api / worker / migrate 三个容器共用），
-# 预计从 203.5MB 降到几十 MB 级。
+# 仅 --prod 仍会保留 Prisma 的可选类型工具和 edge WASM；下面额外按运行场景裁剪。
 # 注意 prisma CLI 是 api 的生产依赖（compose 的 migrate 服务要在 api 镜像里
-# 跑 `pnpm --filter @bagcollect/api db:deploy`），不要把它挪回 devDependencies。
+# 用 Node 直接执行 prisma migrate deploy），不要把它挪回 devDependencies。
 # ---------------------------------------------------------------------------
 FROM base AS prod-deps
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
@@ -66,6 +65,9 @@ RUN pnpm install --frozen-lockfile --prod \
 # peer 集合不同 → 实例目录名不同 → 复制过去运行时也解析不到。
 COPY apps/api/prisma apps/api/prisma
 RUN pnpm --filter @bagcollect/api exec prisma generate --schema prisma/schema.prisma
+COPY infra/prune-runtime-deps.mjs /tmp/prune-runtime-deps.mjs
+# Prune before COPY into the final image, so removed bytes never become a layer.
+RUN node /tmp/prune-runtime-deps.mjs
 
 # ---------------------------------------------------------------------------
 # 运行时镜像：一个 target 承载 api 与 worker 两个角色，由 compose 的 command 区分。
@@ -84,7 +86,12 @@ RUN pnpm --filter @bagcollect/api exec prisma generate --schema prisma/schema.pr
 # 回退方案：将来若 worker 需要独立发布或独立伸缩，把 worker 的 COPY 段拆回
 # 一个独立 target 即可，prod-deps 已经为两个角色都装好了依赖。
 # ---------------------------------------------------------------------------
-FROM base AS api
+FROM alpine:3.21 AS api
+RUN apk add --no-cache libstdc++ openssl
+# Only Node is needed at runtime. npm/yarn/corepack/pnpm/cache stay in build stages.
+COPY --from=base /usr/local/bin/node /usr/local/bin/node
+COPY --from=base /usr/local/LICENSE /usr/local/share/licenses/node/LICENSE
+WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=build /app/package.json /app/pnpm-workspace.yaml ./
