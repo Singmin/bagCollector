@@ -303,6 +303,8 @@ export interface OfficialBagDto {
   displayImageUrl?: string;
   /** 用户端专用：当前用户是否已拥有过该袋子。 */
   claimed?: boolean;
+  /** 管理后台专用：是否已生成当前扫描模型（DINO）的主参考特征向量。 */
+  hasEmbedding?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -539,6 +541,18 @@ export interface ReleaseNoteDto {
 export interface ReleaseNotePageDto {
   items: ReleaseNoteDto[];
   totalCount: number;
+}
+
+/** 管理后台「版本改动」页的「改动文档」页签：直接读仓库 docs/ 下的改动记录 md，无需手工录入。 */
+export interface ChangelogDocDto {
+  /** 文件名，如 CHANGES-2026-10-08.md。 */
+  id: string;
+  /** 从文件名解析出的日期（YYYY-MM-DD）；文件名里没有日期时为 null，排序时排最后。 */
+  date: string | null;
+  /** md 正文的第一个一级标题；没有标题时用文件名（去 .md 后缀）。 */
+  title: string;
+  /** md 全文。 */
+  content: string;
 }
 
 export interface PlanItemDto {

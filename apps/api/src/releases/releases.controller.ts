@@ -23,6 +23,7 @@ import {
 import { AdminGuard, type AdminAuth } from '../admin/admin.guard.js';
 import { ApiError } from '../common/api-error.js';
 import { parseBody } from '../common/zod.js';
+import { ChangelogDocsService } from './changelog-docs.service.js';
 import { ReleasesService } from './releases.service.js';
 
 function currentAdmin(request: FastifyRequest & { adminAuth?: AdminAuth }): AdminAuth {
@@ -86,16 +87,23 @@ export class ReleasesController {
   }
 }
 
+/** 管理端：仓库 docs/ 下的改动记录文档，自动与 md 文件同步，无需手工录入。 */
+@Controller('admin/changelog-docs')
+@UseGuards(AdminGuard)
+export class ChangelogDocsController {
+  constructor(private readonly docs: ChangelogDocsService) {}
+
+  @Get()
+  list() {
+    return this.docs.list();
+  }
+}
+
 /** 管理端：下期改动计划。 */
 @Controller('admin/plans')
 @UseGuards(AdminGuard)
 export class PlansController {
   constructor(private readonly releases: ReleasesService) {}
-
-  @Get()
-  list() {
-    return this.releases.listPlans();
-  }
 
   @Post()
   create(@Req() request: FastifyRequest & { adminAuth?: AdminAuth }, @Body() body: unknown) {

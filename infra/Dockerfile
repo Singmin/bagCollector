@@ -36,6 +36,8 @@ COPY tsconfig.base.json ./
 COPY packages ./packages
 COPY apps/api ./apps/api
 COPY apps/worker ./apps/worker
+# 改动记录文档：后台「版本改动 → 改动文档」页签由 api 运行时直接读这些 md。
+COPY docs ./docs
 # Admin 在 CI 验证阶段编译并传入静态产物；不再把前端编译和每次变化的
 # BUILD_TIME 放进后端缓存层。Admin / 小程序源码变化不会使此阶段失效。
 RUN pnpm db:generate && pnpm build:backend
@@ -103,6 +105,8 @@ COPY --from=prod-deps /app/apps/api/node_modules ./apps/api/node_modules
 COPY --from=build /app/apps/worker/dist ./apps/worker/dist
 COPY --from=build /app/apps/worker/package.json ./apps/worker/package.json
 COPY --from=prod-deps /app/apps/worker/node_modules ./apps/worker/node_modules
+# 改动记录 md：api 的 /api/admin/changelog-docs 运行时读取（cwd=/app 向上找不到时退化，必须显式带上）。
+COPY --from=build /app/docs ./docs
 EXPOSE 3001
 # 默认角色是 api，方便 `docker run` 手工调试；compose 里两个服务都显式写 command，
 # 不依赖这里的默认值。

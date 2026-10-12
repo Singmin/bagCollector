@@ -22,6 +22,7 @@ import {
   CommentOutlined,
   DeleteOutlined,
   EditOutlined,
+  FileTextOutlined,
   HistoryOutlined,
   PlusOutlined,
   SendOutlined,
@@ -79,6 +80,14 @@ interface ReleaseFormValues {
   status?: ReleaseStatus;
 }
 
+/** 仓库 docs/ 下的改动记录 md，后端按日期倒序返回，与文件同步、无需手工录入。 */
+interface ChangelogDoc {
+  id: string;
+  date: string | null;
+  title: string;
+  content: string;
+}
+
 /** 一次最多拉取的版本记录条数：运营场景下远够用，暂不做翻页。 */
 const RELEASE_PAGE_SIZE = 200;
 
@@ -90,7 +99,10 @@ const RELEASE_PAGE_SIZE = 200;
  */
 export function ChangelogPage() {
   const { message } = AntdApp.useApp();
-  const [activeTab, setActiveTab] = useState('releases');
+  const [activeTab, setActiveTab] = useState('docs');
+  const [docs, setDocs] = useState<ChangelogDoc[]>([]);
+  const [docsLoading, setDocsLoading] = useState(false);
+  const [docDetail, setDocDetail] = useState<ChangelogDoc | null>(null);
   const [notes, setNotes] = useState<ReleaseNote[]>([]);
   const [notesLoading, setNotesLoading] = useState(false);
   const [releaseStatusFilter, setReleaseStatusFilter] = useState<'' | ReleaseStatus>('');
@@ -124,6 +136,17 @@ export function ChangelogPage() {
     }
   }, [message, releaseStatusFilter]);
 
+  const loadDocs = useCallback(async () => {
+    setDocsLoading(true);
+    try {
+      setDocs(await api<ChangelogDoc[]>('/changelog-docs'));
+    } catch (requestError) {
+      message.error(requestError instanceof Error ? requestError.message : '加载改动文档失败');
+    } finally {
+      setDocsLoading(false);
+    }
+  }, [message]);
+
   const loadPlans = useCallback(async () => {
     setPlansLoading(true);
     try {
@@ -137,11 +160,12 @@ export function ChangelogPage() {
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      if (activeTab === 'releases') void loadNotes();
+      if (activeTab === 'docs') void loadDocs();
+      else if (activeTab === 'releases') void loadNotes();
       else void loadPlans();
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [activeTab, loadNotes, loadPlans]);
+  }, [activeTab, loadDocs, loadNotes, loadPlans]);
 
   const openDetail = useCallback(
     async (note: ReleaseNote) => {
@@ -260,6 +284,48 @@ export function ChangelogPage() {
       message.error(requestError instanceof Error ? requestError.message : '删除失败');
     }
   }
+
+  const docsTab = (
+    <Spin spinning={docsLoading}>
+      {docs.length === 0 && !docsLoading ? (
+        <Empty description="docs/ 下还没有改动记录文档（CHANGES-*.md / UI-CHANGES-*.md）" />
+      ) : (
+        <>
+          <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 16 }}>
+            共 {docs.length} 篇，来自仓库 docs/ 下的改动记录 md，按文件名日期倒序，随每次部署自动更新。
+          </Typography.Text>
+          <List
+            itemLayout="horizontal"
+            dataSource={docs}
+            renderItem={(doc) => (
+              <List.Item style={{ cursor: 'pointer' }} onClick={() => setDocDetail(doc)}>
+                <List.Item.Meta
+                  title={
+                    <Space size={8} wrap>
+                      {doc.date && <Tag color="blue">{doc.date}</Tag>}
+                      <Typography.Text strong>{doc.title}</Typography.Text>
+                    </Space>
+                  }
+                  description={
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      {doc.id}
+                    </Typography.Text>
+                  }
+                />
+                <Typography.Paragraph
+                  style={{ margin: 0, maxWidth: 480 }}
+                  ellipsis={{ rows: 2, expandable: false }}
+                  type="secondary"
+                >
+                  {doc.content.replace(/^#\s+.*$/m, '').trim() || '（无正文）'}
+                </Typography.Paragraph>
+              </List.Item>
+            )}
+          />
+        </>
+      )}
+    </Spin>
+  );
 
   const releasesTab = (
     <Spin spinning={notesLoading}>
@@ -417,10 +483,29 @@ export function ChangelogPage() {
         activeKey={activeTab}
         onChange={setActiveTab}
         items={[
+          { key: 'docs', label: '改动文档', icon: <FileTextOutlined />, children: docsTab },
           { key: 'releases', label: '版本记录', icon: <HistoryOutlined />, children: releasesTab },
           { key: 'plans', label: '下期计划', icon: <UnorderedListOutlined />, children: plansTab }
         ]}
       />
+
+      <Drawer
+        title={docDetail ? `${docDetail.date ?? ''} ${docDetail.title}` : '改动文档'}
+        open={docDetail !== null}
+        onClose={() => setDocDetail(null)}
+        width={720}
+      >
+        {docDetail && (
+          <>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {docDetail.id}
+            </Typography.Text>
+            <Typography.Paragraph style={{ marginTop: 16, whiteSpace: 'pre-wrap', fontSize: 13 }}>
+              {docDetail.content}
+            </Typography.Paragraph>
+          </>
+        )}
+      </Drawer>
 
       <ReleaseEditor
         note={editing === 'new' ? null : editing}
