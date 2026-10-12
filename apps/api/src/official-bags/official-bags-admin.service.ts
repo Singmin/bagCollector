@@ -1,4 +1,4 @@
-import { BAG_FEATURE_MODEL } from '@bagcollect/bag-vision';
+import { BAG_FEATURE_MODEL, DINO_SCAN_MODEL } from '@bagcollect/bag-vision';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { AssetKind, AssetStatus, OfficialBagStatus, OfficialProcessStatus, Prisma } from '@prisma/client';
 import type { OfficialBagDto, OfficialBagStatus as OfficialBagStatusContract } from '@bagcollect/contracts';
@@ -12,8 +12,17 @@ const ALLOWED_CONTENT_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/h
 /** 管理端列表允许排序的字段（白名单，防注入任意列排序）。 */
 const SORTABLE_FIELDS = ['sortOrder', 'name', 'createdAt', 'claimedCount'] as const;
 
-/** 袋子查询统一带出品牌名。 */
-type BagWithBrand = Prisma.OfficialBagGetPayload<{ include: { brand: true } }>;
+/** 袋子查询统一带出品牌名，以及「新扫描模型（DINO）主参考向量」的来源信息，
+    用于在列表上标注该袋子是否已有特征向量。 */
+const bagInclude = {
+  brand: true,
+  scanEmbeddings: {
+    where: { model: DINO_SCAN_MODEL, referenceKey: 'primary' },
+    select: { sourceKind: true, sourceVersion: true }
+  }
+} satisfies Prisma.OfficialBagInclude;
+
+type BagWithBrand = Prisma.OfficialBagGetPayload<{ include: typeof bagInclude }>;
 
 @Injectable()
 export class OfficialBagsAdminService {
@@ -52,6 +61,18 @@ export class OfficialBagsAdminService {
       first(AssetKind.THUMBNAIL),
       first(AssetKind.DISPLAY)
     ]);
+    /* 「是否已有特征向量」：当前版本图的提特征来源（CUTOUT 优先，DISPLAY 兜底），
+       与 DINO 主参考向量的 sourceKind + sourceVersion 一致才算就绪，口径与匹配覆盖率一致。 */
+    const featureSource =
+      images.find((image) => image.kind === AssetKind.CUTOUT && image.version === bag.version) ??
+      images.find((image) => image.kind === AssetKind.DISPLAY && image.version === bag.version);
+    const hasEmbedding =
+      Boolean(featureSource) &&
+      bag.scanEmbeddings.some(
+        (embedding) =>
+          embedding.sourceKind === featureSource!.kind &&
+          embedding.sourceVersion === featureSource!.version
+      );
     return {
       id: bag.id,
       name: bag.name,
@@ -68,6 +89,7 @@ export class OfficialBagsAdminService {
       ...(bag.publishedAt ? { publishedAt: bag.publishedAt.toISOString() } : {}),
       ...(thumbnail ? { thumbnailUrl: await this.cos.signedUrl(thumbnail.objectKey) } : {}),
       ...(display ? { displayImageUrl: await this.cos.signedUrl(display.objectKey) } : {}),
+      hasEmbedding,
       createdAt: bag.createdAt.toISOString(),
       updatedAt: bag.updatedAt.toISOString()
     };
@@ -80,7 +102,7 @@ export class OfficialBagsAdminService {
   }
 
   private async findBag(id: string) {
-    const bag = await this.prisma.officialBag.findUnique({ where: { id }, include: { brand: true } });
+    const bag = await this.prisma.officialBag.findUnique({ where: { id }, include: bagInclude });
     if (!bag) throw new ApiError('NOT_FOUND', '官方袋子不存在', HttpStatus.NOT_FOUND);
     return bag;
   }
@@ -103,7 +125,7 @@ export class OfficialBagsAdminService {
         sortOrder: (max._max.sortOrder ?? -1) + 1,
         createdById: adminId
       },
-      include: { brand: true }
+      include: bagInclude
     });
     await this.audit(adminId, 'OFFICIAL_BAG_CREATE', bag.id, { name: bag.name });
     return this.toDto(bag);
@@ -202,7 +224,7 @@ export class OfficialBagsAdminService {
         ] as Prisma.OfficialBagOrderByWithRelationInput[],
         skip: (page - 1) * pageSize,
         take: pageSize,
-        include: { brand: true }
+        include: bagInclude
       }),
       this.prisma.officialBag.count({ where })
     ]);
@@ -260,7 +282,7 @@ export class OfficialBagsAdminService {
     });
     await this.audit(adminId, 'OFFICIAL_BAG_UPDATE', id, { status: input.status });
     return this.toDto(
-      await this.prisma.officialBag.findUniqueOrThrow({ where: { id }, include: { brand: true } })
+      await this.prisma.officialBag.findUniqueOrThrow({ where: { id }, include: bagInclude })
     );
   }
 
@@ -357,7 +379,7 @@ export class OfficialBagsAdminService {
       version: bag.version,
       objectCount: images.length
     });
-    return this.toDto(await this.prisma.officialBag.findUniqueOrThrow({ where: { id }, include: { brand: true } }));
+    return this.toDto(await this.prisma.officialBag.findUniqueOrThrow({ where: { id }, include: bagInclude }));
   }
 
   /**

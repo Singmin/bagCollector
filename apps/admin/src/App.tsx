@@ -86,6 +86,7 @@ interface OfficialBag {
   sortOrder: number;
   thumbnailUrl?: string;
   displayImageUrl?: string;
+  hasEmbedding?: boolean;
   createdAt: string;
 }
 
@@ -1450,6 +1451,15 @@ export function App() {
                           {bag.matting && <Tag color="purple">抠图</Tag>}
                         </Space>
                       )
+                    },
+                    {
+                      title: '特征向量',
+                      key: 'hasEmbedding',
+                      width: 110,
+                      render: (_, bag) => {
+                        if (bag.processStatus !== 'READY') return <span className="muted">—</span>;
+                        return bag.hasEmbedding ? <Tag color="green">已有</Tag> : <Tag color="volcano">缺少</Tag>;
+                      }
                     },
                     {
                       title: '拥有',
