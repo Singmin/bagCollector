@@ -14,6 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Test interrupted release transfer and checkpoint integrity
+        run: bash scripts/test-release-transfer.sh
       - name: Verify image identity across Docker storage backends
         run: bash scripts/test-image-store-compat.sh
   verify:
