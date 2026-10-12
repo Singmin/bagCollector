@@ -784,15 +784,16 @@ function closeDetailFromCard() {
   if (detailSurface.value?.allowTap?.() !== false) closeDetail();
 }
 
-function onDetailMotionEnd(event: {
-  detail?: { animationName?: string };
-  animationName?: string;
-  currentTarget?: { dataset?: { motionToken?: number | string } };
-}) {
+function onDetailMotionEnd(event: Event) {
   // Filter opacity/child animations and use the run token to reject stale events.
-  const name = event.detail?.animationName ?? event.animationName ?? '';
+  const e = event as unknown as {
+    detail?: { animationName?: string };
+    animationName?: string;
+    currentTarget?: { dataset?: { motionToken?: number | string } };
+  };
+  const name = e.detail?.animationName ?? e.animationName ?? '';
   if (!name.startsWith('library-card-retreat')) return;
-  const token = Number(event.currentTarget?.dataset?.motionToken);
+  const token = Number(e.currentTarget?.dataset?.motionToken);
   if (Number.isFinite(token)) cardMotion.finishClosing(token);
 }
 

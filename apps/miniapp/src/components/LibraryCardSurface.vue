@@ -140,8 +140,8 @@ function blockGesture() {
   blockedUntil = Date.now() + 500;
 }
 
-function touchPoint(event: SurfaceTouchEvent) {
-  const touch = event.touches?.[0];
+function touchPoint(event: Event) {
+  const touch = (event as unknown as SurfaceTouchEvent).touches?.[0];
   if (!touch) return null;
   const point = { x: touch.clientX ?? touch.x ?? NaN, y: touch.clientY ?? touch.y ?? NaN };
   return Number.isFinite(point.x) && Number.isFinite(point.y) ? point : null;
@@ -168,11 +168,12 @@ function notifyScroll() {
   }, SURFACE_SCROLL_DELAY);
 }
 
-function onTouchStart(event: SurfaceTouchEvent) {
+function onTouchStart(event: Event) {
+  const e = event as unknown as SurfaceTouchEvent;
   if (!enabled || frozen.value) return;
   // Let native controls generate their own tap; excluding them from tilt
   // must not require catchtouchstart/catchtouchend on their parent view.
-  if (event.target?.dataset?.surfaceControl === true || event.target?.dataset?.surfaceControl === 'true') return;
+  if (e.target?.dataset?.surfaceControl === true || e.target?.dataset?.surfaceControl === 'true') return;
   pauseIdle();
   touchOrigin = touchPoint(event);
   verticalGesture = false;
@@ -180,7 +181,7 @@ function onTouchStart(event: SurfaceTouchEvent) {
   gestureBlocked = false;
   blockedUntil = 0;
   touching = true;
-  if (event.touches?.length !== 1) {
+  if (e.touches?.length !== 1) {
     multiGesture = true;
     blockGesture();
     setTarget({ x: 0, y: 0 });
@@ -191,9 +192,10 @@ function onTouchStart(event: SurfaceTouchEvent) {
   if (next) setTarget(next);
 }
 
-function onTouchMove(event: SurfaceTouchEvent) {
+function onTouchMove(event: Event) {
+  const e = event as unknown as SurfaceTouchEvent;
   if (!enabled || frozen.value || !touching) return;
-  if (multiGesture || event.touches?.length !== 1) {
+  if (multiGesture || e.touches?.length !== 1) {
     multiGesture = true;
     blockGesture();
     setTarget({ x: 0, y: 0 });
@@ -213,9 +215,10 @@ function onTouchMove(event: SurfaceTouchEvent) {
   if (next) setTarget(next);
 }
 
-function onTouchEnd(event: SurfaceTouchEvent) {
+function onTouchEnd(event: Event) {
+  const e = event as unknown as SurfaceTouchEvent;
   if (!enabled || frozen.value || !touching) return;
-  if (event.touches?.length) {
+  if (e.touches?.length) {
     blockGesture();
     return;
   }
