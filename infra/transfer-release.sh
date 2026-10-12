@@ -69,13 +69,29 @@ for attempt in 1 2 3; do
   remaining=$((1800 - (SECONDS - started)))
   [ "$remaining" -gt 0 ] || { echo '30 分钟传输上限，保留已验证对象供下次续传' >&2; exit 1; }
   echo "增量传输第 $attempt/3 次：$(wc -l < "$scratch/missing.list") 个缺失对象，剩余预算 $remaining 秒"
+  # Bound concurrency to four SSH streams. Each object belongs to exactly one
+  # stream, so partial files remain independently resumable without write races.
+  workers=$(wc -l < "$scratch/missing.list")
+  [ "$workers" -le 4 ] || workers=4
+  pids=()
+  for worker in $(seq 1 "$workers"); do
+    awk -v count="$workers" -v worker="$worker" '(NR-1)%count==worker-1' "$scratch/missing.list" > "$scratch/missing.$worker"
+    timeout --kill-after=15 "$remaining" rsync --checksum --no-whole-file \
+      --files-from="$scratch/missing.$worker" --partial-dir=.rsync-partial --timeout=90 \
+      --info=progress2 --stats --rsync-path='nice -n 19 rsync' -e "$rsh" \
+      "$objects/" "$DEPLOY_USER@$DEPLOY_HOST:$root/.image-cache/v2/receiving/" \
+      > "$scratch/channel.$worker.log" 2>&1 &
+    pids+=("$!")
+  done
   set +e
-  timeout --kill-after=15 "$remaining" rsync --checksum --no-whole-file \
-    --files-from="$scratch/missing.list" --partial-dir=.rsync-partial --timeout=90 \
-    --info=progress2 --stats --rsync-path='nice -n 19 rsync' -e "$rsh" \
-    "$objects/" "$DEPLOY_USER@$DEPLOY_HOST:$root/.image-cache/v2/receiving/"
-  result=$?
+  result=0
+  for pid in "${pids[@]}"; do
+    wait "$pid"
+    worker_result=$?
+    [ "$worker_result" -eq 0 ] || result=$worker_result
+  done
   set -e
+  for worker in $(seq 1 "$workers"); do cat "$scratch/channel.$worker.log"; done
   # Cache completed objects even when another file's transfer was interrupted.
   timeout 180 ssh "${ssh_args[@]}" "$DEPLOY_USER@$DEPLOY_HOST" bash -s -- \
     "$root" "$transfer" "$release" "$GITHUB_SHA" <<'REMOTE' > "$scratch/missing.next"
