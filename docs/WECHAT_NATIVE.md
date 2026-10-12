@@ -83,7 +83,7 @@ ADMIN_USERNAME=admin ADMIN_PASSWORD='使用强密码' pnpm db:seed
 - `WECHAT_PRIVATE_KEY_PATH`：服务器上上传私钥的绝对路径。
 - GitHub Environment Variable `MINIAPP_API_BASE_URL`：小程序访问的 HTTPS API 地址，包含 `/api`。
 
-PR 跑 `ci.yml`（类型检查、Lint、单测、数据库迁移、应用与镜像构建），然后导出带 commit SHA、架构、SHA256 校验和及镜像 ID 的压缩镜像产物。main 推送跑 `deploy.yml`，复用同一验证流程并下载本次运行的镜像，与该 commit 的 infra 配置一起经 SCP 传到服务器。服务器不执行 `docker build`、依赖安装或 TypeScript/Vite 编译，只校验并导入镜像；启用视觉服务时才传输额外的视觉镜像。导入成功后执行 `infra/deploy.sh`：备份 PostgreSQL → 启动 postgres/redis 并等健康 → 执行 migration → 切换 api/worker/admin → 等 API 健康检查，失败则恢复上一组镜像。GitHub concurrency 与服务器 flock 锁避免重复部署。SSH 断线意味着服务器状态未知，需要重连检查状态文件；不能声称后台任务未受影响。migration 必须保持向前兼容，因为镜像回滚不会反向修改数据库。
+PR 跑 `ci.yml`（类型检查、Lint、单测、数据库迁移、应用与镜像构建），然后导出带 commit SHA、架构、SHA256 校验和及镜像内容指纹 的压缩镜像产物。main 推送跑 `deploy.yml`，复用同一验证流程并下载本次运行的镜像，与该 commit 的 infra 配置一起经 SCP 传到服务器。服务器不执行 `docker build`、依赖安装或 TypeScript/Vite 编译，只校验并导入镜像；启用视觉服务时才传输额外的视觉镜像。导入成功后执行 `infra/deploy.sh`：备份 PostgreSQL → 启动 postgres/redis 并等健康 → 执行 migration → 切换 api/worker/admin → 等 API 健康检查，失败则恢复上一组镜像。GitHub concurrency 与服务器 flock 锁避免重复部署。SSH 断线意味着服务器状态未知，需要重连检查状态文件；不能声称后台任务未受影响。migration 必须保持向前兼容，因为镜像回滚不会反向修改数据库。
 
 小程序通过 `Upload mini program development version` 手动工作流上传开发版本。审核与正式发布仍在微信后台人工确认。
 

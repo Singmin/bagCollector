@@ -33,19 +33,20 @@ validate_bundle() {
   [ "$(cat "$bundle/architecture")" = "$architecture" ] || { echo "镜像架构与服务器不一致" >&2; exit 1; }
 }
 validate_bundle "$RELEASE_DIR/production-images"
-grep -Eq "^sha256:[0-9a-f]{64} $API_IMAGE$" "$RELEASE_DIR/production-images/images.ids"
-grep -Eq "^sha256:[0-9a-f]{64} $ADMIN_IMAGE$" "$RELEASE_DIR/production-images/images.ids"
+grep -Eq "^sha256:[0-9a-f]{64} $API_IMAGE$" "$RELEASE_DIR/production-images/images.fingerprints"
+grep -Eq "^sha256:[0-9a-f]{64} $ADMIN_IMAGE$" "$RELEASE_DIR/production-images/images.fingerprints"
 vision_enabled=0
 if grep -Eq '^VISION_ENABLED=1$' "$DEPLOY_DIR/infra/.env.deploy"; then
   vision_enabled=1
   [ -f "$DEPLOY_DIR/data/vision-models/dinov2-small.onnx" ] || { echo "缺少预先准备的 DINO 模型" >&2; exit 1; }
   [ -f "$DEPLOY_DIR/data/vision-models/manifest.json" ] || { echo "缺少模型校验清单" >&2; exit 1; }
   validate_bundle "$RELEASE_DIR/vision-images"
-  grep -Eq "^sha256:[0-9a-f]{64} $VISION_IMAGE$" "$RELEASE_DIR/vision-images/images.ids"
+  grep -Eq "^sha256:[0-9a-f]{64} $VISION_IMAGE$" "$RELEASE_DIR/vision-images/images.fingerprints"
 fi
 echo "导入前服务器资源："
 free -m || true
 docker_root=$(docker info --format '{{.DockerRootDir}}')
+docker info --format 'Docker={{.ServerVersion}} storage={{.Driver}}'
 # Reserve space for unpacked layers; retain existing images for rollback.
 bundle_kb=$(du -sk "$RELEASE_DIR/production-images" | cut -f1)
 if [ "$vision_enabled" -eq 1 ]; then
@@ -59,9 +60,9 @@ load_bundle() {
   started=$(date +%s)
   cached=1
   while read -r expected image; do
-    actual=$(docker image inspect --format '{{.Id}}' "$image" 2>/dev/null || true)
+    actual=$(sh "$RELEASE_DIR/infra/image-fingerprint.sh" "$image" 2>/dev/null || true)
     [ "$actual" = "$expected" ] || cached=0
-  done < "$bundle/images.ids"
+  done < "$bundle/images.fingerprints"
   if [ "$cached" -eq 0 ]; then
     echo "低优先级导入 CI 镜像：$bundle"
     # Decompress outside the Docker daemon so nice actually covers gzip CPU work.
@@ -72,10 +73,14 @@ load_bundle() {
     fi
   fi
   while read -r expected image; do
-    [ "$(docker image inspect --format '{{.Id}}' "$image")" = "$expected" ] || {
-      echo "导入镜像 ID 与 CI 不一致：$image" >&2; exit 1;
+    actual=$(sh "$RELEASE_DIR/infra/image-fingerprint.sh" "$image")
+    ci_id=$(awk -v image="$image" '$2 == image {print $1}' "$bundle/images.ids")
+    server_id=$(docker image inspect --format '{{.Id}}' "$image")
+    echo "$image CI ID=$ci_id server ID=$server_id content=$actual"
+    [ "$actual" = "$expected" ] || {
+      echo "导入镜像层/运行配置与 CI 不一致：$image expected=$expected actual=$actual" >&2; exit 1;
     }
-  done < "$bundle/images.ids"
+  done < "$bundle/images.fingerprints"
   echo "镜像校验/导入耗时：$(($(date +%s) - started)) 秒"
 }
 load_bundle "$RELEASE_DIR/production-images"

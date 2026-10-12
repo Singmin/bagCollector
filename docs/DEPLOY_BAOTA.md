@@ -140,7 +140,7 @@ openssl rand -base64 48  # → JWT_SECRET
 
 服务器需要 Docker daemon、Docker Compose v2，以及 Linux 的 flock、sha256sum、nice；建议预留至少 8–10GB Docker 磁盘空间。应用镜像不会在服务器上安装依赖或构建。PostgreSQL/Redis 基础镜像首次初始化仍需 Docker Hub 可达，已部署机器可复用本地镜像。
 
-CI 导出 production-images（API/Worker 与 Admin）和独立的 vision-images。每个目录包含 images.tar.gz、source-sha、architecture、images.ids 与 SHA256SUMS；服务器先检查全部需要的产物，匹配本次部署 commit 和服务器架构后，再以低优先级逐个导入。缺失、损坏、导入失败或 ID 不匹配时中止，不回退为服务器构建。
+CI 导出 production-images（API/Worker 与 Admin）和独立的 vision-images。每个目录包含 images.tar.gz、source-sha、architecture、images.ids、images.fingerprints 与 SHA256SUMS；服务器先检查全部需要的产物，匹配本次部署 commit 和服务器架构后，再以低优先级逐个导入。缺失、损坏、导入失败或 ID 不匹配时中止，不回退为服务器构建。
 
 发布包只含该 commit 的 infra 配置和本次 CI 镜像，不含本机 .env、密钥或未提交文件。发布目录：
 
@@ -243,7 +243,7 @@ ssh-keygen -t ed25519 -C "github-actions-deploy" -f ~/.ssh/bagcollect_deploy -N 
 - **推荐**：GitHub → Actions → **Build and deploy** → Run workflow（选 `main`）。
 - 或者往 `main` 推一个 commit。
 
-它会自动完成「完整验证 → Runner 构建及验证镜像 → 导出并上传 → 服务器校验及导入 → 部署」。CI 还会删除镜像标签、重新导入压缩 archive 并比对镜像 ID，验证交付产物可用。首次数据库为空时跳过备份；artifact 保留 7 天，过期后需重新运行完整流程。
+它会自动完成「完整验证 → Runner 构建及验证镜像 → 导出并上传 → 服务器校验及导入 → 部署」。CI 还会删除镜像标签、重新导入压缩 archive 并比对镜像内容指纹，验证交付产物可用。首次数据库为空时跳过备份；artifact 保留 7 天，过期后需重新运行完整流程。
 
 部署成功后创建管理员账号：
 
@@ -357,3 +357,5 @@ docker system df               # 看占用
 - `infra/docker-compose.local.yml` 是**本地开发**用的（5432/6390 持久化 + 5433/6380 临时测试），和生产 compose 互不影响，不要混用。
 - `infra/docker-compose.yml` 现在就是**宝塔生产拓扑**。它不再是「通用 Linux 服务器」版本：端口映射、日志轮转、TZ、健康检查都按宝塔环境调过。
 - 自托管 rembg / BiRefNet 的代码与镜像定义都还在（`infra/Dockerfile` 的 `rembg` target、compose 里注释掉的 `rembg` 服务、`docs/OPEN_SOURCE_MATTING.md`），但**不在主链路上**，CI 与部署矩阵也不构建它。留着是为了能回退，不用管它。
+
+镜像内容指纹由文件系统层摘要及运行配置计算；Docker graphdriver 与 containerd 对同一镜像的 .Id 定义不同，不能以 .Id 作为跨服务器一致性条件。CI 会在两种存储后端之间双向导入验证。images.ids 仅用于诊断，images.fingerprints 参与 SHA256 校验和部署阻断。

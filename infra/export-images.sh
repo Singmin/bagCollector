@@ -8,9 +8,11 @@ mkdir -p "$output"
 printf '%s\n' "${GITHUB_SHA:?set GITHUB_SHA}" > "$output/source-sha"
 docker image inspect --format '{{.Architecture}}' "$1" > "$output/architecture"
 : > "$output/images.ids"
+: > "$output/images.fingerprints"
 for image in "$@"; do
   docker image inspect --format "{{.Id}} $image" "$image" >> "$output/images.ids"
+  printf '%s %s\n' "$(sh infra/image-fingerprint.sh "$image")" "$image" >> "$output/images.fingerprints"
 done
 docker image save "$@" | gzip -6 > "$output/images.tar.gz"
-(cd "$output" && sha256sum images.tar.gz images.ids source-sha architecture > SHA256SUMS)
+(cd "$output" && sha256sum images.tar.gz images.ids images.fingerprints source-sha architecture > SHA256SUMS)
 du -h "$output/images.tar.gz"

@@ -10,6 +10,12 @@ permissions:
   contents: read
 
 jobs:
+  image-store-compat:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify image identity across Docker storage backends
+        run: bash scripts/test-image-store-compat.sh
   verify:
     runs-on: ubuntu-latest
     services:
@@ -80,8 +86,8 @@ jobs:
           for bundle in production-images vision-images; do
             docker image load --input "$bundle/images.tar.gz"
             while read -r expected image; do
-              test "$(docker image inspect --format '{{.Id}}' "$image")" = "$expected"
-            done < "$bundle/images.ids"
+              test "$(sh infra/image-fingerprint.sh "$image")" = "$expected"
+            done < "$bundle/images.fingerprints"
           done
       - name: Check imported API readiness
         run: |

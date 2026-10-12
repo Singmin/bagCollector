@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { gzipSync } from 'node:zlib';
+import { createHash } from 'node:crypto';
 
 // Exercise the production entry point without a live daemon or production host.
 const root = process.cwd();
@@ -12,6 +13,7 @@ const posix = p => p.replaceAll('\\', '/').replace(/^([A-Z]):/i, (_, drive) => '
 const q = p => "'" + p.replaceAll("'", "'\\''") + "'";
 const sha = 'a'.repeat(40);
 const id = 'sha256:' + '1'.repeat(64);
+const fingerprint = 'sha256:' + createHash('sha256').update('fixture-layers-and-runtime-config\n').digest('hex');
 const bin = path.join(base, 'bin');
 fs.mkdirSync(bin);
 function file(name, value) {
@@ -22,7 +24,11 @@ case "$1 $2" in
   'info --format') echo "$TEST_DOCKER_ROOT" ;;
   'image inspect')
     [ -f "$TEST_LOADED" ] || [ "\${TEST_CACHED:-0}" = 1 ] || exit 1
-    if [ "\${TEST_WRONG_ID:-0}" = 1 ]; then echo wrong; else echo '${id}'; fi ;;
+    if [ "$4" = '{{.Id}}' ]; then
+      if [ "\${TEST_ALT_ID:-0}" = 1 ]; then echo 'sha256:${'2'.repeat(64)}'; else echo '${id}'; fi
+    else
+      if [ "\${TEST_WRONG_ID:-0}" = 1 ]; then echo wrong-runtime-config; else echo fixture-layers-and-runtime-config; fi
+    fi ;;
   'image load') [ "\${TEST_FAIL_LOAD:-0}" = 0 ] || exit 42; cat >/dev/null; touch "$TEST_LOADED" ;;
   'info ') ;;
   *) echo 'Unexpected Docker operation' >&2; exit 99 ;;
@@ -53,6 +59,7 @@ touch "$BAGCOLLECT_DEPLOY_DIR/deployed"
   for (const filename of ['docker-compose.yml', '.env.deploy.example']) {
     fs.writeFileSync(path.join(release, 'infra', filename), 'fixture\n');
   }
+  fs.copyFileSync(path.join(root, 'infra/image-fingerprint.sh'), path.join(release, 'infra/image-fingerprint.sh'));
   if (options.vision) {
     fs.mkdirSync(path.join(deploy, 'data/vision-models'), { recursive: true });
     for (const filename of ['dinov2-small.onnx', 'manifest.json']) fs.writeFileSync(path.join(deploy, 'data/vision-models', filename), 'model');
@@ -62,8 +69,9 @@ touch "$BAGCOLLECT_DEPLOY_DIR/deployed"
   fs.writeFileSync(path.join(bundle, 'source-sha'), (options.wrongSha ? 'b'.repeat(40) : sha) + '\n');
   fs.writeFileSync(path.join(bundle, 'architecture'), options.wrongArch ? 'arm64\n' : 'amd64\n');
   fs.writeFileSync(path.join(bundle, 'images.ids'), `${id} bagcollect-api:${sha}\n${id} bagcollect-admin:${sha}\n`);
+  fs.writeFileSync(path.join(bundle, 'images.fingerprints'), `${fingerprint} bagcollect-api:${sha}\n${fingerprint} bagcollect-admin:${sha}\n`);
   fs.writeFileSync(path.join(bundle, 'images.tar.gz'), gzipSync('fixture archive'));
-  const sum = spawnSync(shell, ['-c', 'cd ' + q(posix(bundle)) + ' && sha256sum images.tar.gz images.ids source-sha architecture > SHA256SUMS'], { encoding: 'utf8' });
+  const sum = spawnSync(shell, ['-c', 'cd ' + q(posix(bundle)) + ' && sha256sum images.tar.gz images.ids images.fingerprints source-sha architecture > SHA256SUMS'], { encoding: 'utf8' });
   assert.equal(sum.status, 0, sum.stderr);
   if (options.corrupt) fs.appendFileSync(path.join(bundle, 'images.tar.gz'), 'corrupt');
   const calls = path.join(deploy, 'calls');
@@ -72,11 +80,11 @@ touch "$BAGCOLLECT_DEPLOY_DIR/deployed"
     BAGCOLLECT_DEPLOY_DIR: posix(deploy), BAGCOLLECT_RELEASE_DIR: posix(options.outside ? base : release), BAGCOLLECT_IMAGE_TAG: sha,
     TEST_CALLS: posix(calls), TEST_DOCKER_ROOT: posix(deploy), TEST_LOADED: posix(path.join(deploy, 'loaded')),
     TEST_FAIL_LOAD: options.failLoad ? '1' : '0', TEST_WRONG_ID: options.wrongId ? '1' : '0',
-    TEST_CACHED: options.cached ? '1' : '0', TEST_LOCK_BUSY: options.busy ? '1' : '0', TEST_DISK_KB: options.diskFull ? '1' : '99999999'
+    TEST_CACHED: options.cached ? '1' : '0', TEST_ALT_ID: options.altId ? '1' : '0', TEST_LOCK_BUSY: options.busy ? '1' : '0', TEST_DISK_KB: options.diskFull ? '1' : '99999999'
   };
   const result = spawnSync(shell, ['-c', 'export PATH=' + q(posix(bin)) + ':"$PATH"; sh ' + q(posix(path.join(root, 'infra/load-and-deploy.sh')))], { env, encoding: 'utf8' });
   assert.ifError(result.error);
-  const success = name === 'success' || name === 'cached';
+  const success = name === 'success' || name === 'cached' || name === 'different-store-id';
   assert.equal(result.status === 0, success, result.stdout + result.stderr);
   assert.equal(fs.existsSync(path.join(deploy, 'deployed')), success);
   const log = fs.existsSync(calls) ? fs.readFileSync(calls, 'utf8') : '';
@@ -86,7 +94,7 @@ touch "$BAGCOLLECT_DEPLOY_DIR/deployed"
   if (name === 'success') assert.match(log, /image load/);
   const expectedError = {
     'wrong-sha': /SHA 不一致/, 'wrong-architecture': /架构与服务器不一致/,
-    'corrupt-archive': /FAILED/, 'wrong-loaded-id': /镜像 ID 与 CI 不一致/,
+    'corrupt-archive': /FAILED/, 'wrong-loaded-id': /镜像层\/运行配置与 CI 不一致/,
     'missing-vision-artifact': /vision-images/, 'busy-deployment': /已有服务器部署任务/,
     'disk-full': /磁盘空间不足/, 'outside-release': /发布目录不在 releases 下/
   }[name];
@@ -105,3 +113,4 @@ scenario('disk-full', { diskFull: true });
 scenario('outside-release', { outside: true });
 scenario('success');
 scenario('cached', { cached: true });
+scenario('different-store-id', { altId: true });
