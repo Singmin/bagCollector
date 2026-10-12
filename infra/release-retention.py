@@ -88,6 +88,14 @@ def run():
         if not file.is_symlink() and bundle.HEX.fullmatch(file.stem) and file.stem not in referenced:
             file.unlink()
             removed += 1
+    # Transport checkpoints share the same content keys. Keep recent or
+    # referenced checkpoints, and leave unrelated names/symlinks untouched.
+    for folder in (state.parent / "receiving", state.parent / "receiving/.rsync-partial"):
+        if folder.is_symlink():
+            continue
+        for file in folder.glob("*.gz"):
+            if not file.is_symlink() and bundle.HEX.fullmatch(file.stem) and file.stem not in referenced and file.stat().st_mtime < time.time() - 7 * 86400:
+                file.unlink()
     for sha, directory in expired:
         if directory.is_symlink() or not directory.resolve().is_relative_to(releases):
             continue

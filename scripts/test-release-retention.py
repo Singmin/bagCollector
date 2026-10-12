@@ -59,6 +59,19 @@ for protected in (False, True):
         (unrelated / 'keep.txt').write_text('preserve other data')
         rogue = cache / ('f' * 64 + '.gz')
         rogue.write_bytes(b'unreferenced')
+        partials = cache.parent / 'receiving/.rsync-partial'
+        partials.mkdir(parents=True)
+        expired_partial = partials / ('f' * 64 + '.gz')
+        expired_partial.write_bytes(b'expired')
+        fresh_partial = partials / ('0' * 64 + '.gz')
+        fresh_partial.write_bytes(b'fresh')
+        pending_key = next(iter(fixtures.b.chunks(pending_manifest)))
+        referenced_partial = partials / (pending_key + '.gz')
+        referenced_partial.write_bytes(b'referenced')
+        other_partial = partials / 'unrelated.txt'
+        other_partial.write_text('preserve')
+        for path in (expired_partial, referenced_partial, other_partial):
+            os.utime(path, (time.time() - 10 * 86400,) * 2)
         def docker_read(args, **kwargs):
             if args[1] == 'ps':
                 return 'container' if protected else ''
@@ -67,6 +80,7 @@ for protected in (False, True):
             retention.run()
         assert [r['sha'] for r in json.loads(history.read_text())] == [c * 40 for c in 'bcd']
         assert unrelated.is_dir() and not rogue.exists()
+        assert not expired_partial.exists() and fresh_partial.exists() and referenced_partial.exists() and other_partial.exists()
         assert not duplicate_release.exists() and pending_release.exists()
         assert all((cache / (h + '.gz')).exists() for h in fixtures.b.chunks(pending_manifest))
         old_release = releases / ('a' * 40 + '-owned')
