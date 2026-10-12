@@ -17,10 +17,11 @@ GitHub 仓库 (main)
    │  push / 手动触发
    ▼
 GitHub Actions
-  ├─ verify   复用 ci.yml：lint → typecheck → 单测 → 迁移 → 构建 → 导出压缩镜像产物
-   └─ deploy   固定 commit 的 infra + 同 SHA 的镜像产物 → SCP → SSH 到服务器
-                  └─ sh infra/load-and-deploy.sh
-                        校验 SHA/架构/校验和 → docker load（不构建、不安装依赖）
+  ├─ verify   复用 ci.yml：完整测试 → 缓存构建 → 镜像启动检查 → 导出 v2 清单和对象
+  └─ deploy   固定 commit 的 infra + 同 SHA 的清单 → rsync 仅传缺失对象
+                  ├─ load-and-deploy.sh --prepare-only
+                  │     校验 SHA/架构/内容 → 重建归档 → docker load
+                  └─ load-and-deploy.sh --apply
                         → 备份库 → 起 postgres/redis → 跑迁移
                         → 切 api/worker/admin → 等健康检查 → 失败则回滚
 
@@ -138,9 +139,13 @@ openssl rand -base64 48  # → JWT_SECRET
 
 ## 4. 准备服务器镜像导入环境
 
-服务器需要 Docker daemon、Docker Compose v2，以及 Linux 的 flock、sha256sum、nice；建议预留至少 8–10GB Docker 磁盘空间。应用镜像不会在服务器上安装依赖或构建。PostgreSQL/Redis 基础镜像首次初始化仍需 Docker Hub 可达，已部署机器可复用本地镜像。
+服务器需要 Docker daemon、Docker Compose v2、Python 3.10+、rsync，以及 Linux 的 flock、sha256sum、nice；建议预留至少 8–10GB Docker 磁盘空间。每次准备会检查归档重建和导入所需空间，额外保留 1 GiB。应用镜像不会在服务器上安装依赖或构建。PostgreSQL/Redis 基础镜像首次初始化仍需 Docker Hub 可达，已部署机器可复用本地镜像。
 
-CI 导出 production-images（API/Worker 与 Admin）和独立的 vision-images。每个目录包含 images.tar.gz、source-sha、architecture、images.ids、images.fingerprints 与 SHA256SUMS；服务器先检查全部需要的产物，匹配本次部署 commit 和服务器架构后，再以低优先级逐个导入。缺失、损坏、导入失败或 ID 不匹配时中止，不回退为服务器构建。
+CI 为 API、Admin、Vision 分别使用 GitHub Actions 构建缓存，基础镜像固定 digest，导出时间戳固定。CI 导出 production-images（API/Worker 与 Admin）和独立的 vision-images；两者共用 image-objects。清单 v2 包含 source-sha、architecture、images.ids、images.fingerprints、manifest.json 和 SHA256SUMS。归档成员按最多 4 MiB 分块，独立压缩，并按原始内容 SHA-256 寻址。Docker image ID 仅用于日志；导入验证比较文件系统层与运行配置指纹，兼容 classic 和 containerd 存储。
+
+传输先发送 infra 和清单，再查询服务器缺失对象；最多四路 rsync 传输，每个对象只分配给一路。接收对象校验成功后原子写入 `.image-cache/v2/objects`，不完整文件在 `.image-cache/v2/receiving/.rsync-partial` 续传。单轮总预算 30 分钟；失败保留检查点，后续只补缺失内容，不自动回退完整发布包，不使用 COS 中转。
+
+旧版本完整 images.tar.gz 仍保留。首次准备只从当前项目运行标签对应且校验通过的旧归档初始化缓存。生产产物仅包含 API/Worker、Admin、启用时的 Vision 和部署脚本，不包含 iOS 或小程序；小程序由其独立发布流程处理。
 
 发布包只含该 commit 的 infra 配置和本次 CI 镜像，不含本机 .env、密钥或未提交文件。发布目录：
 
@@ -148,7 +153,11 @@ CI 导出 production-images（API/Worker 与 Admin）和独立的 vision-images�
 /www/wwwroot/bagcollect/releases/<commit>-<run>-<attempt>/
 ```
 
-只有所有镜像校验并导入成功后，load-and-deploy.sh 才更新稳定 compose/deploy 定义并调用 deploy.sh。服务器 flock 锁会拒绝仍在运行的部署任务，防止取消 GitHub job 后下一次部署与 nohup 任务重叠。
+`--prepare-only` 只校验、重建和导入镜像，成功后写入 `.prepared`；失败不会迁移数据库或切换容器。`--apply` 要求同 SHA 的准备标记和镜像指纹，通过后才更新稳定 compose/deploy 定义并调用 deploy.sh，执行原有备份、迁移、健康检查及回滚。服务器 flock 锁会拒绝重叠部署任务。
+
+`main` 推送仍自动验证、准备、上线。手动触发 deploy.yml 默认 `prepare_only=true`；其他分支只允许准备，正式上线必须在 main。需要手动使用兼容入口 `build-and-deploy.sh` 时也须明确传入 `--prepare-only` 或 `--apply`；旧归档回滚必须显式使用 `--apply --legacy-bundle`，仍检查归档、架构和镜像指纹。
+
+成功上线后保留当前及前两个成功版本，每个 SHA 保留一份归档；运行中或停止的容器引用的镜像也会保护。未完成的新版本检查点保留七天。只删除本项目标记的过期发布目录、未引用内容对象和项目镜像，不执行全局 Docker prune。旧完整归档保留用于初始化及回滚。
 
 手动在开发机器构建 Docker target 时仍需准备 Admin 产物：
 
@@ -160,7 +169,7 @@ docker build --target admin -f infra/Dockerfile .
 docker build --target api -f infra/Dockerfile .
 ```
 
-admin-artifact、production-images、vision-images 都是忽略提交的临时产物目录。
+admin-artifact、production-images、vision-images、image-objects 都是忽略提交的临时产物目录。
 
 运行时镜像仅保留 Node 可执行文件和应用依赖，不继承 npm/yarn/Corepack/pnpm 缓存。Prisma 在构建阶段生成 Node/Rust 客户端后，删除其未使用的 edge WASM、可选 TypeScript、依赖 source map 和 Alpine 上不兼容的 glibc sharp 二进制。迁移直接通过 Node 执行 Prisma CLI；CI 必须检查真实迁移、API 就绪和 sharp PNG 编码。
 
