@@ -14,6 +14,10 @@ on:
         description: Validate reproducible output without build-cache reuse
         type: boolean
         default: false
+      verified_run_id:
+        description: Optional successful same-SHA run to reuse; otherwise find one automatically
+        type: string
+        default: ''
 
 # 部署必须串行：两个部署同时在服务器上跑 migrate + 切容器会互相踩。
 # 刻意不设 cancel-in-progress —— 中途掐掉部署会留下「镜像已切一半」的状态。
@@ -26,14 +30,37 @@ permissions:
   actions: read
 
 jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      reuse: ${{ steps.source.outputs.reuse }}
+      run_id: ${{ steps.source.outputs.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve already verified images for this exact commit
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ github.sha }}
+          VERIFIED_RUN: ${{ inputs.verified_run_id }}
+          COLD: ${{ inputs.force_cold_build }}
+        run: |
+          args=(--repo "$REPOSITORY" --sha "$SOURCE_SHA")
+          [ -z "$VERIFIED_RUN" ] || args+=(--run-id "$VERIFIED_RUN")
+          [ "$COLD" != true ] || args+=(--force-cold)
+          python3 scripts/resolve-verified-run.py "${args[@]}"
   # 复用 ci.yml，保证「部署的一定是通过了 lint / typecheck / 单测 / 迁移 / 构建的那份代码」。
   verify:
+    needs: resolve
+    if: needs.resolve.outputs.reuse != 'true'
     uses: ./.github/workflows/ci.yml
     with:
       force_cold_build: ${{ inputs.force_cold_build == true }}
 
   deploy:
-    needs: [verify]
+    needs: [resolve, verify]
+    if: always() && needs.resolve.result == 'success' && (needs.resolve.outputs.reuse == 'true' || needs.verify.result == 'success')
     runs-on: ubuntu-latest
     environment: production
     steps:
@@ -44,6 +71,8 @@ jobs:
         with:
           name: verified-images-${{ github.sha }}
           path: .
+          run-id: ${{ needs.resolve.outputs.run_id || github.run_id }}
+          github-token: ${{ github.token }}
 
       - name: Preflight SSH connectivity check
         env:

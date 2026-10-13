@@ -111,7 +111,7 @@ run_worker() {
       --files-from="$list" --partial-dir=.rsync-partial --timeout=90 --outbuf=L \
       --info=progress2 --stats --rsync-path='nice -n 19 rsync' -e "$worker_rsh" \
       "$objects/" "$DEPLOY_USER@$DEPLOY_HOST:$root/.image-cache/v2/receiving/" \
-      2>&1 | tr '\r' '\n' | sed -u "s/^/[stream $worker] /" | tee "$queue/batch-$batch.log"
+      2>&1 | stdbuf -oL tr '\r' '\n' | sed -u "s/^/[stream $worker] /" | tee "$queue/batch-$batch.log"
     result=$?
     set -e
     sent=$(awk '/Total bytes sent:/ {gsub(/,/, "", $NF); print $NF}' "$queue/batch-$batch.log")

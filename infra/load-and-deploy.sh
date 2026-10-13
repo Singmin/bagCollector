@@ -62,7 +62,7 @@ if [ "$mode" = --prepare-only ] && [ -f "$RELEASE_DIR/production-images/manifest
   nice -n 19 python3 "$RELEASE_DIR/infra/image-bundle.py" space "$@" --objects "$CACHE_DIR" --root "$RELEASE_DIR" --sha "$IMAGE_TAG" --architecture "$architecture"
   for bundle in "$RELEASE_DIR/production-images" "$RELEASE_DIR/vision-images"; do
     [ -f "$bundle/manifest.json" ] || continue
-    nice -n 19 python3 "$RELEASE_DIR/infra/image-bundle.py" rebuild --bundle "$bundle" --objects "$CACHE_DIR" --output "$bundle/images.tar.gz" --sha "$IMAGE_TAG" --architecture "$architecture"
+    nice -n 19 python3 "$RELEASE_DIR/infra/image-bundle.py" rebuild --bundle "$bundle" --objects "$CACHE_DIR" --output "$bundle/images.tar" --uncompressed --sha "$IMAGE_TAG" --architecture "$architecture"
   done
 fi
 echo "导入前服务器资源："
@@ -75,6 +75,11 @@ if [ "$vision_enabled" -eq 1 ]; then
   bundle_kb=$((bundle_kb + $(du -sk "$RELEASE_DIR/vision-images" | cut -f1)))
 fi
 required_kb=$((bundle_kb * 5 + 1048576))
+if [ -f "$RELEASE_DIR/production-images/images.tar" ] && { [ "$vision_enabled" -eq 0 ] || [ -f "$RELEASE_DIR/vision-images/images.tar" ]; }; then
+  # Reconstructed tar size bounds new daemon layers. The earlier v2 space
+  # reservation already covers receiving + raw archive + daemon + 1 GiB.
+  required_kb=$((bundle_kb + 1048576))
+fi
 available_kb=$(df -Pk "$docker_root" | awk 'END {print $4}')
 [ "$available_kb" -ge "$required_kb" ] || { echo "Docker 磁盘空间不足，导入中止" >&2; exit 1; }
 load_bundle() {
@@ -88,7 +93,13 @@ load_bundle() {
   if [ "$cached" -eq 0 ]; then
     echo "低优先级导入 CI 镜像：$bundle"
     # Decompress outside the Docker daemon so nice actually covers gzip CPU work.
-    if command -v ionice >/dev/null 2>&1; then
+    if [ -f "$bundle/images.tar" ]; then
+      if command -v ionice >/dev/null 2>&1; then
+        bash -o pipefail -c 'ionice -c 2 -n 7 nice -n 19 cat "$1" | docker image load' bash "$bundle/images.tar"
+      else
+        bash -o pipefail -c 'nice -n 19 cat "$1" | docker image load' bash "$bundle/images.tar"
+      fi
+    elif command -v ionice >/dev/null 2>&1; then
       bash -o pipefail -c 'ionice -c 2 -n 7 nice -n 19 gzip -dc "$1" | docker image load' bash "$bundle/images.tar.gz"
     else
       bash -o pipefail -c 'nice -n 19 gzip -dc "$1" | docker image load' bash "$bundle/images.tar.gz"

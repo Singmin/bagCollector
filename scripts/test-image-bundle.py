@@ -61,6 +61,17 @@ class BundleTests(unittest.TestCase):
         (folder / "manifest.json").write_text(json.dumps(m))
         (folder / "SHA256SUMS").write_text("".join(f"{b.file_digest(folder / n)}  {n}\n" for n in b.METADATA))
 
+    def test_raw_round_trip_preserves_members_and_content(self):
+        folder, m = self.fixture()
+        self.populate(m)
+        rebuilt = self.root / 'raw.tar'
+        b.rebuild(m, self.cache, rebuilt, compressed=False)
+        with tarfile.open(folder / 'original.tar.gz') as before, tarfile.open(rebuilt) as after:
+            self.assertEqual(before.getnames(), after.getnames())
+            for member in before:
+                if member.isfile():
+                    self.assertEqual(before.extractfile(member).read(), after.extractfile(member.name).read())
+
     def test_round_trip_preserves_members_and_metadata(self):
         folder, m = self.fixture()
         self.populate(m)

@@ -13,6 +13,12 @@ for image in "$@"; do
   docker image inspect --format "{{.Id}} $image" "$image" >> "$output/images.ids"
   printf '%s %s\n' "$(sh infra/image-fingerprint.sh "$image")" "$image" >> "$output/images.fingerprints"
 done
-docker image save "$@" | gzip -6 > "$output/images.tar.gz"
-python3 infra/image-bundle.py pack --archive "$output/images.tar.gz" --bundle "$output" --objects image-objects
-du -h "$output/images.tar.gz"
+mkdir -p .runtime
+scratch=$(mktemp -d .runtime/image-export-XXXXXXXX)
+trap 'rm -rf "$scratch"' EXIT
+# v2 already compresses each object. A whole-archive gzip pass followed by an
+# immediate decompression in pack adds CPU work without reducing upload bytes.
+docker image save "$@" > "$scratch/images.tar"
+python3 infra/image-bundle.py pack --archive "$scratch/images.tar" --bundle "$output" --objects image-objects
+echo 'Raw image export (transport uses compressed v2 objects):'
+du -h "$scratch/images.tar"

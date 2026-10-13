@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Version 2 Docker archive transport. No extraction of archive paths onto the host."""
 import argparse
+from contextlib import nullcontext
 import gzip
 import hashlib
 import io
@@ -238,14 +239,14 @@ class MemberReader:
         return bytes(output)
 
 
-def rebuild(m, objects, output):
+def rebuild(m, objects, output, compressed=True):
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_suffix(output.suffix + ".part")
     if output.is_symlink() or temporary.is_symlink():
         raise ValueError("symlink output")
     try:
-        with open(temporary, "wb") as f, gzip.GzipFile(fileobj=f, mode="wb", mtime=0) as encoded:
+        with open(temporary, "wb") as f, (gzip.GzipFile(fileobj=f, mode="wb", mtime=0) if compressed else nullcontext(f)) as encoded:
             with tarfile.open(fileobj=encoded, mode="w|", format=tarfile.PAX_FORMAT) as tar:
                 for member in m["members"]:
                     info = tarfile.TarInfo(member["name"])
@@ -317,6 +318,7 @@ def main():
     p.add_argument("--root", type=Path)
     p.add_argument("--sha")
     p.add_argument("--architecture")
+    p.add_argument("--uncompressed", action="store_true")
     args = p.parse_args()
     if args.command == "pack":
         pack(args.archive, Path(args.bundle[0]), args.objects)
@@ -357,7 +359,7 @@ def main():
     elif args.command == "rebuild":
         if len(manifests) != 1:
             raise ValueError("rebuild accepts one bundle")
-        rebuild(manifests[0], args.objects, args.output)
+        rebuild(manifests[0], args.objects, args.output, compressed=not args.uncompressed)
     else:
         for chunk in objects.values():
             read_object(args.objects, chunk)
