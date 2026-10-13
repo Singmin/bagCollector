@@ -20,6 +20,12 @@ objects in this layer despite unchanged third-party libraries/native engines.
 This identifies the source of the large transfer; it is not a new dependency
 installation or a failure of the server's incremental cache.
 
+Replaying the same `b70eb2a -> 83638ff` source changes with the split layout
+required **2,060,326 bytes**, 32 new objects and 99.051% byte reuse: **95.7%
+less upload**. The stable dependency/native-engine layers were unchanged.
+The real image acceptance also passed ordinary API/Admin edits, schema-only
+edits, root-script-only edits and two cold builds, each below 10 MiB.
+
 ## Layer layout
 
 The production install normalizes root development task scripts while retaining
@@ -47,6 +53,35 @@ the final server missing list is empty. Reports include queue claims, worker
 throughput, retry count, and cache/upload/verification/prepare/apply timings.
 Actions uploads the reports even on failure, retaining them for 14 days.
 
+## End-to-end release path
+
+Source checks and API/Vision image builds run concurrently. The final image
+verification waits for successful checks and builds, then validates runtime
+contents, archive reconstruction, fingerprints, migrations and API readiness.
+The expensive synthetic multi-build delta regressions run for pull requests or
+an explicitly requested cold build; historical replay runs when its layer
+inputs change. They do not repeat on every ordinary production release.
+
+A release may reuse an unexpired verified image artifact only from a successful
+run in this repository for the exact same commit, with all required check jobs
+successful. Otherwise it runs the full CI workflow. This lets prepare-only and
+the subsequent main release use the already validated images without rebuilding.
+
+Docker archives are saved and reconstructed as raw tar files; the v2 objects
+remain independently compressed and verified. Removing whole-archive gzip
+compression before immediate decompression reduces export/import work without
+changing the v2 manifest, object keys or legacy gzip import compatibility.
+
+The first parallel CI run (`38403722415`, commit `1b95296`) passed in **5m31s**
+from run creation to completion. The preceding serial verify job alone took
+14m24s. These are measured runs, not a fixed completion-time guarantee.
+
+Prepare-only run `38404912832` reused those exact verified images and completed
+in **2m08s** including runner setup and cleanup. Against the warmed server cache,
+it uploaded **561,229 bytes** in 17s, with 28s cache check and 12s verification
+(57s total transfer stage); raw archive preparation/import took **26s**.
+All checks succeeded and running services were left unchanged before main apply.
+
 ## Acceptance and rollout
 
 The dedicated `codex/deploy-delta-scheduler` acceptance job downloads both
@@ -66,3 +101,9 @@ small release against the warmed cache. Do not promise fixed completion times
 on an overseas SSH link. The v2 object/manifest format and server validation are
 unchanged, so old and new objects coexist and prior images remain available for
 the existing rollback flow.
+
+Initial cache establishment (`38399355354`, `e529d23`) uploaded 47,690,897
+bytes in one attempt: 788s upload, 37s cache check, 13s verification, 838s total
+transfer stage and 115s prepare. This is migration/cache establishment cost,
+not evidence of steady-state acceleration. The four workers completed 3, 5, 4
+and 3 batches respectively, confirming that faster workers claimed more work.
