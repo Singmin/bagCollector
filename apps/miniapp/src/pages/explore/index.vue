@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, getCurrentInstance, ref, watch } from 'vue';
 import { onLoad, onShow } from '@dcloudio/uni-app';
 import type { Brand, OfficialBag } from '../../types';
 import BagImagePreview from '../../components/BagImagePreview.vue';
@@ -105,7 +105,11 @@ function load() {
     } finally {
       loading.value = false;
     }
-  })().finally(() => { refreshPromise = undefined; });
+  })().finally(() => {
+    refreshPromise = undefined;
+    /* 首屏可能也不满一屏（比如某个分类只有十几件），一并补到能滚为止 */
+    fillViewportIfNeeded();
+  });
   return refreshPromise;
 }
 
@@ -130,6 +134,38 @@ function onScrollToLower() {
   void loadMore();
 }
 
+/* ── 内容不满一屏时自动补拉分页（口径与「我的」页一致）──
+   scrolltolower 只在「能滚」时才触发：首屏 30 条在 3 列时能撑满，
+   但双指捏合缩小到 4~5 列后一屏就装得下几十条，内容矮于视口 →
+   滚不动 → 后续分页永远出不来（用户 2026-10-13 反馈「缩小后上滑加载不了」）。
+   所以每次加载完成、以及每次缩放档位变化后，都量一次高度：
+   内容仍矮于视口且还有下一页就继续拉，直到铺满或没有更多。 */
+const pageInstance = getCurrentInstance();
+let fillTimer: ReturnType<typeof setTimeout> | undefined;
+
+function fillViewportIfNeeded() {
+  if (!nextCursor.value || loadingMore.value || loading.value) return;
+  const cursorBefore = nextCursor.value;
+  /* 捏合过程中档位会连续变，抖一下、等排版落定再量，量到的才是最终尺寸 */
+  if (fillTimer) clearTimeout(fillTimer);
+  fillTimer = setTimeout(() => {
+    fillTimer = undefined;
+    if (!nextCursor.value || loadingMore.value || loading.value) return;
+    const query = uni.createSelectorQuery().in(pageInstance?.proxy);
+    query.select('.explore-scroll').boundingClientRect();
+    query.select('.explore-body').boundingClientRect();
+    query.exec(async (rows) => {
+      const viewport = rows?.[0] as { height?: number } | null;
+      const body = rows?.[1] as { height?: number } | null;
+      if (!viewport?.height || !body?.height || !nextCursor.value) return;
+      if (body.height > viewport.height + 2) return;
+      await loadMore();
+      /* 下一页没进来（请求失败 / 已是空页）就停手，免得原地打转 */
+      if (nextCursor.value && nextCursor.value !== cursorBefore) fillViewportIfNeeded();
+    });
+  }, 60);
+}
+
 async function onRefresh() {
   refreshing.value = true;
   try {
@@ -145,6 +181,73 @@ function pickBrand(id: string) {
   activeBrandId.value = id;
   void load();
 }
+
+/* ── 宫格双指捏合缩放（与「我的」页同一套手感）──
+   列数是唯一真源：3 列起步、最多 5 列，卡宽 = (可用宽 − 列间距) ÷ 列数，
+   卡内的图区高 / 内边距 / 圆角 / 字号 / 角标全部按卡宽等比派生 ——
+   这样每一档的观感都与 3 列时完全一致，不会出现「图缩了字没缩」的错位。
+   比例系数取自 3 列档的实测值：卡宽 219rpx 时图区 196 / 内边距 14·10·18 / 圆角 26 / 名称 25 字。 */
+const GRID_COLS_MIN = 3;
+const GRID_COLS_MAX = 5;
+/* 必须与 .explore-body 的左右 30rpx、.bag-grid 的间距 16rpx 保持一致，否则卡宽算不准 */
+const GRID_PAD = 30;
+const GRID_GAP = 16;
+const gridCols = ref(GRID_COLS_MIN);
+const cardW = computed(() => Math.floor((750 - GRID_PAD * 2 - (gridCols.value - 1) * GRID_GAP) / gridCols.value));
+/* 网格容器样式：列宽写死成 rpx（不用 1fr，才能与卡宽的取整口径完全对齐） */
+const gridStyle = computed(() => ({ gridTemplateColumns: `repeat(${gridCols.value}, ${cardW.value}rpx)`, gap: `${GRID_GAP}rpx` }));
+const cardArtH = computed(() => Math.round(cardW.value * 0.8949));
+const cardArtW = computed(() => Math.round(cardW.value * 0.5114));
+const cardArtPlaceholderH = computed(() => Math.round(cardW.value * 0.7123));
+const cardArtPlaceholderRadius = computed(() => Math.round(cardW.value * 0.0913));
+const cardPadTop = computed(() => Math.round(cardW.value * 0.0639));
+const cardPadX = computed(() => Math.round(cardW.value * 0.0457));
+const cardPadBottom = computed(() => Math.round(cardW.value * 0.0822));
+const cardRadius = computed(() => Math.round(cardW.value * 0.1187));
+const cardNameSize = computed(() => Math.max(18, Math.round(cardW.value * 0.1141)));
+const cardBrandSize = computed(() => Math.max(16, Math.round(cardW.value * 0.0913)));
+const cardBadgeSize = computed(() => Math.max(16, Math.round(cardW.value * 0.0913)));
+const cardNameGap = computed(() => Math.max(4, Math.round(cardW.value * 0.0639)));
+const cardBrandGap = computed(() => Math.max(2, Math.round(cardW.value * 0.0274)));
+const skeletonH = computed(() => Math.round(cardW.value * 1.4612));
+
+let pinchStartDist = 0;
+let pinchStartCols = GRID_COLS_MIN;
+/* 双指手势结束后紧跟的 tap 要丢掉：捏合收尾很容易落在某张卡上，
+   不然一缩放就顺手弹开详情。 */
+let suppressCardTapUntil = 0;
+
+function touchPoints(event: Event) {
+  const touches = (event as unknown as { touches?: Array<{ x?: number; clientX?: number; y?: number; clientY?: number }> }).touches;
+  return touches?.map((touch) => ({ x: touch.x ?? touch.clientX ?? 0, y: touch.y ?? touch.clientY ?? 0 })) ?? [];
+}
+
+function gridTouchStart(event: Event) {
+  const points = touchPoints(event);
+  if (points.length !== 2) return;
+  suppressCardTapUntil = Date.now() + 400;
+  pinchStartDist = Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
+  pinchStartCols = gridCols.value;
+}
+
+function gridTouchMove(event: Event) {
+  if (!pinchStartDist) return;
+  const points = touchPoints(event);
+  if (points.length !== 2) return;
+  const dist = Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
+  if (!dist) return;
+  suppressCardTapUntil = Date.now() + 400;
+  /* 双指张开 = 放大 = 列数变少；捏合 = 缩小 = 列数变多 */
+  const next = Math.round(pinchStartCols * (pinchStartDist / dist));
+  gridCols.value = Math.min(GRID_COLS_MAX, Math.max(GRID_COLS_MIN, next));
+}
+
+function gridTouchEnd() {
+  pinchStartDist = 0;
+}
+
+/* 档位一变就重新评估要不要补页：缩小后一屏能装更多，最容易出现「撑不满、滚不动」 */
+watch(gridCols, () => { fillViewportIfNeeded(); });
 
 
 /* ── 搜索 ── */
@@ -168,6 +271,8 @@ function clearSearch() {
 /* ── 卡片 / 详情 ── */
 let detailRequest = 0;
 async function openBag(bag: OfficialBag) {
+  /* 捏合缩放刚结束（suppressCardTapUntil）时的 tap 一律忽略，避免顺手弹开详情 */
+  if (Date.now() < suppressCardTapUntil) return;
   const request = ++detailRequest;
   imagePreview.value = false;
   detailBag.value = bag;
@@ -312,6 +417,7 @@ onShow(() => {
       :show-scrollbar="false"
       :refresher-enabled="true"
       :refresher-triggered="refreshing"
+      :lower-threshold="160"
       refresher-default-style="black"
       @refresherrefresh="onRefresh"
       @scrolltolower="onScrollToLower"
@@ -319,9 +425,18 @@ onShow(() => {
       <view class="explore-body">
         <view v-if="loadError" class="load-error">{{ loadError }}</view>
 
-        <!-- 骨架屏 -->
-        <view v-if="loading && !initialized" class="bag-grid skeleton-grid">
-          <view v-for="index in 6" :key="index" class="skeleton-card" />
+        <!-- 骨架屏：列宽 / 卡高跟随当前缩放档位，滚动加载时不跳版 -->
+        <view
+          v-if="loading && !initialized"
+          class="bag-grid"
+          :style="gridStyle"
+        >
+          <view
+            v-for="index in 6"
+            :key="index"
+            class="skeleton-card"
+            :style="{ height: `${skeletonH}rpx`, borderRadius: `${cardRadius}rpx` }"
+          />
         </view>
 
         <!-- 搜索无结果 -->
@@ -336,32 +451,46 @@ onShow(() => {
           <text class="explore-empty__sub">这个分类下还没有袋子，看看「全部」吧</text>
         </view>
 
-        <!-- 宫格 -->
-        <view v-else class="bag-grid">
+        <!-- 宫格：双指捏合在 3~5 列间缩放，卡内尺寸全部随卡宽派生（与「我的」页同一手感） -->
+        <view
+          v-else
+          class="bag-grid"
+          :style="gridStyle"
+          @touchstart="gridTouchStart"
+          @touchmove="gridTouchMove"
+          @touchend="gridTouchEnd"
+          @touchcancel="gridTouchEnd"
+        >
           <button
             v-for="bag in bags"
             :key="bag.id"
             class="bag-card"
+            :style="{ padding: `${cardPadTop}rpx ${cardPadX}rpx ${cardPadBottom}rpx`, borderRadius: `${cardRadius}rpx` }"
             @tap="openBag(bag)"
           >
-            <view class="bag-card__art">
+            <view class="bag-card__art" :style="{ height: `${cardArtH}rpx` }">
               <image
                 v-if="bag.thumbnailUrl || bag.displayImageUrl"
                 :src="bag.thumbnailUrl || bag.displayImageUrl"
                 mode="aspectFit"
                 lazy-load
               />
-              <view v-else class="bag-card__placeholder" />
+              <view
+                v-else
+                class="bag-card__placeholder"
+                :style="{ width: `${cardArtW}rpx`, height: `${cardArtPlaceholderH}rpx`, borderRadius: `${cardArtPlaceholderRadius}rpx` }"
+              />
             </view>
-            <text class="bag-card__name">{{ bag.name }}</text>
-            <text class="bag-card__brand">{{ bag.brand || '官方精选' }}</text>
+            <text class="bag-card__name" :style="{ marginTop: `${cardNameGap}rpx`, fontSize: `${cardNameSize}rpx` }">{{ bag.name }}</text>
+            <text class="bag-card__brand" :style="{ marginTop: `${cardBrandGap}rpx`, fontSize: `${cardBrandSize}rpx` }">{{ bag.brand || '官方精选' }}</text>
             <!-- 状态角标：已有（右上 · 金）；心愿（右上 · 红）。两个状态同时存在时心愿挪到左上，
                  保证「在心愿单」和「已拥有」都能一眼看到 -->
-            <view v-if="bag.claimed" class="bag-card__badge bag-card__badge--owned">已有</view>
+            <view v-if="bag.claimed" class="bag-card__badge bag-card__badge--owned" :style="{ fontSize: `${cardBadgeSize}rpx` }">已有</view>
             <view
               v-if="isWished(bag.id)"
               class="bag-card__badge bag-card__badge--wish"
               :class="{ 'is-corner-left': bag.claimed }"
+              :style="{ fontSize: `${cardBadgeSize}rpx` }"
             >♥ 心愿</view>
           </button>
         </view>
@@ -454,9 +583,12 @@ onShow(() => {
 .gallery-chip.is-on .gallery-chip__count { color: rgba(255,255,255,.7); }
 .gallery-chip.is-pressed { transform: scale(.94); }
 
-/* ── 宫格 ── */
-.bag-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16rpx; }
-.skeleton-grid { grid-template-columns: repeat(3, 1fr); }
+/* ── 宫格 ──
+   列数 / 卡宽 / 卡内尺寸（图区高、内边距、圆角、字号）全部由模板内联注入：
+   双指捏合在 3~5 列间缩放，卡宽是唯一真源，见 script 里的 gridCols / cardW。
+   这里只留不随缩放变化的视觉 —— 底色、内白边、排版与省略号；
+   下列数值 = 3 列档位（卡宽 219rpx）的标注，作兜底用，实际以内联样式为准。 */
+.bag-grid { display: grid; }
 .skeleton-card { height: 320rpx; border-radius: 26rpx; background: rgba(255,255,255,.6); }
 .bag-card { position: relative; display: flex; flex-direction: column; align-items: center; margin: 0; padding: 14rpx 10rpx 18rpx; border: 0; border-radius: 26rpx; background: rgba(255,255,255,.6); box-shadow: inset 0 0 0 2rpx rgba(255,255,255,.9); overflow: hidden; }
 .bag-card__art { display: flex; align-items: center; justify-content: center; width: 100%; height: 196rpx; }
@@ -464,7 +596,8 @@ onShow(() => {
 .bag-card__placeholder { width: 112rpx; height: 156rpx; border-radius: 20rpx; background: rgba(255,255,255,.62); }
 .bag-card__name { width: 100%; margin-top: 14rpx; color: #17150f; font-size: 25rpx; font-weight: 700; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center; }
 .bag-card__brand { width: 100%; margin-top: 6rpx; color: #8d877c; font-size: 20rpx; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center; }
-/* 角标：已有 = 金（右上优先位），心愿 = 红（已有同时存在时挪到左上） */
+/* 角标：已有 = 金（右上优先位），心愿 = 红（已有同时存在时挪到左上）。
+   字号随卡宽派生（内联），内边距保持固定 —— 缩到 5 列时角标仍能看清又不至于盖住整张卡 */
 .bag-card__badge { position: absolute; z-index: 2; top: 12rpx; right: 12rpx; padding: 6rpx 14rpx; border-radius: 999rpx; font-size: 20rpx; font-weight: 600; line-height: 1.2; }
 .bag-card__badge--owned { background: #c8a24a; color: #ffffff; box-shadow: 0 4rpx 12rpx rgba(162,124,38,.3); }
 .bag-card__badge--wish { background: #c50405; color: #ffffff; box-shadow: 0 4rpx 12rpx rgba(197,4,5,.26); }

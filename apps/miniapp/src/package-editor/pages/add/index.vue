@@ -572,9 +572,12 @@ onShow(() => {
 </template>
 
 <style scoped>
-.correction-search { display: flex; gap: 16rpx; margin: 24rpx 0; }
-.correction-search input { flex: 1; min-width: 0; padding: 16rpx; background: #f2f3f7; border-radius: 16rpx; }
-.correction-search button { margin: 0; font-size: 28rpx; }
+/* 纠正搜索行：input 是原生组件，只给 padding 不给 height / line-height 时，
+   flex 拉伸后的可用高度与文字行高不一致，输入内容会只露半截（用户 2026-10-13 反馈）。
+   这里把高度、行高、字号三样显式写死，按钮同高，两者文字都垂直居中。 */
+.correction-search { display: flex; align-items: center; gap: 16rpx; margin: 24rpx 0; }
+.correction-search input { flex: 1; min-width: 0; box-sizing: border-box; height: 88rpx; padding: 0 24rpx; font-size: 28rpx; line-height: 88rpx; background: #f2f3f7; border-radius: 16rpx; }
+.correction-search button { flex: 0 0 auto; height: 88rpx; margin: 0; padding: 0 40rpx; font-size: 28rpx; line-height: 88rpx; }
 /* ── 按参考图 Frame 92 测量对齐（1 图px ≈ 1.5rpx）── */
 .camera-page { height: 100vh; display: flex; flex-direction: column; overflow: hidden; background: #fff; color: #000; }
 /* 头部总高 = 状态栏 + 胶囊行（inline style 注入：padding-top 撑状态栏、height 含状态栏）。

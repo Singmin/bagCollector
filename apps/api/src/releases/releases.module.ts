@@ -5,13 +5,14 @@ import { ChangelogDocsService } from './changelog-docs.service.js';
 import {
   ChangelogDocsController,
   PlansController,
+  ReleaseImagesController,
   ReleasesController
 } from './releases.controller.js';
 import { ReleasesService } from './releases.service.js';
 
 @Module({
   imports: [AuthModule],
-  controllers: [ReleasesController, PlansController, ChangelogDocsController],
+  controllers: [ReleasesController, PlansController, ChangelogDocsController, ReleaseImagesController],
   providers: [ReleasesService, ChangelogDocsService, AdminGuard]
 })
 export class ReleasesModule {}

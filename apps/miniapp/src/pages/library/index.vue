@@ -143,7 +143,12 @@ const groups = computed<ShelfGroup[]>(() => {
 watch(groups, () => measureShelves());
 
 function query(cursor?: string) {
-  const params = ['limit=30'];
+  /* 一次取全（上限 1000，与后端 list 上限一致）：展架视图按品牌分组，
+     若按默认 30 条分页，后面的品牌分组会因「本页还没加载到它的 items」被
+     groups 的 filter 过滤掉，用户要滚到底触发 loadMore 才能看到那些品牌的纸袋与数量。
+     收藏是个人数据、量级有限，一次拉全更符合「分组完整展示」的预期；
+     宫格视图仍按 GRID_STEP 增量渲染，不受影响。游标翻页保留作 1000+ 件兜底。 */
+  const params = ['limit=1000'];
   if (keyword.value) params.push(`search=${encodeURIComponent(keyword.value)}`);
   if (cursor) params.push(`cursor=${encodeURIComponent(cursor)}`);
   return params.join('&');
@@ -568,14 +573,13 @@ const detailNote = computed(() => detailData.value?.notes?.trim() ?? '');
 const detailFacts = computed(() => {
   const item = detailItem.value;
   if (!item) return [];
-  /* 心愿条目：addedAt 是官方上架时间，「收藏日期/入库时长」不适用，换成上架口径；
-     品牌取 ownerName（feed 条目没有 shelfName）；心愿无编号（编号只在自有收藏里倒推） */
+  /* 心愿条目：addedAt 是官方上架时间，「收藏日期/入库时长」不适用，换成上架口径。
+     品牌（detail-brand）与编号（detail-eyebrow）已在图上方的标题区展示，
+     这里不再重复成行 —— 用户 2026-10-13 要求去掉这两行。 */
   const wish = isWishDetail.value;
   return [
-    { label: '品牌 / 店铺', value: wish ? (item.ownerName ?? '官方精选') : item.shelfName },
     { label: wish ? '上架日期' : '收藏日期', value: formattedDate(item.addedAt, '-') },
     { label: wish ? '上架天数' : '入库时长', value: daysAgoText(item.addedAt) },
-    { label: '编号', value: wish ? '' : detailNo.value },
     /* 数量恒显（×1 也展示），与设计稿一致；心愿条目无数量/可见性 */
     { label: '数量', value: !wish ? `×${item.quantity ?? 1}` : '' },
     { label: '谁能看到', value: !wish ? (item.visibility === 'PRIVATE' ? '私密收藏' : '公开展示') : '' }

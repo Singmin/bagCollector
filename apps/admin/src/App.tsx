@@ -266,7 +266,6 @@ interface BagFormValues {
   brandId?: string | null;
   notes?: string;
   tags?: string;
-  matting: boolean;
   sortOrder: number;
 }
 
@@ -1385,18 +1384,33 @@ export function App() {
                     }
                     setBagPage(1);
                   }}
-                  scroll={{ x: 960 }}
+                  scroll={{ x: 1100 }}
                   columns={[
                     {
-                      title: '图片',
+                      title: 'A面图片',
                       key: 'image',
                       width: 84,
+                      fixed: 'left',
                       render: (_, bag) =>
                         bag.thumbnailUrl ? (
                           <Image src={bag.thumbnailUrl} alt={bag.name} width={56} height={56} style={{ objectFit: 'contain' }} />
                         ) : (
                           <Tag>未上传</Tag>
                         )
+                    },
+                    {
+                      title: 'B面图片',
+                      key: 'backImage',
+                      width: 84,
+                      fixed: 'left',
+                      render: (_, bag) => {
+                        const backUrl = bag.sides?.BACK?.thumbnailUrl ?? bag.sides?.BACK?.displayImageUrl;
+                        return backUrl ? (
+                          <Image src={backUrl} alt={`${bag.name} · 反面`} width={56} height={56} style={{ objectFit: 'contain' }} />
+                        ) : (
+                          <Tag>未上传</Tag>
+                        );
+                      }
                     },
                     {
                       title: '名称 / 品牌',
@@ -1484,6 +1498,7 @@ export function App() {
                       title: '操作',
                       key: 'actions',
                       width: 260,
+                      fixed: 'right',
                       render: (_, bag) => (
                         <Space size={4} wrap>
                           <Button size="small" onClick={() => openBagEditor(bag)}>编辑</Button>
@@ -1672,6 +1687,7 @@ function BagEditor({
   const [uploading, setUploading] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [sideFiles, setSideFiles] = useState<Record<ImageSide, UploadFile[]>>({ FRONT: [], BACK: [] });
+  const [frontMatting, setFrontMatting] = useState(bag?.matting ?? false);
   const [backMatting, setBackMatting] = useState(bag?.sides?.BACK?.matting ?? false);
   const [quickBrandOpen, setQuickBrandOpen] = useState(false);
   const [quickBrandName, setQuickBrandName] = useState('');
@@ -1696,7 +1712,7 @@ function BagEditor({
         brandId: values.brandId ?? null,
         notes: values.notes ?? '',
         tags: values.tags ? values.tags.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean) : [],
-        matting: values.matting,
+        matting: frontMatting,
         backMatting,
         ...(bag ? { sortOrder: values.sortOrder } : {})
       };
@@ -1709,7 +1725,7 @@ function BagEditor({
       for (const side of ['FRONT', 'BACK'] as const) {
         const file = sideFiles[side][0]?.originFileObj;
         if (file) {
-          await uploadTo(targetId, file, side === 'FRONT' ? values.matting ?? false : backMatting, side);
+          await uploadTo(targetId, file, side === 'FRONT' ? frontMatting : backMatting, side);
           setSideFiles(current => ({ ...current, [side]: [] }));
         }
       }
@@ -1731,7 +1747,7 @@ function BagEditor({
     }
     setUploading(true);
     try {
-      await uploadTo(bag.id, file, side === 'FRONT' ? Boolean(form.getFieldValue('matting')) : backMatting, side);
+      await uploadTo(bag.id, file, side === 'FRONT' ? frontMatting : backMatting, side);
       message.success('已上传，图片处理中');
       onDone();
     } catch (requestError) {
@@ -1795,7 +1811,6 @@ function BagEditor({
           brandId: bag?.brandId ?? null,
           notes: bag?.notes ?? '',
           tags: bag?.tags.join('，') ?? '',
-          matting: bag?.matting ?? false,
           sortOrder: bag?.sortOrder ?? 0
         }}
       >
@@ -1832,13 +1847,6 @@ function BagEditor({
         <Form.Item name="notes" label="备注" rules={[{ max: 2000 }]}>
           <Input.TextArea rows={3} placeholder="尺寸、材质、获取地点等描述" maxLength={2000} />
         </Form.Item>
-        <Form.Item name="matting" label="对上传图片执行抠图" valuePropName="checked">
-          <Switch />
-        </Form.Item>
-        <Typography.Paragraph type="secondary" style={{ marginTop: -8 }}>
-          走腾讯云万象，0.02 元/次；不开启则仅压缩出图。
-          {bag && ' 开关只作用于下一次上传：勾选后点「上传 / 替换图片」会立刻按新设置重新处理。'}
-        </Typography.Paragraph>
 
         <Form.Item label="A/B 面图片">
           <Row gutter={[12, 12]}>
@@ -1850,7 +1858,9 @@ function BagEditor({
                   {url ? <Image src={url} width={120} height={140} style={{ objectFit: 'contain' }} /> : <Typography.Text type="secondary">暂无图片</Typography.Text>}
                   {image && <Tag>{image.processingStatus === 'PROCESSING' ? '处理中' : image.processingStatus === 'READY' ? '就绪' : image.processingStatus === 'FAILED' ? '失败' : '未上传'}</Tag>}
                   {image?.processingError && <Typography.Text type="danger">{image.processingError}</Typography.Text>}
-                  {side === 'BACK' && <Space><Switch checked={backMatting} onChange={setBackMatting} /><Typography.Text>反面抠图</Typography.Text></Space>}
+                  {side === 'FRONT'
+                    ? <Space><Switch checked={frontMatting} onChange={setFrontMatting} /><Typography.Text>正面抠图</Typography.Text></Space>
+                    : <Space><Switch checked={backMatting} onChange={setBackMatting} /><Typography.Text>反面抠图</Typography.Text></Space>}
                   <Upload accept="image/jpeg,image/png,image/webp,image/heic,image/heif" maxCount={1} fileList={sideFiles[side]} beforeUpload={() => false} onChange={({ fileList: files }) => setSideFiles(current => ({ ...current, [side]: files }))}>
                     <Button icon={<UploadOutlined />}>选择图片</Button>
                   </Upload>

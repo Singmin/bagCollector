@@ -119,7 +119,10 @@ export class CollectiblesService {
   }
 
   async list(userId: string, query: { search?: string; shelfId?: string; cursor?: string; limit?: number }) {
-    const limit = Math.min(Math.max(query.limit ?? 30, 1), 100);
+    /* 上限 1000（对齐 feed）：收藏是个人数据、量级有限，且展架视图按品牌分组，
+       分页加载会让后面的品牌分组「缺 items」而被前端过滤掉，用户要拉到底才补得全。
+       一次取全后前端宫格仍按 GRID_STEP 增量渲染，不产生一次性大 DOM 的开销。 */
+    const limit = Math.min(Math.max(query.limit ?? 30, 1), 1000);
     const search = query.search?.trim();
     const where = {
       userId,

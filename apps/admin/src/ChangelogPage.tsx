@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { ClipboardEvent as ReactClipboardEvent, ComponentProps, ReactNode } from 'react';
 import {
   App as AntdApp,
   Button,
@@ -6,6 +7,7 @@ import {
   Drawer,
   Empty,
   Form,
+  Image,
   Input,
   List,
   Modal,
@@ -13,17 +15,19 @@ import {
   Select,
   Space,
   Spin,
+  Table,
   Tabs,
   Tag,
-  Typography
+  Typography,
+  Upload
 } from 'antd';
 import {
   CheckOutlined,
-  CommentOutlined,
   DeleteOutlined,
   EditOutlined,
   FileTextOutlined,
   HistoryOutlined,
+  PictureOutlined,
   PlusOutlined,
   SendOutlined,
   UnorderedListOutlined
@@ -90,6 +94,141 @@ interface ChangelogDoc {
 
 /** 一次最多拉取的版本记录条数：运营场景下远够用，暂不做翻页。 */
 const RELEASE_PAGE_SIZE = 200;
+
+/** 正文里的 markdown 图片标记，如 ![图](https://...)，粘贴图片上传成功后写入正文。 */
+const RELEASE_IMAGE_TOKEN_RE = /!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/;
+
+/** 列表预览用：去掉图片标记，只留纯文本。 */
+function stripImageTokens(content: string): string {
+  return content
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** 版本记录正文渲染：文本按行展示，图片标记渲染成可点击预览的图。 */
+function ReleaseContent({ content }: { content: string }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {content.split('\n').map((line, lineIndex) => {
+        const pieces: ReactNode[] = [];
+        const regex = new RegExp(RELEASE_IMAGE_TOKEN_RE.source, 'g');
+        let cursor = 0;
+        let key = 0;
+        let match: RegExpExecArray | null;
+        while ((match = regex.exec(line)) !== null) {
+          if (match.index > cursor) pieces.push(<span key={key++}>{line.slice(cursor, match.index)}</span>);
+          pieces.push(
+            <Image key={key++} src={match[2] ?? ''} alt={match[1] || '改动截图'} width={240} style={{ borderRadius: 8 }} />
+          );
+          cursor = match.index + match[0].length;
+        }
+        if (cursor < line.length) pieces.push(<span key={key++}>{line.slice(cursor)}</span>);
+        return <div key={lineIndex}>{pieces}</div>;
+      })}
+    </div>
+  );
+}
+
+let pasteUploadSeq = 0;
+
+/**
+ * 改动内容输入框：支持直接粘贴图片或点「插入图片」选图。
+ * 上传期间先在光标处占位「![图片上传中…](uploading-n)」，成功后原地替换成正式图片标记，
+ * 失败则移除占位，不打断文字编辑。
+ */
+function ContentInput({
+  value,
+  onChange,
+  onUploadImage,
+  uploading,
+  ...rest
+}: {
+  value?: string;
+  onChange?: (value: string) => void;
+  onUploadImage: (file: File) => Promise<string>;
+  uploading: boolean;
+} & Omit<ComponentProps<typeof Input.TextArea>, 'value' | 'onChange'>) {
+  const { message } = AntdApp.useApp();
+  const latest = useRef(value ?? '');
+  useEffect(() => {
+    latest.current = value ?? '';
+  }, [value]);
+
+  const applyChange = useCallback(
+    (next: string) => {
+      latest.current = next;
+      onChange?.(next);
+    },
+    [onChange]
+  );
+
+  const insertFiles = useCallback(
+    async (files: File[], position: number) => {
+      let at = Math.min(Math.max(position, 0), latest.current.length);
+      for (const file of files) {
+        const placeholder = `![图片上传中…](uploading-${++pasteUploadSeq})`;
+        applyChange(latest.current.slice(0, at) + placeholder + latest.current.slice(at));
+        at += placeholder.length;
+        try {
+          const url = await onUploadImage(file);
+          const token = `![图](${url})`;
+          const text = latest.current;
+          const index = text.indexOf(placeholder);
+          if (index >= 0) applyChange(text.slice(0, index) + token + text.slice(index + placeholder.length));
+          at += token.length - placeholder.length;
+        } catch (error) {
+          const text = latest.current;
+          const index = text.indexOf(placeholder);
+          if (index >= 0) applyChange(text.slice(0, index) + text.slice(index + placeholder.length));
+          at -= placeholder.length;
+          message.error(error instanceof Error ? error.message : '图片上传失败');
+        }
+      }
+    },
+    [applyChange, onUploadImage, message]
+  );
+
+  async function handlePaste(event: ReactClipboardEvent<HTMLTextAreaElement>) {
+    const files = Array.from(event.clipboardData?.files ?? []).filter((file) => file.type.startsWith('image/'));
+    if (!files.length) return;
+    event.preventDefault();
+    // currentTarget 在 await 之后会失效，先取好光标位置和 DOM 引用
+    const start = event.currentTarget.selectionStart ?? latest.current.length;
+    const end = event.currentTarget.selectionEnd ?? start;
+    applyChange(latest.current.slice(0, start) + latest.current.slice(end));
+    await insertFiles(files, start);
+  }
+
+  return (
+    <div>
+      <Space style={{ marginBottom: 8 }} size={8}>
+        <Upload
+          accept="image/*"
+          showUploadList={false}
+          multiple
+          beforeUpload={(file) => {
+            void insertFiles([file], latest.current.length);
+            return false;
+          }}
+        >
+          <Button size="small" icon={<PictureOutlined />} loading={uploading}>
+            插入图片
+          </Button>
+        </Upload>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          也可直接在输入框里粘贴截图
+        </Typography.Text>
+      </Space>
+      <Input.TextArea
+        {...rest}
+        value={value}
+        onChange={(event) => applyChange(event.target.value)}
+        onPaste={(event) => void handlePaste(event)}
+      />
+    </div>
+  );
+}
 
 /**
  * 「版本改动」页面：版本记录（含留言）+ 下期计划。
@@ -349,71 +488,94 @@ export function ChangelogPage() {
       {notes.length === 0 && !notesLoading ? (
         <Empty description="还没有版本记录，点上方按钮新增一条" />
       ) : (
-        <List
-          itemLayout="horizontal"
+        <Table<ReleaseNote>
+          rowKey="id"
           dataSource={notes}
-          renderItem={(note) => (
-            <List.Item
-              actions={[
-                <Button
-                  key="status"
-                  type="link"
-                  size="small"
-                  icon={<CheckOutlined />}
-                  onClick={() => void toggleReleaseStatus(note)}
-                >
-                  {note.status === 'DONE' ? '改回计划' : '标记完成'}
-                </Button>,
-                <Button
-                  key="comments"
-                  type="link"
-                  size="small"
-                  icon={<CommentOutlined />}
-                  onClick={() => void openDetail(note)}
-                >
-                  留言 {note.commentCount > 0 ? note.commentCount : ''}
-                </Button>,
-                <Button key="edit" type="link" size="small" icon={<EditOutlined />} onClick={() => setEditing(note)}>
-                  编辑
-                </Button>,
-                <Popconfirm
-                  key="delete"
-                  title="删除这条版本记录？"
-                  description="其下留言会一并删除"
-                  okText="删除"
-                  okButtonProps={{ danger: true }}
-                  onConfirm={() => void removeNote(note)}
-                >
-                  <Button type="link" size="small" danger icon={<DeleteOutlined />}>
-                    删除
+          size="middle"
+          onRow={(note) => ({ onClick: () => void openDetail(note), style: { cursor: 'pointer' } })}
+          pagination={{ pageSize: 20, showSizeChanger: false, showTotal: (total) => `共 ${total} 条` }}
+          columns={[
+            {
+              title: '版本',
+              dataIndex: 'version',
+              width: 110,
+              render: (version: string) => <Tag color="blue">{version}</Tag>
+            },
+            {
+              title: '状态',
+              dataIndex: 'status',
+              width: 90,
+              render: (status: ReleaseStatus) => (
+                <Tag color={releaseStatusColors[status]}>{releaseStatusLabels[status]}</Tag>
+              )
+            },
+            {
+              title: '标题',
+              dataIndex: 'title',
+              ellipsis: true,
+              render: (title: string) => <Typography.Text strong>{title}</Typography.Text>
+            },
+            {
+              title: '改动内容',
+              dataIndex: 'content',
+              ellipsis: true,
+              render: (content: string) => (
+                <Typography.Text type="secondary">{stripImageTokens(content) || '（无正文）'}</Typography.Text>
+              )
+            },
+            {
+              title: '留言',
+              dataIndex: 'commentCount',
+              width: 64,
+              align: 'center',
+              render: (count: number) =>
+                count > 0 ? <Typography.Text>{count}</Typography.Text> : (
+                  <Typography.Text type="secondary">-</Typography.Text>
+                )
+            },
+            {
+              title: '创建时间',
+              dataIndex: 'createdAt',
+              width: 160,
+              render: (createdAt: string) => (
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  {new Date(createdAt).toLocaleString('zh-CN')}
+                </Typography.Text>
+              )
+            },
+            {
+              title: '操作',
+              key: 'actions',
+              width: 250,
+              render: (_, note) => (
+                // 阻止冒泡到 onRow 的整行点击（打开详情）
+                <Space size={0} onClick={(event) => event.stopPropagation()}>
+                  <Button
+                    type="link"
+                    size="small"
+                    icon={<CheckOutlined />}
+                    onClick={() => void toggleReleaseStatus(note)}
+                  >
+                    {note.status === 'DONE' ? '改回计划' : '标记完成'}
                   </Button>
-                </Popconfirm>
-              ]}
-            >
-              <List.Item.Meta
-                title={
-                  <Space size={8} wrap>
-                    <Tag color="blue">{note.version}</Tag>
-                    <Tag color={releaseStatusColors[note.status]}>{releaseStatusLabels[note.status]}</Tag>
-                    <Typography.Text strong>{note.title}</Typography.Text>
-                  </Space>
-                }
-                description={
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    {new Date(note.createdAt).toLocaleString('zh-CN')}
-                  </Typography.Text>
-                }
-              />
-              <Typography.Paragraph
-                onClick={() => void openDetail(note)}
-                style={{ margin: 0, cursor: 'pointer', whiteSpace: 'pre-wrap' }}
-                ellipsis={{ rows: 2, expandable: false }}
-                type="secondary"
-              >
-                {note.content || '（无正文）'}
-              </Typography.Paragraph>
-            </List.Item>
-          )}
+                  <Button type="link" size="small" icon={<EditOutlined />} onClick={() => setEditing(note)}>
+                    编辑
+                  </Button>
+                  <Popconfirm
+                    title="删除这条版本记录？"
+                    description="其下留言会一并删除"
+                    okText="删除"
+                    okButtonProps={{ danger: true }}
+                    onConfirm={() => void removeNote(note)}
+                  >
+                    <Button type="link" size="small" danger icon={<DeleteOutlined />}>
+                      删除
+                    </Button>
+                  </Popconfirm>
+                </Space>
+              )
+            }
+          ]}
         />
       )}
     </Spin>
@@ -553,9 +715,9 @@ export function ChangelogPage() {
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               {new Date(detail.createdAt).toLocaleString('zh-CN')}
             </Typography.Text>
-            <Typography.Paragraph style={{ marginTop: 16, whiteSpace: 'pre-wrap' }}>
-              {detail.content || '（无正文）'}
-            </Typography.Paragraph>
+            <div style={{ marginTop: 16 }}>
+              {detail.content ? <ReleaseContent content={detail.content} /> : '（无正文）'}
+            </div>
 
             <Typography.Title level={5} style={{ marginTop: 24 }}>
               留言（{comments.length}）
@@ -640,6 +802,20 @@ function ReleaseEditor({
   const { message } = AntdApp.useApp();
   const [form] = Form.useForm<ReleaseFormValues>();
   const [saving, setSaving] = useState(false);
+  const [uploadingCount, setUploadingCount] = useState(0);
+
+  /** 图片经 API 服务端直写 COS/本地，返回可访问 URL。 */
+  async function uploadImage(file: File): Promise<string> {
+    setUploadingCount((count) => count + 1);
+    try {
+      const data = new FormData();
+      data.append('file', file);
+      const result = await api<{ url: string }>('/release-images', { method: 'POST', body: data });
+      return result.url;
+    } finally {
+      setUploadingCount((count) => count - 1);
+    }
+  }
 
   // 每次打开都按目标记录重写表单：form store 会保留上一次填的值，
   // 而 initialValues 只在首次挂载时生效 —— 不重置的话「新增」弹窗里会出现上一条的草稿。
@@ -718,13 +894,24 @@ function ReleaseEditor({
         >
           <Input placeholder="一句话概括本次改动" maxLength={120} />
         </Form.Item>
-        <Form.Item name="content" label="改动内容" rules={[{ max: 10000 }]}>
-          <Input.TextArea rows={6} placeholder="逐条写下本次改了什么，可换行" maxLength={10000} />
+        <Form.Item
+          name="content"
+          label="改动内容"
+          rules={[{ max: 10000, message: '最多 10000 字' }]}
+          extra="图片会以附件形式存入 COS，正文里记录其链接，详情里可预览"
+        >
+          <ContentInput
+            rows={6}
+            maxLength={10000}
+            placeholder="逐条写下本次改了什么，可换行"
+            uploading={uploadingCount > 0}
+            onUploadImage={uploadImage}
+          />
         </Form.Item>
         <Form.Item style={{ marginBottom: 0 }}>
           <Space style={{ display: 'flex', justifyContent: 'flex-end' }}>
             <Button onClick={onClose}>取消</Button>
-            <Button type="primary" htmlType="submit" loading={saving}>
+            <Button type="primary" htmlType="submit" loading={saving} disabled={uploadingCount > 0}>
               保存
             </Button>
           </Space>

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   Body,
   Controller,
@@ -23,6 +24,7 @@ import {
 import { AdminGuard, type AdminAuth } from '../admin/admin.guard.js';
 import { ApiError } from '../common/api-error.js';
 import { parseBody } from '../common/zod.js';
+import { CosService } from '../assets/cos.service.js';
 import { ChangelogDocsService } from './changelog-docs.service.js';
 import { ReleasesService } from './releases.service.js';
 
@@ -105,6 +107,11 @@ export class ChangelogDocsController {
 export class PlansController {
   constructor(private readonly releases: ReleasesService) {}
 
+  @Get()
+  list() {
+    return this.releases.listPlans();
+  }
+
   @Post()
   create(@Req() request: FastifyRequest & { adminAuth?: AdminAuth }, @Body() body: unknown) {
     return this.releases.createPlan(currentAdmin(request).adminId, parseBody(createPlanItemSchema, body));
@@ -118,5 +125,39 @@ export class PlansController {
   @Delete(':id')
   remove(@Param('id') id: string) {
     return this.releases.deletePlan(id);
+  }
+}
+
+/** 版本记录正文插图：≤10MB，格式按 MIME 白名单映射扩展名。 */
+const RELEASE_IMAGE_EXT: Record<string, string> = {
+  'image/jpeg': '.jpg',
+  'image/png': '.png',
+  'image/webp': '.webp',
+  'image/gif': '.gif'
+};
+const RELEASE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+
+/** 管理端：版本记录正文的插图上传，服务端直写 COS/本地后返回可访问 URL。 */
+@Controller('admin/release-images')
+@UseGuards(AdminGuard)
+export class ReleaseImagesController {
+  constructor(private readonly cos: CosService) {}
+
+  @Post()
+  async upload(@Req() request: FastifyRequest & { adminAuth?: AdminAuth }) {
+    const file = await request.file();
+    if (!file) throw new ApiError('UPLOAD_INVALID', '没有收到图片', HttpStatus.BAD_REQUEST);
+    const ext = RELEASE_IMAGE_EXT[file.mimetype];
+    if (!ext) throw new ApiError('UPLOAD_INVALID', '仅支持 jpg/png/webp/gif 图片', HttpStatus.BAD_REQUEST);
+    const body = await file.toBuffer();
+    if (body.length > RELEASE_IMAGE_MAX_BYTES) {
+      throw new ApiError('UPLOAD_INVALID', '图片不能超过 10MB', HttpStatus.BAD_REQUEST);
+    }
+    const now = new Date();
+    const key = `release-notes/${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}/${randomUUID()}/v1${ext}`;
+    await this.cos.putObject(key, body, file.mimetype);
+    /* public 模式（生产）返回 CDN 永久直链，正文里存的 URL 长期有效；
+       代理模式下 signedUrl 是带 token 的链接，这里给 30 天有效期，够后台自查用 */
+    return { url: await this.cos.signedUrl(key, 30 * 24 * 3600) };
   }
 }
