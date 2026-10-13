@@ -16,8 +16,30 @@ permissions:
   contents: read
 
 jobs:
+  deployment-delta-inputs:
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/codex/deploy-delta-scheduler') || (github.event_name == 'pull_request' && github.head_ref == 'codex/deploy-delta-scheduler')
+    runs-on: ubuntu-latest
+    outputs:
+      replay: ${{ steps.inputs.outputs.replay }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - id: inputs
+        env:
+          BASE: ${{ github.event.before || github.event.pull_request.base.sha }}
+        run: |
+          replay=true
+          if [ -n "$BASE" ] && [ "$BASE" != 0000000000000000000000000000000000000000 ]; then
+            git cat-file -e "$BASE" || git fetch --depth=1 origin "$BASE"
+            if git diff --quiet "$BASE" HEAD -- infra/Dockerfile infra/prune-runtime-deps.mjs infra/normalize-production-manifest.mjs infra/split-prisma-client.mjs scripts/test-deployment-delta.sh scripts/assert-deployment-delta.py scripts/image-delta-report.py pnpm-lock.yaml package.json pnpm-workspace.yaml apps/api apps/worker packages; then
+              replay=false
+            fi
+          fi
+          echo "replay=$replay" >> "$GITHUB_OUTPUT"
   deployment-delta-acceptance:
-    if: github.ref == 'refs/heads/codex/deploy-delta-scheduler' || github.head_ref == 'codex/deploy-delta-scheduler'
+    needs: deployment-delta-inputs
+    if: needs.deployment-delta-inputs.outputs.replay == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
@@ -77,6 +99,7 @@ jobs:
           python3 scripts/test-release-retention.py
           python3 scripts/test-transfer-queue.py
           node scripts/test-production-layers.mjs
+          bash scripts/test-deploy-rollback.sh
       - name: Test interrupted release transfer and checkpoint integrity
         run: bash scripts/test-release-transfer.sh
       - name: Verify image identity across Docker storage backends
@@ -237,3 +260,11 @@ jobs:
           compression-level: 0
           retention-days: 7
           overwrite: true
+      - name: Save incremental image regression reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-delta-regressions-${{ github.sha }}
+          path: .runtime/deploy-diagnostics/
+          if-no-files-found: ignore
+          retention-days: 14

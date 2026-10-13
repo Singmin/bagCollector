@@ -57,6 +57,15 @@ class QueueTests(unittest.TestCase):
             self.assertEqual(q.snapshot(queue)['transport_completed_bytes'],0)
             self.assertEqual(q.snapshot(queue)['workers']['1']['failures'],1)
 
+    def test_small_release_still_uses_four_streams(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);objects=root/'objects';objects.mkdir();names=[]
+            for i in range(14):
+                name=f'{i:064x}.gz';names.append(name);(objects/name).write_bytes(b'x'*100)
+            missing=root/'missing';missing.write_text('\n'.join(names))
+            data=q.plan(missing,objects,root/'queue')
+            self.assertGreaterEqual(len(data['batches']),4)
+
     def test_rejects_duplicate_and_escaping_names(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);missing=root/'missing'

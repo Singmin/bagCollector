@@ -41,15 +41,20 @@ def plan(missing, objects, root):
             raise ValueError('invalid local object')
         entries.append((name, path.stat().st_size))
     batches = []
+    # A small release should still expose work to four streams rather than
+    # becoming one 16-file batch. Larger releases retain the 4 MiB/16-file caps.
+    byte_limit = min(4 * 1024 * 1024, max(1, (sum(n for _, n in entries) + 3) // 4))
+    file_limit = min(16, max(1, (len(entries) + 3) // 4))
     files, size = [], 0
     for name, length in sorted(entries, key=lambda x: (-x[1], x[0])):
-        if files and (len(files) >= 16 or size + length > 4 * 1024 * 1024):
+        if files and (len(files) >= file_limit or size + length > byte_limit):
             batches.append({'files': files, 'bytes': size}); files, size = [], 0
         files.append(name); size += length
     if files:
         batches.append({'files': files, 'bytes': size})
     root.mkdir(parents=True, exist_ok=True)
-    data = {'batches': batches, 'bytes': sum(n for _, n in entries), 'objects': len(entries)}
+    data = {'batches': batches, 'bytes': sum(n for _, n in entries), 'objects': len(entries),
+            'batch_byte_limit': byte_limit, 'batch_file_limit': file_limit}
     (root / 'plan.json').write_text(json.dumps(data))
     (root / 'state.json').write_text(json.dumps({'next': 0, 'events': []}))
     return data
