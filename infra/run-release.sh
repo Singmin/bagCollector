@@ -3,6 +3,10 @@
 set -euo pipefail
 mode=${1:?prepare or apply}
 [[ "$mode" = prepare || "$mode" = apply ]]
+started=$SECONDS
+diagnostics=${DEPLOY_DIAGNOSTICS_DIR:-.runtime/deploy-diagnostics}
+mkdir -p "$diagnostics"
+trap 'result=$?; printf "{\"mode\":\"%s\",\"seconds\":%s,\"exit_code\":%s}\n" "$mode" "$((SECONDS - started))" "$result" > "$diagnostics/$mode-summary.json"' EXIT
 [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ && "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" =~ ^[0-9]+-[0-9]+$ ]]
 [[ "$DEPLOY_PATH" =~ ^/[a-zA-Z0-9_./-]+$ && "$DEPLOY_PATH" != / ]]
 [[ "/${DEPLOY_PATH#/}/" != *'/../'* && "/${DEPLOY_PATH#/}/" != *'/./'* ]]

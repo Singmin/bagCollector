@@ -55,6 +55,8 @@ RUN pnpm db:generate && pnpm build:backend
 # ---------------------------------------------------------------------------
 FROM base AS prod-deps
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY infra/normalize-production-manifest.mjs /tmp/normalize-production-manifest.mjs
+RUN node /tmp/normalize-production-manifest.mjs
 COPY apps/api/package.json apps/api/package.json
 COPY apps/worker/package.json apps/worker/package.json
 COPY packages/bag-vision/package.json packages/bag-vision/package.json
@@ -70,6 +72,8 @@ RUN pnpm --filter @bagcollect/api exec prisma generate --schema prisma/schema.pr
 COPY infra/prune-runtime-deps.mjs /tmp/prune-runtime-deps.mjs
 # Prune before COPY into the final image, so removed bytes never become a layer.
 RUN node /tmp/prune-runtime-deps.mjs
+COPY infra/split-prisma-client.mjs /tmp/split-prisma-client.mjs
+RUN node /tmp/split-prisma-client.mjs
 
 # ---------------------------------------------------------------------------
 # 运行时镜像：一个 target 承载 api 与 worker 两个角色，由 compose 的 command 区分。
@@ -96,6 +100,9 @@ COPY --from=base /usr/local/LICENSE /usr/local/share/licenses/node/LICENSE
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=prod-deps /app/node_modules ./node_modules
+# Schema-specific generated code is a small overlay. Native engines remain in
+# the stable dependency layer above, so a schema edit does not resend them.
+COPY --from=prod-deps /app/generated-client/node_modules ./node_modules
 COPY --from=build /app/package.json /app/pnpm-workspace.yaml ./
 COPY --from=build /app/packages/contracts ./packages/contracts
 # 视觉特征包：api（算查询向量）与 worker（产出官方向量）运行时都要它的 dist，

@@ -5,7 +5,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [codex/incremental-deploy]
+    branches: [codex/incremental-deploy, codex/deploy-delta-scheduler]
   workflow_call:
     inputs:
       force_cold_build:
@@ -16,6 +16,57 @@ permissions:
   contents: read
 
 jobs:
+  deployment-delta-acceptance:
+    if: github.ref == 'refs/heads/codex/deploy-delta-scheduler' || github.head_ref == 'codex/deploy-delta-scheduler'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: read
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: bagcollect_test
+          POSTGRES_USER: bagcollect
+          POSTGRES_PASSWORD: bagcollect
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U bagcollect -d bagcollect_test"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+      redis:
+        image: redis:7.4-alpine
+        ports: ['6379:6379']
+    env:
+      DATABASE_URL: postgresql://bagcollect:bagcollect@localhost:5432/bagcollect_test
+      REDIS_URL: redis://localhost:6379
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: docker/setup-buildx-action@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: verified-images-b70eb2a8cefc3197007d2993a63251900f4ef553
+          run-id: 38248574623
+          github-token: ${{ github.token }}
+          path: .runtime/baseline/before
+      - uses: actions/download-artifact@v4
+        with:
+          name: verified-images-83638ff4a76301d4d0fab3ece473a8b6d73c2508
+          run-id: 38386881617
+          github-token: ${{ github.token }}
+          path: .runtime/baseline/after
+      - name: Replay real release delta and verify schema, scripts and cold builds
+        run: bash scripts/test-deployment-delta.sh
+      - name: Save layer and incremental transfer acceptance reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-delta-acceptance-${{ github.sha }}
+          path: .runtime/deploy-diagnostics/
+          if-no-files-found: ignore
+          retention-days: 14
   image-store-compat:
     runs-on: ubuntu-latest
     steps:
@@ -24,6 +75,8 @@ jobs:
         run: |
           python3 scripts/test-image-bundle.py
           python3 scripts/test-release-retention.py
+          python3 scripts/test-transfer-queue.py
+          node scripts/test-production-layers.mjs
       - name: Test interrupted release transfer and checkpoint integrity
         run: bash scripts/test-release-transfer.sh
       - name: Verify image identity across Docker storage backends
@@ -140,7 +193,7 @@ jobs:
           bash infra/export-images.sh production-images "bagcollect-api:$GITHUB_SHA" "bagcollect-admin:$GITHUB_SHA"
           bash infra/export-images.sh vision-images "bagcollect-vision:$GITHUB_SHA"
       - name: Verify ordinary API and Admin changes reuse large layers
-        if: github.event_name == 'pull_request' || github.ref == 'refs/heads/codex/incremental-deploy'
+        if: github.event_name == 'pull_request' || github.ref == 'refs/heads/codex/incremental-deploy' || github.ref == 'refs/heads/codex/deploy-delta-scheduler'
         run: bash scripts/test-business-image-delta.sh
       - name: Verify image archive import
         run: |

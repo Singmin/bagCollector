@@ -154,3 +154,12 @@ jobs:
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
         run: bash infra/run-release.sh apply
+
+      - name: Save deployment timing and transfer diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .runtime/deploy-diagnostics/
+          if-no-files-found: ignore
+          retention-days: 14

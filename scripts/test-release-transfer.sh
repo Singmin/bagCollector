@@ -25,6 +25,7 @@ PY
 control="$fixture/bagcollect-control-$GITHUB_SHA.tar"
 tar -cf "$control" -C "$fixture/payload" infra production-images
 receiving="$DEPLOY_PATH/.image-cache/v2/receiving"
+export DEPLOY_DIAGNOSTICS_DIR="$fixture/diagnostics"
 mkdir -p "$receiving"
 first=$(find "$fixture/objects" -name '*.gz' -printf '%f\n' | sort | head -n 1)
 set +e
@@ -62,3 +63,27 @@ bash "$repo/infra/transfer-release.sh" "$control" > "$fixture/repair.log" 2>&1
 python3 "$module" verify --bundle "$bundle" --objects "$cache"
 grep -q '1 个缺失对象' "$fixture/repair.log"
 echo 'PASS: corruption downloads only the damaged object'
+real_rsync=$(command -v rsync)
+printf corrupted > "$cache/$first"
+cat > "$fixture/bin/rsync" <<MOCK
+#!/usr/bin/env bash
+set -eu
+for arg in "\$@"; do
+  if [[ "\$arg" = --files-from=* ]] && mkdir '$fixture/failed-once' 2>/dev/null; then
+    echo 'simulated interrupted batch' >&2
+    exit 23
+  fi
+done
+exec '$real_rsync' "\$@"
+MOCK
+chmod +x "$fixture/bin/rsync"
+export GITHUB_RUN_ID=5
+bash "$repo/infra/transfer-release.sh" "$control" > "$fixture/retry.log" 2>&1
+python3 "$module" verify --bundle "$bundle" --objects "$cache"
+python3 - "$fixture/diagnostics/transfer-summary.json" <<'PY'
+import json,sys
+data=json.load(open(sys.argv[1]))
+assert data['attempts']==2 and data['verified_complete']
+assert any(w['failures'] for w in data['transfers'][0]['workers'].values())
+PY
+echo 'PASS: batch failure propagates, preserves verification checkpoints and retries only missing data'

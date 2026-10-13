@@ -68,5 +68,7 @@ console.log(`Deduplicated ${deduplicatedBytes} native Prisma engine bytes withou
 
 // pnpm's installation bookkeeping contains wall-clock dates and is not used by Node.
 // Keep dependency layers reproducible even when a fresh Runner misses the build cache.
-const installMetadata = path.resolve('node_modules/.modules.yaml');
-if (fs.existsSync(installMetadata)) fs.rmSync(installMetadata);
+for (const file of ['.modules.yaml', '.pnpm-workspace-state-v1.json']) {
+  const installMetadata = path.resolve('node_modules', file);
+  if (fs.existsSync(installMetadata)) fs.rmSync(installMetadata);
+}
