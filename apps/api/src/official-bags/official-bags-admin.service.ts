@@ -57,7 +57,7 @@ export class OfficialBagsAdminService {
       where: { officialBagId: bag.id, status: AssetStatus.AVAILABLE },
       orderBy: { version: 'desc' }
     });
-    const resolved = await imageData(this.prisma, this.cos, bag.id, true);
+    const resolved = await imageData(this.prisma, this.cos, bag.id, true, true);
     const frontState = await this.prisma.officialBagImageSide.findUnique({ where: { officialBagId_side: { officialBagId: bag.id, side: ImageSide.FRONT } } });
     const first = (kind: AssetKind) => images.find((image) => image.side === ImageSide.FRONT && image.kind === kind && image.version === frontState?.publishedVersion);
     const [thumbnail, display] = await Promise.all([

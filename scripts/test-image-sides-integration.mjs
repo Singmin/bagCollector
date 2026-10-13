@@ -13,7 +13,7 @@ import sharp from 'sharp';
 // Deliberately restricted to the disposable test services, never the project's .env.
 const database = process.env.DATABASE_URL ?? 'postgresql://bagcollect:bagcollect_test@127.0.0.1:5433/bagcollect_test';
 const db = new URL(database);
-if (!['127.0.0.1', 'localhost'].includes(db.hostname) || !['5432', '5433'].includes(db.port) || db.pathname !== '/bagcollect_test') throw new Error('Use an isolated localhost bagcollect_test database');
+if (!['127.0.0.1', 'localhost'].includes(db.hostname) || !['5432', '5433', '15432', '15433'].includes(db.port) || db.pathname !== '/bagcollect_test') throw new Error('Use an isolated localhost bagcollect_test database');
 const redisUrl = process.env.IMAGE_SIDES_TEST_REDIS_URL ?? 'redis://127.0.0.1:6380';
 if (!['127.0.0.1', 'localhost'].includes(new URL(redisUrl).hostname)) throw new Error('Use isolated local test Redis');
 const port = 3117;

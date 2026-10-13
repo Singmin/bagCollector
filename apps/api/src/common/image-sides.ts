@@ -13,13 +13,15 @@ export function parseSide(raw?: string): ImageSide {
   if (raw === 'BACK') return ImageSide.BACK;
   throw new ApiError('VALIDATION', '图片面别必须是 FRONT 或 BACK', HttpStatus.BAD_REQUEST);
 }
-export async function imageData(prisma: PrismaService, cos: CosService, id: string, official = false) {
+/** includeEmpty: 保留「已重置」的分面（sourceVersion=0 且无已发布版本，如官方反面被移除后的占位）。
+ *  只有管理端编辑表单需要它读取该面的抠图设置；用户侧详情必须隐藏空面。 */
+export async function imageData(prisma: PrismaService, cos: CosService, id: string, official = false, includeEmpty = false) {
   // Read the publication pointer before fetching assets: a newly observed pointer
   // always has its complete assets already committed.
   const states = official ? await prisma.officialBagImageSide.findMany({ where: { officialBagId: id } }) : await prisma.collectibleImageSide.findMany({ where: { collectibleId: id } });
   const assets = official ? await prisma.officialBagImage.findMany({ where: { officialBagId: id, status: AssetStatus.AVAILABLE } }) : await prisma.imageAsset.findMany({ where: { collectibleId: id, status: AssetStatus.AVAILABLE } });
   const sides: Partial<Record<ImageSide, ImageSideDto>> = {};
-  await Promise.all(states.filter(state => official || state.sourceVersion > 0 || state.publishedVersion !== null).map(async state => {
+  await Promise.all(states.filter(state => includeEmpty || state.sourceVersion > 0 || state.publishedVersion !== null).map(async state => {
     const selected = selectSideAssets<{ side: ImageSide; kind: string; version: number; objectKey: string }>(assets, state);
     const dto: ImageSideDto = {
       side: state.side, sourceVersion: state.sourceVersion, processingVersion: state.processingVersion,
