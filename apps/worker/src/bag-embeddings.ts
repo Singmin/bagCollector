@@ -47,13 +47,14 @@ function pickFeatureSource(images: FeatureSource[]): FeatureSource | null {
 export async function ensureBagEmbedding(officialBagId: string): Promise<boolean> {
   const images = await prisma.officialBagImage.findMany({
     where: {
-      officialBagId,
+      officialBagId, side: 'FRONT',
       status: AssetStatus.AVAILABLE,
       kind: { in: FEATURE_KINDS }
     },
     select: { kind: true, version: true, objectKey: true }
   });
-  const source = pickFeatureSource(images);
+  const bag = await prisma.officialBag.findUnique({ where: { id: officialBagId }, select: { version: true } });
+  const source = pickFeatureSource(images.filter(image => image.version === bag?.version));
   if (!source) return false;
 
   const body = await getObject(source.objectKey);
@@ -92,9 +93,9 @@ export async function findOfficialBagsMissingEmbedding(limit: number): Promise<s
   const bags = await prisma.officialBag.findMany({
     where: { processStatus: OfficialProcessStatus.READY },
     select: {
-      id: true,
+      id: true, version: true,
       images: {
-        where: { status: AssetStatus.AVAILABLE, kind: { in: FEATURE_KINDS } },
+        where: { side: 'FRONT', status: AssetStatus.AVAILABLE, kind: { in: FEATURE_KINDS } },
         select: { kind: true, version: true, objectKey: true }
       },
       embeddings: {
@@ -108,7 +109,7 @@ export async function findOfficialBagsMissingEmbedding(limit: number): Promise<s
   const missing: string[] = [];
   for (const bag of bags) {
     if (missing.length >= limit) break;
-    const source = pickFeatureSource(bag.images);
+    const source = pickFeatureSource(bag.images.filter(image => image.version === bag.version));
     if (!source) continue; // 没有可用的图，谈不上算向量
     const embedding = bag.embeddings[0];
     if (embedding && embedding.sourceKind === source.kind && embedding.sourceVersion === source.version) {

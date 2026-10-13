@@ -3,6 +3,7 @@ import { createCollectibleSchema, cropSchema, matteSchema, updateCollectibleSche
 import { AuthGuard } from '../auth/auth.guard.js';
 import { CurrentUser, type AuthUser } from '../common/current-user.js';
 import { parseBody } from '../common/zod.js';
+import { parseSide } from '../common/image-sides.js';
 import { CollectiblesService } from './collectibles.service.js';
 
 @Controller('collectibles')
@@ -57,6 +58,11 @@ export class CollectiblesController {
   matte(@CurrentUser() user: AuthUser, @Param('id') id: string, @Body() body: unknown) {
     /* body 允许为空对象 / 缺省：抠图默认沿用已保存的裁剪参数 */
     return this.collectibles.matte(user.userId, id, parseBody(matteSchema, body ?? {}));
+  }
+
+  @Delete(':id/images/:side')
+  removeImage(@CurrentUser() user: AuthUser, @Param('id') id: string, @Param('side') side: string) {
+    return this.collectibles.removeImage(user.userId, id, parseSide(side));
   }
 
   @Delete(':id')

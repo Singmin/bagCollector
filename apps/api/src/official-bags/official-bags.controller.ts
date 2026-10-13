@@ -62,6 +62,7 @@ export class OfficialBagsController {
   claim(@CurrentUser() user: AuthUser, @Param('id') id: string, @Body() body: unknown) {
     /* 不带 body 的调用（老版本小程序 / 无覆盖值）也要能过：只在拿到对象时才当覆盖值解析 */
     const overrides = body && typeof body === 'object' ? body : {};
-    return this.officialBags.claim(user.userId, id, parseBody(claimOfficialBagSchema, overrides));
+    const { increment, ...rest } = parseBody(claimOfficialBagSchema, overrides);
+    return this.officialBags.claim(user.userId, id, rest, increment === true);
   }
 }

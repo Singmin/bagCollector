@@ -1,5 +1,6 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { AssetKind, AssetStatus } from '@prisma/client';
+import { AssetStatus } from '@prisma/client';
+import { imageData } from '../common/image-sides.js';
 import { ApiError } from '../common/api-error.js';
 import { PrismaService } from '../database/prisma.service.js';
 import { CosService } from './cos.service.js';
@@ -17,18 +18,12 @@ export class AssetsService {
   }
 
   async urlsByKind(collectibleId: string, userId: string) {
-    const assets = await this.prisma.imageAsset.findMany({
-      where: { collectibleId, userId, status: AssetStatus.AVAILABLE },
-      orderBy: { version: 'desc' }
-    });
-    const first = (kind: AssetKind) => assets.find((asset) => asset.kind === kind);
-    const entries = await Promise.all(
-      [AssetKind.THUMBNAIL, AssetKind.DISPLAY, AssetKind.STANDARD, AssetKind.CUTOUT].map(async (kind) => {
-        const asset = first(kind);
-        return [kind, asset ? await this.cos.signedUrl(asset.objectKey) : undefined] as const;
-      })
-    );
-    return Object.fromEntries(entries) as Partial<Record<AssetKind, string>>;
+    const item = await this.prisma.collectible.findFirst({ where: { id: collectibleId, userId } });
+    if (!item) return {};
+    const data = await imageData(this.prisma, this.cos, item.sourceOfficialBagId ?? collectibleId, !!item.sourceOfficialBagId);
+    const front = data.sides.FRONT;
+    return { THUMBNAIL: front?.thumbnailUrl, DISPLAY: front?.displayImageUrl, STANDARD: front?.standardImageUrl, CUTOUT: front?.cutoutImageUrl };
+
   }
 
   signedUrlForObjectKey(objectKey: string) {

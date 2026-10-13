@@ -97,7 +97,7 @@ worker.on('failed', (job, error) => {
     void markFailed(failOfficialProcess(job.data as OfficialProcessJobData, error));
   } else if (job.name === 'official-claim') {
     void markFailed(failOfficialClaim(job.data as OfficialClaimJobData, error));
-  } else if (job.name === 'normalize' || job.name === 'matting') {
+  } else if (job.name === 'normalize' || job.name === 'matting' || job.name === 'crop') {
     void markFailed(failProcessing(job.data as ProcessingJobData, error));
   }
 });

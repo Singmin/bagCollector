@@ -1,3 +1,4 @@
+import type { ImageSide, ImageSideDto } from '../../../packages/contracts/src/image-sides';
 /* 与后端 Prisma 枚举一一对应：CROPPING = 裁剪任务进行中，MATTING = 抠图任务进行中 */
 export type ProcessingStatus = 'UPLOADING' | 'NORMALIZING' | 'AWAITING_CROP' | 'CROPPING' | 'MATTING' | 'READY' | 'FAILED';
 export type ShelfTheme = 'SAGE' | 'AMBER' | 'SKY' | 'ROSE' | 'GRAPHITE';
@@ -18,6 +19,9 @@ export interface Shelf {
 }
 
 export interface CollectibleSummary {
+  imageRevision?: string;
+  imageEditable?: boolean;
+  sourceOfficialBagId?: string;
   id: string;
   name: string;
   shelfId: string;
@@ -38,6 +42,7 @@ export interface CollectibleSummary {
 }
 
 export interface Collectible extends CollectibleSummary {
+  sides?: Partial<Record<ImageSide, ImageSideDto>>;
   notes: string;
   tags: string[];
   processingError?: string;
@@ -64,10 +69,14 @@ export interface CollectiblePage {
   totalCount: number;
 }
 
-/** 拥有官方袋子（发现页「标记已有」）的结果：记录已建好，图片仍在后台复制。 */
+/** 拥有官方袋子（发现页「标记已有」）的结果：收藏立即引用官方图片。 */
 export interface OfficialClaimResult {
   collectibleId: string;
   processingStatus: ProcessingStatus;
+  /** 叠加后的同款数量：再次认领已拥有袋子时返回（首次认领为 1） */
+  quantity?: number;
+  /** true = 本次为「再次认领」：不新建收藏，只叠加数量 */
+  alreadyOwned?: boolean;
 }
 
 export interface UploadPolicy {
@@ -87,6 +96,8 @@ export interface Brand {
 }
 
 export interface OfficialBag {
+  sides?: Partial<Record<ImageSide, ImageSideDto>>;
+  imageRevision?: string;
   id: string;
   name: string;
   brandId?: string;

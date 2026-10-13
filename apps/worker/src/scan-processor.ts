@@ -42,7 +42,7 @@ function featureSource(images: { kind: string; version: number; objectKey: strin
 /** Only current image/reference versions can participate; stale embeddings never silently affect ranking. */
 async function indexFor(model: string): Promise<{ entries: ScanEntry[]; total: number }> {
   const bags = await scanPrisma.officialBag.findMany({ where: { status: 'PUBLISHED', processStatus: 'READY' },
-    include: { images: { where: { status: 'AVAILABLE', kind: { in: ['CUTOUT', 'DISPLAY'] } } }, references: true, scanEmbeddings: { where: { model } } } });
+    include: { images: { where: { side: 'FRONT', status: 'AVAILABLE', kind: { in: ['CUTOUT', 'DISPLAY'] } } }, references: true, scanEmbeddings: { where: { model } } } });
   const entries: ScanEntry[] = [];
   for (const bag of bags) for (const embedding of bag.scanEmbeddings) {
     const source = embedding.referenceKey === 'primary' ? featureSource(bag.images, bag.version) : bag.references.find(r => r.id === embedding.referenceKey);
@@ -130,7 +130,7 @@ export async function processScan(scanId: string) {
 const backfillRetryAfter = new Map<string, number>();
 export async function reconcileScanEmbeddings(limit = 1, featureLimit = Number.POSITIVE_INFINITY) {
   const bags = await scanPrisma.officialBag.findMany({ where: { processStatus: 'READY' },
-    include: { images: { where: { status: 'AVAILABLE', kind: { in: ['CUTOUT', 'DISPLAY'] } } }, references: true, scanEmbeddings: true }, orderBy: { updatedAt: 'asc' } });
+    include: { images: { where: { side: 'FRONT', status: 'AVAILABLE', kind: { in: ['CUTOUT', 'DISPLAY'] } } }, references: true, scanEmbeddings: true }, orderBy: { updatedAt: 'asc' } });
   let repaired = 0; let attemptedBags = 0; let attemptedFeatures = 0;
   for (const bag of bags) {
     const primary = featureSource(bag.images, bag.version);

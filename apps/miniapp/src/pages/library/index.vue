@@ -8,7 +8,9 @@ import { daysAgoText, formattedDate } from '../../services/format';
 import { resolveCollectibleThumbnail } from '../../services/images';
 import { maskPageChrome } from '../../services/overlay';
 import { syncTabBar, setTabBarHidden } from '../../services/tab-bar';
+import BagTabBar from '../../components/BagTabBar.vue';
 import { createLibraryCardMotion, type CardMotionFrame, type CardRect } from '../../services/library-card-motion';
+import BagImagePreview from '../../components/BagImagePreview.vue';
 import LibraryCardSurface from '../../components/LibraryCardSurface.vue';
 import { validSurfaceBounds, type LibraryCardSurfaceHandle } from '../../services/library-card-surface';
 
@@ -193,7 +195,7 @@ const FIRST_SCREEN_ITEMS = 12;
 
 function settleThumbnail(item: CollectibleSummary) {
   return resolveCollectibleThumbnail(item).then((url) => {
-    if (!url || !items.value.some((current) => current.id === item.id && current.updatedAt === item.updatedAt)) return;
+    if (!url || !items.value.some((current) => current.id === item.id && (current.imageRevision ?? current.updatedAt) === (item.imageRevision ?? item.updatedAt))) return;
     thumbnailUrls.value[item.id] = url;
     delete failedThumbnails.value[item.id];
     loadImageAspect(item.id, url);
@@ -595,7 +597,13 @@ function collectibleNo(item: CollectibleSummary) {
    打开卡片的「先画后用详情补」和点「编辑」前的「必须拿到才能进表单」都走这里，
    两处只有「拿不到怎么办」不同，取数逻辑别再写第二遍。 */
 function applyLoadedDetail(detail: Collectible) {
+  const officialChanged = !!detail.sourceOfficialBagId && detailItem.value?.imageRevision !== detail.imageRevision;
   detailData.value = detail;
+  if (officialChanged) {
+    detailArtwork.value = detail.displayImageUrl || detail.thumbnailUrl || '';
+    items.value = items.value.map(item => item.id === detail.id ? { ...item, imageRevision: detail.imageRevision, thumbnailUrl: detail.thumbnailUrl } : item);
+    if (detail.thumbnailUrl) void settleThumbnail(detail);
+  }
   // Keep the already displayed source image. The full-resolution URL belongs
   // to the explicit large-image preview, not an automatic post-flip swap.
   if (!detailArtwork.value) detailArtwork.value = detail.displayImageUrl || detail.thumbnailUrl || '';
@@ -604,9 +612,9 @@ function applyLoadedDetail(detail: Collectible) {
 }
 
 async function loadDetail(item: CollectibleSummary) {
-  const cacheKey = `${item.id}:${item.updatedAt}`;
+  const cacheKey = `${item.id}:${item.imageRevision ?? ''}:${item.updatedAt}`;
   const cached = detailCache.get(cacheKey);
-  if (cached) return cached;
+  if (cached && !item.sourceOfficialBagId) return cached;
   const token = ++detailToken;
   try {
     const detail = await dataService.collectible(item.id);
@@ -727,7 +735,7 @@ function open(item: CollectibleSummary, sourceId: string) {
   if (motionToken === null) return;
   detailOpeningToken = motionToken;
   detailSurfaceBounds.value = null;
-  const cached = detailCache.get(`${item.id}:${item.updatedAt}`);
+  const cached = detailCache.get(`${item.id}:${item.imageRevision ?? ''}:${item.updatedAt}`);
   detailItem.value = item;
   detailData.value = cached ?? null;
   /* 详情卡复用点击入口已经展示的图，翻转结束后不切换 src；
@@ -743,7 +751,7 @@ function open(item: CollectibleSummary, sourceId: string) {
   measureDetailScroll();
   /* 底栏与原生导航栏在页面之外，遮罩盖不到，交给 maskPageChrome 一起蒙上 */
   maskPageChrome(true);
-  if (!cached) void loadDetail(item);
+  if (!cached || item.sourceOfficialBagId) void loadDetail(item);
   // Measure the untransformed shell, not the rotating face. The hidden source
   // still occupies its original slot and can be measured after nextTick.
   const startMotion = (source: CardRect | null, destination: CardRect | null) => {
@@ -889,7 +897,7 @@ async function confirmRemove(item: CollectibleSummary) {
     return;
   }
   if (detailItem.value?.id === item.id) closeDetail();
-  detailCache.delete(`${item.id}:${item.updatedAt}`);
+  detailCache.delete(`${item.id}:${item.imageRevision ?? ''}:${item.updatedAt}`);
   items.value = items.value.filter((current) => current.id !== item.id);
   shelves.value = shelves.value.map((shelf) => (shelf.id === item.shelfId && shelf.itemCount > 0
     ? { ...shelf, itemCount: shelf.itemCount - 1 }
@@ -980,7 +988,7 @@ function applyUpdated(updated: Collectible) {
   const previous = detailItem.value;
   if (previous) {
     /* 旧缓存键跟着 updatedAt 走，改完就失效了，顺手清掉别留在 Map 里 */
-    detailCache.delete(`${previous.id}:${previous.updatedAt}`);
+    detailCache.delete(`${previous.id}:${previous.imageRevision ?? ''}:${previous.updatedAt}`);
     detailItem.value = {
       ...previous,
       name: updated.name,
@@ -1001,7 +1009,7 @@ function applyUpdated(updated: Collectible) {
       });
     }
   }
-  detailCache.set(`${updated.id}:${updated.updatedAt}`, updated);
+  detailCache.set(`${updated.id}:${updated.imageRevision ?? ''}:${updated.updatedAt}`, updated);
   detailData.value = updated;
   bumpTagCounts(updated.tags);
   /* 列表里的摘要也要跟着改：宫格 / 展架两套视图、还有分组都读它。
@@ -1051,6 +1059,11 @@ function blockScroll() {}
    它存在的唯一意义就是把「穿透下来的点击」接住，别让它落到收藏卡上。 */
 function swallowTabBarTap() {}
 
+function editImages() {
+  const id = detailItem.value?.id;
+  if (!id || detailData.value?.imageEditable === false) return;
+  uni.navigateTo({ url: `/package-editor/pages/metadata/index?id=${id}&edit=1` });
+}
 function add() {
   uni.navigateTo({ url: '/package-editor/pages/add/index' });
 }
@@ -1172,11 +1185,9 @@ function clearSearch() {
 }
 
 onShow(() => {
-  syncTabBar(1);
-  /* ⚠ 这里刻意不复位底栏的隐藏态：它由 open / startEdit 与 closeDetail 成对维护
-     （详情卡与编辑半窗都会让底栏整条收起，关闭时还原）。输入框聚焦弹键盘时
-     页面也可能走一次 onShow，在这清掉隐藏态就等于「半窗里点一下输入框，底栏又冒出来」。
-     页面被切走的情况由 onHide -> closeDetail() 兜住。 */
+  // Recompute visibility from this page's overlays so another page cannot leave
+  // the bar hidden. Preserve hiding when a sheet's input regains focus.
+  syncTabBar(1, !!detailItem.value || editing.value || settingsShow.value || markShow.value);
   if (!initialized.value || shouldRefreshCollection(loadedAt, loadedRevision)) void load();
 });
 /* 页面被切走（跳编辑页、切 tab）时收起浮层，回来不会还压着一层 */
@@ -1215,6 +1226,7 @@ function onScrollToLower() {
 
 <template>
   <view class="library-page">
+    <BagTabBar />
     <!-- 头部：大标题在上、副文案在下（2026-09-26 起：切换钮移到搜索栏右侧；
          自定义导航，标题区顶部与右上角胶囊按钮顶部对齐，整体上移）。
          ⚠ 这里不做骨架屏（首页也没有）：标题是静态文案，拿白色占位块顶一下的话，
@@ -1580,15 +1592,7 @@ function onScrollToLower() {
 
     <!-- 大图预览浮层：深色蒙层 + 居中展示（比系统全屏小一档）。
          点蒙层或图片即关闭；袋子图带透明通道，居中一张即可。 -->
-    <view v-if="previewShow" class="preview-layer" @tap="previewShow = false">
-      <image
-        v-if="detailArtwork"
-        class="preview-image"
-        :src="detailData?.displayImageUrl ?? detailArtwork"
-        mode="aspectFit"
-        @tap.stop="previewShow = false"
-      />
-    </view>
+    <BagImagePreview :show="previewShow" :sides="detailData?.sides" :fallback="detailData?.displayImageUrl ?? detailArtwork" @close="previewShow = false" />
 
     <!-- 设置半窗（自首页迁入）：蒙层 + 上滑进入/下滑收起（fixed 定位，放在滚动区外） -->
     <settings-sheet :show="settingsShow" @close="closeSettings" />
@@ -1604,6 +1608,7 @@ function onScrollToLower() {
       <view class="edit-sheet">
         <view class="sheet-handle" />
         <scroll-view class="edit-scroll" scroll-y enhanced :show-scrollbar="false">
+          <button v-if="detailData?.imageEditable !== false && !isWishDetail" class="detail-edit" @tap="editImages">编辑图片</button>
           <!-- 图区沿用编辑态收小的那档（168→128px），与原表单一致 -->
           <view class="detail-artwork detail-artwork--editing" @tap="previewDetailArtwork">
             <image v-if="detailArtwork" :src="detailArtwork" mode="aspectFit" />
@@ -1783,11 +1788,7 @@ function onScrollToLower() {
       </view>
     </view>
 
-    <!-- 底栏「护垫」：底栏压着的那一带是框架层，正常情况它自己会吞掉点击，
-         但实测仍会穿透 —— 点底栏会把底下那一排收藏一起点到，把详情卡弹出来
-         （用户 2026-09-24 报过两次）。这里在页面这侧再铺一层透明块把穿透的点击接住：
-         这一带本来就被底栏挡着，不该点得到。高度跟 custom-tab-bar 的 .tab-shell 一致（140rpx），
-         两处要一起改。 -->
+    <!-- 底栏安全区的点击护垫，保留原有拦截行为。 -->
     <view class="tab-shield" @tap.stop="swallowTabBarTap" />
   </view>
 </template>

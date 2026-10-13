@@ -193,6 +193,7 @@ try {
       version: 1
     }
   });
+  await prisma.collectibleImageSide.create({ data: { collectibleId: concurrent.id, side: 'FRONT', sourceVersion: 1, processingVersion: 1 } });
   let queuedJobs = 0;
   const uploads = new UploadsService(
     prisma,

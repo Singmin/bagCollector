@@ -1,4 +1,4 @@
-import { AssetKind, AssetStatus, Prisma, type PrismaClient } from '@prisma/client';
+import { AssetKind, AssetStatus, ImageSide, Prisma, type PrismaClient } from '@prisma/client';
 
 export interface AssetRecordInput {
   userId: string;
@@ -10,6 +10,8 @@ export interface AssetRecordInput {
   width: number;
   height: number;
   version: number;
+  side?: ImageSide;
+  sourceVersion?: number;
 }
 
 function isRetryableTransactionError(error: unknown) {
@@ -24,16 +26,27 @@ function isRetryableTransactionError(error: unknown) {
 
 export async function upsertAssetRecord(prisma: PrismaClient, input: AssetRecordInput) {
   const newByteSize = BigInt(input.byteSize);
-  for (let attempt = 0; attempt < 4; attempt += 1) {
+  /* Serializable 事务在等锁醒来时会抛 40001（could not serialize access due to
+     concurrent update）——同收藏并行写资产时几乎必现。冲突是暂时性的，靠更多次数
+     + 指数退避 + 抖动兜底（外部并发如 API 同步写同一收藏也走这里重试）。 */
+  const MAX_ATTEMPTS = 6;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
     try {
       await prisma.$transaction(
         async (transaction) => {
+          if (input.sourceVersion !== undefined) {
+            await transaction.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${input.userId} FOR UPDATE`;
+            await transaction.$queryRaw`SELECT "id" FROM "Collectible" WHERE "id" = ${input.collectibleId} FOR UPDATE`;
+            const state = await transaction.collectibleImageSide.findUnique({ where: { collectibleId_side: { collectibleId: input.collectibleId, side: input.side ?? ImageSide.FRONT } } });
+            if (!state || state.sourceVersion !== input.sourceVersion || state.processingVersion !== input.version) throw new Error('STALE_IMAGE_JOB');
+          }
           const existing = await transaction.imageAsset.findUnique({ where: { objectKey: input.key } });
           if (
             existing &&
             (existing.userId !== input.userId ||
               existing.collectibleId !== input.collectibleId ||
               existing.kind !== input.kind ||
+              (existing.side ?? ImageSide.FRONT) !== (input.side ?? ImageSide.FRONT) ||
               existing.version !== input.version)
           ) {
             throw new Error('图片对象键与现有资产冲突');
@@ -62,6 +75,7 @@ export async function upsertAssetRecord(prisma: PrismaClient, input: AssetRecord
               userId: input.userId,
               collectibleId: input.collectibleId,
               kind: input.kind,
+              side: input.side ?? ImageSide.FRONT,
               status: AssetStatus.AVAILABLE,
               objectKey: input.key,
               contentType: input.contentType,
@@ -89,8 +103,8 @@ export async function upsertAssetRecord(prisma: PrismaClient, input: AssetRecord
       );
       return;
     } catch (error) {
-      if (!isRetryableTransactionError(error) || attempt === 3) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 10 * (attempt + 1)));
+      if (!isRetryableTransactionError(error) || attempt === MAX_ATTEMPTS - 1) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 25 * 2 ** attempt + Math.random() * 50));
     }
   }
 }

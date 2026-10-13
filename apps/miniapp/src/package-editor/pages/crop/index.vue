@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { computed, getCurrentInstance, nextTick, reactive, ref } from 'vue';
+import { computed, getCurrentInstance, nextTick, reactive, ref, watch } from 'vue';
 import { onLoad, onReady, onUnload } from '@dcloudio/uni-app';
+import type { Collectible } from '../../../types';
+import { SIDES, getSide, sideLabel, readEditor, writeEditor, clearEditor, type ImageSide, type ImageCrop, type ImageOperation } from '../../../services/image-editor';
 import { dataService } from '../../../services/data';
 
 type Rotation = 0 | 90 | 180 | 270;
@@ -11,7 +13,8 @@ const DISPLAY_RATIO = 3 / 4;
 type RatioKey = 'r34' | 'r23' | 'free';
 const RATIOS: Record<RatioKey, number | null> = { r34: DISPLAY_RATIO, r23: 2 / 3, free: null };
 const ratioKey = ref<RatioKey>('r34');
-function selectRatio(key: RatioKey) { ratioKey.value = key; }
+const savedFrameRatio = ref<number | null>(null);
+function selectRatio(key: RatioKey) { savedFrameRatio.value = null; ratioKey.value = key; }
 /* P1：90° 粗旋转 + 微调角度滑杆（±20°，0.5° 步进），两者相加为最终角度 */
 const fineAngle = ref(0);
 const totalAngle = computed(() => rotation.value + fineAngle.value);
@@ -26,6 +29,24 @@ function onColor(key: 'brightness' | 'contrast' | 'saturation', event: any) {
 }
 const id = ref(''); const loading = ref(true); const zoomValue = ref(1); const rotation = ref<Rotation>(0); const submitting = ref(false);
 const scanOnly = ref(false);
+const currentSide = ref<ImageSide>('FRONT');
+const collection = ref<Collectible | null>(null);
+type CropSnapshot = { frameRatio?: number | null; ratio: RatioKey; zoom: number; rotation: Rotation; angle: number; brightness: number; contrast: number; saturation: number; matte: boolean; offsetX: number; offsetY: number; dirty: boolean; sourceVersion: number };
+const drafts = reactive<Partial<Record<ImageSide, CropSnapshot>>>({});
+let restoring = true;
+let preparedSide: ImageSide | null = null;
+function capture(): CropSnapshot { return { frameRatio: savedFrameRatio.value, ratio: ratioKey.value, zoom: zoomValue.value, rotation: rotation.value, angle: fineAngle.value,
+  brightness: brightness.value, contrast: contrast.value, saturation: saturation.value, matte: matteAlong.value,
+  offsetX: state.offsetX, offsetY: state.offsetY, dirty: drafts[currentSide.value]?.dirty ?? false,
+  sourceVersion: getSide(collection.value, currentSide.value)?.sourceVersion ?? 0 }; }
+function markDirty() { if (!restoring && !scanOnly.value) drafts[currentSide.value] = { ...capture(), dirty: true }; }
+
+async function switchSide(side: ImageSide) {
+  if (side === currentSide.value || submitting.value || loading.value || !getSide(collection.value, side)?.standardImageUrl) return;
+  payloads[currentSide.value] = payloadForCurrent(); drafts[currentSide.value] = capture(); currentSide.value = side; preparedSide = null;
+  loading.value = true; loadError.value = ''; restoring = true;
+  await prepare();
+}
 /* 加载阶段文案（真机排查用：显示当前走到哪一步） */
 const loadingStage = ref('');
 /* 该图是否已抠过图：已抠图时「同时抠图」开关失效（/matte 会 409），本次提交改走 /crop，
@@ -50,9 +71,10 @@ function clearLoadWatch() {
 function finishLoad(width: number, height: number) {
   Object.assign(state, { imageWidth: width, imageHeight: height });
   loadingStage.value = ''; loading.value = false;
+  restoreDraft();
 }
 function failLoad(message: string) {
-  loadError.value = message; loadingStage.value = '';
+  loadError.value = message; loadingStage.value = ''; loading.value = false;
 }
 function startLoadWatch(src: string, delayMs = 2500) {
   clearLoadWatch();
@@ -83,9 +105,10 @@ const state = reactive({
   offsetX: 0, offsetY: 0, lastX: 0, lastY: 0
 });
 
+watch([savedFrameRatio, ratioKey, zoomValue, rotation, fineAngle, brightness, contrast, saturation, matteAlong, () => state.offsetX, () => state.offsetY], markDirty, { flush: 'sync' });
 /* 取景框：舞台内「满足展示比例的最大矩形」，居中 */
 function frameRect() {
-  const ratio = RATIOS[ratioKey.value];
+  const ratio = savedFrameRatio.value ?? RATIOS[ratioKey.value];
   /* 原图：不锁比例，取景框铺满舞台（沿用旧行为） */
   if (ratio === null) return { x: 24, y: 46, width: state.stageWidth - 48, height: state.stageHeight - 92 };
   const padX = 24; const padY = 24;
@@ -186,18 +209,21 @@ function getImageInfo(src: string) {
 async function prepare() {
   try {
     loadingStage.value = '获取图片地址';
-    const item = await dataService.collectible(id.value); if (!item.standardImageUrl) throw new Error('标准图尚未生成');
-    matted.value = !!item.cutoutImageUrl;
-    /* src 立即挂上 <image>：与「完善信息」页同 URL 命中同一缓存，@load 秒回即进可编辑态；
-       不用 getImageInfo 当主路径 —— 它与 <image> 不共享缓存，网络图要完整重下（真机实测卡 10s+）。
-       @load 不触发时由 startLoadWatch 兜底（2.5s → 8.5s 两刀 getImageInfo） */
-    state.src = item.standardImageUrl;
-    startLoadWatch(item.standardImageUrl);
+    restoring = true;
+    const item = await dataService.collectible(id.value); collection.value = item;
+    if (!scanOnly.value && item.imageEditable === false) throw new Error('官方袋子图片由管理员维护');
+    const image = getSide(item, currentSide.value);
+    if (!image?.standardImageUrl) throw new Error('这一面的标准图尚未生成');
+    matted.value = !!image.matted;
+    state.imageWidth = 0; state.imageHeight = 0;
+    state.src = image.standardImageUrl;
+    startLoadWatch(image.standardImageUrl);
     loadingStage.value = '初始化画布';
     await nextTick();
     const stage = await readStageSize();
     Object.assign(state, { stageWidth: stage.width, stageHeight: stage.height });
-  } catch (error) { clearLoadWatch(); loadError.value = error instanceof Error ? error.message : '图片加载失败'; loadingStage.value = ''; }
+    restoreDraft();
+  } catch (error) { clearLoadWatch(); loadError.value = error instanceof Error ? error.message : '图片加载失败'; loadingStage.value = ''; loading.value = false; }
 }
 
 /* 出错后一键重试：清干净加载态重新走一遍 prepare */
@@ -255,9 +281,51 @@ function touchEnd(event: any) {
 
 function zoom(event: any) { zoomValue.value = Number(event.detail.value); clampOffsets(); }
 function rotate() { rotation.value = ((rotation.value + 90) % 360) as Rotation; state.offsetX = 0; state.offsetY = 0; }
+function restoreDraft() {
+  if (!state.imageWidth || !state.stageWidth || preparedSide === currentSide.value) return;
+  restoring = true; resetAdjust(); matteAlong.value = false;
+  const image = getSide(collection.value, currentSide.value);
+  const draft = drafts[currentSide.value];
+  if (draft && draft.sourceVersion === image?.sourceVersion) {
+    savedFrameRatio.value = draft.frameRatio ?? null; ratioKey.value = draft.ratio; zoomValue.value = draft.zoom; rotation.value = draft.rotation;
+    fineAngle.value = draft.angle; brightness.value = draft.brightness; contrast.value = draft.contrast; saturation.value = draft.saturation;
+    matteAlong.value = draft.matte; state.offsetX = draft.offsetX; state.offsetY = draft.offsetY;
+  } else if (image?.crop) {
+    const crop = image.crop;
+    const coarse = Math.round(crop.rotation / 90) * 90;
+    rotation.value = ((coarse % 360 + 360) % 360) as Rotation;
+    fineAngle.value = crop.rotation - coarse;
+    brightness.value = crop.brightness ?? 1; contrast.value = crop.contrast ?? 1; saturation.value = crop.saturation ?? 1;
+    const rad = crop.rotation * Math.PI / 180;
+    const w = state.imageWidth * Math.abs(Math.cos(rad)) + state.imageHeight * Math.abs(Math.sin(rad));
+    const h = state.imageWidth * Math.abs(Math.sin(rad)) + state.imageHeight * Math.abs(Math.cos(rad));
+    const ratio = w * crop.width / (h * crop.height);
+    savedFrameRatio.value = ratio;
+    ratioKey.value = Math.abs(ratio - 3/4) < .02 ? 'r34' : Math.abs(ratio - 2/3) < .02 ? 'r23' : 'free';
+    const frame = frameRect(); const base = Math.max(frame.width / w, frame.height / h);
+    const scale = Math.max(frame.width / (w * crop.width), frame.height / (h * crop.height));
+    zoomValue.value = Math.min(3, Math.max(1, scale / base));
+    const sizes = metrics();
+    state.offsetX = frame.x + (0.5 - crop.x) * sizes.drawWidth - state.stageWidth / 2;
+    state.offsetY = frame.y + (0.5 - crop.y) * sizes.drawHeight - state.stageHeight / 2;
+    clampOffsets();
+  }
+  preparedSide = currentSide.value;
+  drafts[currentSide.value] = { ...capture(), dirty: draft && draft.sourceVersion === image?.sourceVersion ? draft.dirty : image?.processingStatus === 'AWAITING_CROP' };
+  restoring = false;
+}
+function payloadForCurrent(): ImageCrop {
+  const { frame, drawWidth, drawHeight, offsetX, offsetY } = metrics();
+  const left = state.stageWidth / 2 + offsetX - drawWidth / 2;
+  const top = state.stageHeight / 2 + offsetY - drawHeight / 2;
+  return { x: Math.max(0, (frame.x - left) / drawWidth), y: Math.max(0, (frame.y - top) / drawHeight),
+    width: Math.min(1, frame.width / drawWidth), height: Math.min(1, frame.height / drawHeight), rotation: Math.round(totalAngle.value * 10)/10,
+    brightness: brightness.value, contrast: contrast.value, saturation: saturation.value };
+}
+const payloads: Partial<Record<ImageSide, ImageCrop>> = {};
 /* 重置：清空全部调整（比例回默认 3:4、缩放/角度/位移/调色回初值） */
 function resetAdjust() {
-  ratioKey.value = 'r34'; zoomValue.value = 1; rotation.value = 0; fineAngle.value = 0;
+  savedFrameRatio.value = null; ratioKey.value = 'r34'; zoomValue.value = 1; rotation.value = 0; fineAngle.value = 0;
   state.offsetX = 0; state.offsetY = 0;
   brightness.value = 1; contrast.value = 1; saturation.value = 1;
 }
@@ -292,19 +360,29 @@ async function submit() {
     uni.navigateBack();
     return;
   }
-  try {
-    /* 勾了「同时抠图」且本图未抠过才走 /matte，否则一律 /crop（已抠图则顺带重抠） */
-    const willMatte = useMatte.value;
-    const result = willMatte
-      ? await dataService.matte(id.value, payload)
-      : await dataService.crop(id.value, payload);
-    uni.redirectTo({
-      url: `/package-editor/pages/processing/index?id=${id.value}&jobId=${result.jobId}&stage=${willMatte ? 'matting' : 'crop'}`
-    });
-  } catch (error) { uni.showToast({ title: error instanceof Error ? error.message : '提交失败', icon: 'none' }); submitting.value = false; }
+  drafts[currentSide.value] = capture(); payloads[currentSide.value] = payload;
+  /* 只提交当前正在查看的这一面：切过 tab 后另一面也会因 AWAITING_CROP 被标 dirty，
+     若按「所有 dirty 面」提交，会把没在调整的另一面一起裁掉（Bug）。 */
+  const changed = drafts[currentSide.value]?.dirty ? [currentSide.value] : [];
+  if (!changed.length) { submitting.value = false; uni.navigateBack(); return; }
+  const operations: ImageOperation[] = [];
+  for (const side of changed) {
+    const crop = payloads[side];
+    if (!crop) continue;
+    const matte = !!drafts[side]?.matte && !getSide(collection.value, side)?.matted;
+    const op: ImageOperation = { side, crop, matte, sourceVersion: drafts[side]?.sourceVersion };
+    try { const result = matte ? await dataService.matte(id.value, { ...crop, side, sourceVersion: op.sourceVersion }) : await dataService.crop(id.value, { ...crop, side, sourceVersion: op.sourceVersion }); op.jobId = result.jobId; op.version = result.version; }
+    catch (error) { op.error = error instanceof Error ? error.message : '提交失败'; }
+    operations.push(op);
+  }
+  writeEditor(id.value, 'crop', { drafts, payloads });
+  const pending = readEditor<ImageOperation[]>(id.value, 'operations') ?? [];
+  writeEditor(id.value, 'operations', [...pending.filter(op => !changed.includes(op.side)), ...operations]);
+  uni.redirectTo({ url: `/package-editor/pages/processing/index?id=${id.value}&stage=crop&side=${currentSide.value}` });
+
 }
 /* 取消 = 放弃本次调整返回上一页（不提交任何参数） */
-function goBack() { uni.navigateBack({ delta: 1 }); }
+function goBack() { clearEditor(id.value, 'crop'); uni.navigateBack({ delta: 1 }); }
 onLoad((query) => {
   scanOnly.value = query?.scan === '1';
   if (typeof query?.id !== 'string') {
@@ -312,6 +390,9 @@ onLoad((query) => {
     return;
   }
   id.value = query.id;
+  currentSide.value = query.side === 'BACK' ? 'BACK' : 'FRONT';
+  const saved = readEditor<{ drafts: typeof drafts; payloads: typeof payloads }>(id.value, 'crop');
+  if (saved && !scanOnly.value) { Object.assign(drafts, saved.drafts); Object.assign(payloads, saved.payloads); }
 }); onReady(() => { if (id.value) void prepare(); });
 /* 离开页面时清掉加载兜底定时器，避免回调打到已销毁的页面 */
 onUnload(() => clearLoadWatch());
@@ -319,7 +400,8 @@ onUnload(() => clearLoadWatch());
 
 <template>
   <view class="crop-page">
-    <nav-bar title="裁剪旋转" back />
+    <nav-bar title="裁剪调色" back />
+    <view v-if="!scanOnly" class="side-tabs"><view v-for="side in SIDES" :key="side" :class="{ on: side === currentSide, disabled: !getSide(collection, side)?.standardImageUrl }" @tap="switchSide(side)">{{ sideLabel(side) }}{{ drafts[side]?.dirty ? ' ·' : '' }}</view></view>
     <text class="hint">拖动调整位置 · 双指捏合缩放 · 滑杆微调</text>
     <view v-if="loadError" class="load-error">
       <text class="load-error__msg">{{ loadError }}</text>
@@ -430,6 +512,10 @@ onUnload(() => clearLoadWatch());
 </template>
 
 <style scoped>
+.side-tabs { display:flex; align-self:center; width:360rpx; padding:6rpx; background:#eceae5; border-radius:20rpx; margin:8rpx 0; }
+.side-tabs view { flex:1; text-align:center; padding:12rpx; font-size:26rpx; border-radius:16rpx; color:#777; }
+.side-tabs .on { background:#141414; color:white; }.side-tabs .disabled { opacity:.35; }
+
 /* 页面接 nav-bar 组件（与「完善信息」页同骨架：清零四周内边距，内容块自带边距）。
    整页 flex 纵向布局：画布 flex:1 吃掉剩余高度，确认条回到文档流（不再 fixed）——
    之前「固定底条 + padding 预留」的方案在真机上仍会把「同时自动抠图」行压到条底下

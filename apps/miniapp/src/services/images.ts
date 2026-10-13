@@ -62,7 +62,7 @@ function queuedLocalFile(url: string) {
 export function resolveCollectibleThumbnail(item: CollectibleSummary): Promise<string | undefined> {
   if (!item.thumbnailUrl) return Promise.resolve(undefined);
   if (!needsDownload(item.thumbnailUrl)) return Promise.resolve(item.thumbnailUrl);
-  const key = `${item.id}:${item.updatedAt}`;
+  const key = `${item.id}:${item.imageRevision ?? item.updatedAt}`;
   let pending = thumbnails.get(key);
   if (!pending) {
     pending = queuedLocalFile(item.thumbnailUrl);
@@ -78,8 +78,14 @@ export async function localizeCollectibleImages(item: Collectible): Promise<Coll
     localFile(item.displayImageUrl),
     localFile(item.standardImageUrl)
   ]);
+  const sides = item.sides ? { ...item.sides } : undefined;
+  if (sides) await Promise.all(Object.entries(sides).map(async ([key, side]) => {
+    if (!side) return;
+    const [displayImageUrl, standardImageUrl, thumbnailUrl] = await Promise.all([localFile(side.displayImageUrl), localFile(side.standardImageUrl), localFile(side.thumbnailUrl)]);
+    Object.assign(sides, { [key]: { ...side, displayImageUrl, standardImageUrl, thumbnailUrl } });
+  }));
   return {
-    ...item,
+    ...item, ...(sides ? { sides } : {}),
     ...(thumbnailUrl ? { thumbnailUrl } : {}),
     ...(displayImageUrl ? { displayImageUrl } : {}),
     ...(standardImageUrl ? { standardImageUrl } : {})

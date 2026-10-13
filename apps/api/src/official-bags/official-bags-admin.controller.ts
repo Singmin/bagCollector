@@ -1,6 +1,7 @@
 import { Body, Controller, Delete, Get, HttpStatus, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import type { FastifyRequest } from 'fastify';
 import { createOfficialBagSchema, importOfficialBagsSchema, officialBagStatuses, updateOfficialBagSchema } from '@bagcollect/contracts';
+import { parseSide } from '../common/image-sides.js';
 import { ApiError } from '../common/api-error.js';
 import { parseBody } from '../common/zod.js';
 import { AdminGuard, type AdminAuth } from '../admin/admin.guard.js';
@@ -85,7 +86,8 @@ export class OfficialBagsAdminController {
   async uploadImage(
     @Req() request: FastifyRequest & { adminAuth?: AdminAuth },
     @Param('id') id: string,
-    @Query('matting') matting?: string
+    @Query('matting') matting?: string,
+    @Query('side') side?: string
   ) {
     const file = await request.file();
     if (!file) throw new ApiError('UPLOAD_INVALID', '没有收到图片文件', HttpStatus.BAD_REQUEST);
@@ -93,13 +95,13 @@ export class OfficialBagsAdminController {
     return this.admin.uploadImage(currentAdmin(request).adminId, id, {
       body,
       contentType: file.mimetype,
-      matting: parseMatting(matting)
+      side: parseSide(side), matting: parseMatting(matting)
     });
   }
 
   @Delete(':id/image')
-  removeImage(@Req() request: FastifyRequest & { adminAuth?: AdminAuth }, @Param('id') id: string) {
-    return this.admin.removeImage(currentAdmin(request).adminId, id);
+  removeImage(@Req() request: FastifyRequest & { adminAuth?: AdminAuth }, @Param('id') id: string, @Query('side') side?: string) {
+    return this.admin.removeImage(currentAdmin(request).adminId, id, parseSide(side));
   }
 
   @Delete(':id')

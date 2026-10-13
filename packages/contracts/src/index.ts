@@ -1,3 +1,4 @@
+export * from './image-sides.js';
 import { z } from 'zod';
 export * from './scans.js';
 
@@ -50,12 +51,12 @@ const inBounds = (crop: { x: number; y: number; width: number; height: number },
 };
 
 /** POST /collectibles/:id/crop —— 只按裁剪参数重新出图（不做抠图） */
-export const cropSchema = cropGeometry.superRefine(inBounds);
+export const cropSchema = cropGeometry.extend({ side: z.enum(['FRONT', 'BACK']).optional(), sourceVersion: z.number().int().positive().optional() }).superRefine(inBounds);
 
 /** POST /collectibles/:id/matte —— 抠图。参数全部可省：
     省略时沿用上次保存的裁剪参数，从来没有裁剪记录则按全幅处理；
     也允许只覆盖其中几个字段（例如只调旋转再抠一次） */
-export const matteSchema = cropGeometry.partial().superRefine((crop, context) => {
+export const matteSchema = cropGeometry.partial().extend({ side: z.enum(['FRONT', 'BACK']).optional(), sourceVersion: z.number().int().positive().optional() }).superRefine((crop, context) => {
   if (crop.x !== undefined && crop.width !== undefined && crop.x + crop.width > 1.000001) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['width'], message: '裁剪区域超出图片右侧' });
   }
@@ -105,7 +106,9 @@ export const claimOfficialBagSchema = z.object({
   name: z.string().trim().min(1).max(80).optional(),
   shelfId: z.string().min(1).optional(),
   notes: z.string().max(2000).optional(),
-  tags: z.array(z.string().trim().min(1).max(30)).max(30).optional()
+  tags: z.array(z.string().trim().min(1).max(30)).max(30).optional(),
+  /* 扫描匹配再次认领已拥有的袋子时置 true：不新建收藏，只叠加同款数量（quantity+1）。 */
+  increment: z.boolean().optional()
 });
 
 export type ClaimOfficialBagInput = z.infer<typeof claimOfficialBagSchema>;
@@ -145,6 +148,7 @@ export type MatchSettingsInput = z.infer<typeof matchSettingsSchema>;
 export type MatchSettingsDto = MatchSettingsInput;
 
 export const uploadPolicySchema = z.object({
+  side: z.enum(['FRONT', 'BACK']).optional(),
   collectibleId: z.string().min(1),
   fileName: z.string().min(1).max(255),
   contentType: z.enum(['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif']),
@@ -175,7 +179,8 @@ export const createOfficialBagSchema = z.object({
   brandId: z.string().min(1).nullable().optional(),
   notes: z.string().max(2000).optional(),
   tags: z.array(z.string().trim().min(1).max(30)).max(30).optional(),
-  matting: z.boolean().optional()
+  matting: z.boolean().optional(),
+  backMatting: z.boolean().optional()
 });
 
 export const updateOfficialBagSchema = createOfficialBagSchema.partial().extend({
@@ -256,6 +261,9 @@ export interface ShelfDto {
 }
 
 export interface CollectibleSummaryDto {
+  imageRevision?: string;
+  imageEditable?: boolean;
+  sourceOfficialBagId?: string;
   id: string;
   name: string;
   shelfId: string;
@@ -278,6 +286,7 @@ export interface CollectiblePageDto {
 }
 
 export interface CollectibleDto extends CollectibleSummaryDto {
+  sides?: Partial<Record<import('./image-sides.js').ImageSide, import('./image-sides.js').ImageSideDto>>;
   notes: string;
   tags: string[];
   processingError?: string;
@@ -286,6 +295,8 @@ export interface CollectibleDto extends CollectibleSummaryDto {
 }
 
 export interface OfficialBagDto {
+  sides?: Partial<Record<import('./image-sides.js').ImageSide, import('./image-sides.js').ImageSideDto>>;
+  imageRevision?: string;
   id: string;
   name: string;
   brandId?: string;
@@ -320,6 +331,10 @@ export interface OfficialBagPageDto {
 export interface OfficialClaimResultDto {
   collectibleId: string;
   processingStatus: ProcessingStatus;
+  /** 叠加后的同款数量（再次认领已拥有袋子时返回；首次认领为 1） */
+  quantity?: number;
+  /** true = 本次为「再次认领」：不新建收藏，只叠加数量 */
+  alreadyOwned?: boolean;
 }
 
 /** MATCHED is retained for old decoders; current endpoints only emit CANDIDATES/NONE. */
@@ -354,6 +369,7 @@ export interface BrandDto {
 
 /** 审核后台：用户上传袋子（Collectible）的审核视图。 */
 export interface SubmissionDto {
+  sides?: Partial<Record<import('./image-sides.js').ImageSide, import('./image-sides.js').ImageSideDto>>;
   /** 收藏 id。 */
   id: string;
   name: string;

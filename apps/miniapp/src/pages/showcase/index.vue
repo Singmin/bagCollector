@@ -6,6 +6,7 @@ import { dataService } from '../../services/data';
 import { daysAgoText, formattedDate } from '../../services/format';
 import { resolveCollectibleThumbnail } from '../../services/images';
 import { syncTabBar, setTabBarHidden } from '../../services/tab-bar';
+import BagTabBar from '../../components/BagTabBar.vue';
 
 const loading = ref(true);
 const initialized = ref(false);
@@ -45,16 +46,19 @@ function syncClaimState(list: Collectible[]) {
 /* 自定义导航（与全部收藏页同一套对齐方式）：
    标题顶部 = 胶囊按钮顶部；官方图鉴入口贴在胶囊左侧，与「全部收藏」页的设置钮同一套定位。 */
 const headerTop = ref(0);
-/* 图鉴入口：right = 屏宽 − 胶囊左缘 + 8px 间隙，尺寸 = 胶囊高度 */
+/* 图鉴入口：right = 屏宽 − 胶囊左缘 + 8px 间隙；尺寸略小于胶囊并垂直居中于胶囊
+   （2026-10-12 用户要求「搜索小一点点」）。 */
+const exploreTop = ref(0);
 const exploreRight = ref(10);
-const exploreSize = ref(32);
+const exploreSize = ref(28);
 // #ifdef MP-WEIXIN
 try {
   const capsule = uni.getMenuButtonBoundingClientRect();
   const win = uni.getSystemInfoSync();
   headerTop.value = capsule.top;
   exploreRight.value = win.windowWidth - capsule.left + 8;
-  exploreSize.value = capsule.height;
+  exploreSize.value = Math.round(capsule.height * 0.88);
+  exploreTop.value = capsule.top + (capsule.height - exploreSize.value) / 2;
 } catch {
   /* 取不到胶囊矩形（非微信端）时用默认值 */
 }
@@ -472,7 +476,7 @@ function add() {
 }
 
 onShow(() => {
-  syncTabBar(0);
+  syncTabBar(0, markShow.value);
   void load();
 });
 /* 切走页面时收起设置半窗（settingsShow 是普通数据，不会随页面隐藏自动归位）。
@@ -500,6 +504,7 @@ async function onRefresherRefresh() {
 
 <template>
   <view class="home-page">
+    <BagTabBar />
     <!-- 头部：与全部收藏页同一套对齐（标题顶 = 胶囊顶，padding-top 由胶囊矩形注入）。
          设置入口已迁至「我的」页头部右上角（2026-09-29）；
          官方图鉴入口固定在胶囊左侧的搜索钮（2026-10-08：原「官方图鉴」横条卡片改为右上角图标） -->
@@ -516,12 +521,13 @@ async function onRefresherRefresh() {
       aria-label="打开官方图鉴"
       hover-class="gallery-entry--pressed"
       :hover-stay-time="80"
-      :style="{ top: `${headerTop}px`, right: `${exploreRight}px`, width: `${exploreSize}px`, height: `${exploreSize}px` }"
+      :style="{ top: `${exploreTop}px`, right: `${exploreRight}px`, width: `${exploreSize}px`, height: `${exploreSize}px` }"
       @tap="goExplore"
     >
+      <!-- 图标单独按 0.55 缩小：白框尺寸不变，只让放大镜小一点（2026-10-12 用户要求） -->
       <image
         class="gallery-entry__icon"
-        :style="{ width: `${Math.round(exploreSize * 0.68)}px`, height: `${Math.round(exploreSize * 0.68)}px` }"
+        :style="{ width: `${Math.round(exploreSize * 0.55)}px`, height: `${Math.round(exploreSize * 0.55)}px` }"
         src="/static/figma/search.svg"
         mode="aspectFit"
       />

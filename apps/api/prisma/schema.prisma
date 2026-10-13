@@ -34,6 +34,11 @@ enum ProcessingStatus {
   FAILED
 }
 
+enum ImageSide {
+  FRONT
+  BACK
+}
+
 enum AssetKind {
   ORIGINAL
   STANDARD
@@ -196,11 +201,12 @@ model Collectible {
   user              User             @relation(fields: [userId], references: [id], onDelete: Cascade)
   shelf             Shelf            @relation(fields: [shelfId, userId], references: [id, userId], onDelete: Restrict)
   tags              CollectibleTag[]
+  imageSides        CollectibleImageSide[]
   imageAssets       ImageAsset[]
   processingJobs    ProcessingJob[]
   reviewedBy        Admin?           @relation(fields: [reviewedById], references: [id], onDelete: SetNull)
   promotedBag       OfficialBag?     @relation(fields: [promotedBagId], references: [id], onDelete: SetNull)
-  sourceOfficialBag OfficialBag?     @relation("CollectibleSourceOfficialBag", fields: [sourceOfficialBagId], references: [id], onDelete: SetNull)
+  sourceOfficialBag OfficialBag?     @relation("CollectibleSourceOfficialBag", fields: [sourceOfficialBagId], references: [id], onDelete: Restrict)
 
   @@unique([id, userId])
   @@index([userId, addedAt])
@@ -231,10 +237,28 @@ model CollectibleTag {
   @@index([tagId])
 }
 
+model CollectibleImageSide {
+  collectibleId String
+  side ImageSide @default(FRONT)
+  sourceVersion Int @default(0)
+  processingVersion Int @default(0)
+  publishedVersion Int?
+  publishedSourceVersion Int?
+  mattedSourceVersion Int?
+  processingStatus ProcessingStatus @default(UPLOADING)
+  processingError String?
+  crop Json?
+  updatedAt DateTime @updatedAt
+  collectible Collectible @relation(fields: [collectibleId], references: [id], onDelete: Cascade)
+  @@id([collectibleId, side])
+  @@index([processingStatus, updatedAt])
+}
+
 model ImageAsset {
   id                   String      @id @default(cuid())
   userId               String
   collectibleId        String
+  side                 ImageSide @default(FRONT)
   kind                 AssetKind
   status               AssetStatus @default(RESERVED)
   objectKey            String      @unique
@@ -250,11 +274,14 @@ model ImageAsset {
   user                 User        @relation(fields: [userId], references: [id], onDelete: Cascade)
   collectible          Collectible @relation(fields: [collectibleId, userId], references: [id, userId], onDelete: Cascade)
 
-  @@unique([collectibleId, kind, version])
+  @@unique([collectibleId, kind, side, version])
   @@index([userId, collectibleId, kind])
 }
 
 model ProcessingJob {
+  side ImageSide @default(FRONT)
+  version Int @default(0)
+  sourceVersion Int @default(0)
   id             String      @id @default(cuid())
   userId         String
   collectibleId  String
@@ -308,6 +335,7 @@ model OfficialBag {
   updatedAt     DateTime            @updatedAt
   createdBy     Admin?              @relation(fields: [createdById], references: [id], onDelete: SetNull)
   brand         Brand?              @relation(fields: [brandId], references: [id], onDelete: SetNull)
+  imageSides OfficialBagImageSide[]
   images        OfficialBagImage[]
   embeddings    BagEmbedding[]
   scanEmbeddings ScanEmbedding[]
@@ -322,9 +350,26 @@ model OfficialBag {
   @@index([status, sortOrder])
 }
 
+model OfficialBagImageSide {
+  officialBagId String
+  side ImageSide @default(FRONT)
+  sourceVersion Int @default(0)
+  processingVersion Int @default(0)
+  publishedVersion Int?
+  publishedSourceVersion Int?
+  processingStatus OfficialProcessStatus @default(PENDING)
+  processingError String?
+  matting Boolean @default(false)
+  updatedAt DateTime @updatedAt
+  officialBag OfficialBag @relation(fields: [officialBagId], references: [id], onDelete: Cascade)
+  @@id([officialBagId, side])
+  @@index([processingStatus, updatedAt])
+}
+
 model OfficialBagImage {
   id               String      @id @default(cuid())
   officialBagId    String
+  side             ImageSide @default(FRONT)
   kind             AssetKind
   status           AssetStatus @default(AVAILABLE)
   objectKey        String      @unique
@@ -338,7 +383,7 @@ model OfficialBagImage {
   updatedAt        DateTime    @updatedAt
   officialBag      OfficialBag @relation(fields: [officialBagId], references: [id], onDelete: Cascade)
 
-  @@unique([officialBagId, kind, version])
+  @@unique([officialBagId, kind, side, version])
   @@index([officialBagId, kind])
 }
 

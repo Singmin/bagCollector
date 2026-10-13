@@ -1,7 +1,8 @@
 import { createHash, createHmac } from 'node:crypto';
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { AssetKind, AssetStatus, JobStatus, JobType, Prisma, ProcessingStatus } from '@prisma/client';
+import { AssetKind, AssetStatus, ImageSide, JobStatus, JobType, Prisma, ProcessingStatus } from '@prisma/client';
 import STS from 'qcloud-cos-sts';
+import { assertImageWritable, lockImageOwner, failImageSubmission } from '../common/image-sides.js';
 import { ApiError } from '../common/api-error.js';
 import { env } from '../common/env.js';
 import { QueueService } from '../common/queue.service.js';
@@ -74,7 +75,7 @@ export class UploadsService {
 
   async policy(
     userId: string,
-    input: { collectibleId: string; fileName: string; contentType: string; size: number }
+    input: { collectibleId: string; fileName: string; contentType: string; size: number; side?: ImageSide }
   ) {
     const config = env();
     if (input.size > config.MAX_UPLOAD_BYTES) {
@@ -85,66 +86,34 @@ export class UploadsService {
       this.prisma.collectible.findFirst({ where: { id: input.collectibleId, userId } })
     ]);
     if (!user || !collectible) throw new ApiError('NOT_FOUND', '收藏不存在', HttpStatus.NOT_FOUND);
-    if (collectible.processingStatus !== ProcessingStatus.UPLOADING) {
-      throw new ApiError('CONFLICT', '该收藏已经上传过图片', HttpStatus.CONFLICT);
-    }
-    if (user.storageUsedBytes + BigInt(input.size) > user.storageQuotaBytes) {
-      throw new ApiError('QUOTA_EXCEEDED', '云端存储空间不足', HttpStatus.PAYLOAD_TOO_LARGE);
-    }
-
-    const key = `users/${userId}/collectibles/${collectible.id}/original/v${collectible.processingVersion}.${this.extension(input.contentType)}`;
-    const temporary = this.cos.isLocal() ? undefined : await this.sts(key);
-    const expiresAt = temporary
-      ? new Date(temporary.expiredTime * 1000)
-      : new Date(Date.now() + config.COS_STS_DURATION_SECONDS * 1_000);
-    const identity = {
-      collectibleId_kind_version: {
-        collectibleId: collectible.id,
-        kind: AssetKind.ORIGINAL,
-        version: collectible.processingVersion
+    assertImageWritable(collectible);
+    const side = input.side ?? ImageSide.FRONT;
+    const asset = await this.prisma.$transaction(async tx => {
+      await lockImageOwner(tx, collectible.id, userId);
+      const current = await tx.collectible.findFirstOrThrow({ where: { id: collectible.id, userId } });
+      assertImageWritable(current);
+      const state = await tx.collectibleImageSide.findUnique({ where: { collectibleId_side: { collectibleId: current.id, side } } });
+      if (state && ['NORMALIZING', 'CROPPING', 'MATTING'].includes(state.processingStatus)) throw new ApiError('CONFLICT', '这一面的图片正在处理中', HttpStatus.CONFLICT);
+      if (state?.processingStatus === ProcessingStatus.UPLOADING && state.sourceVersion) {
+        const reserved = await tx.imageAsset.findFirst({ where: { collectibleId: current.id, side, version: state.sourceVersion, kind: AssetKind.ORIGINAL, status: AssetStatus.RESERVED } });
+        if (reserved && reserved.reservationExpiresAt && reserved.reservationExpiresAt > new Date()) return reserved;
       }
-    };
-    let asset = await this.prisma.imageAsset.findUnique({ where: identity });
-    if (asset?.status === AssetStatus.AVAILABLE) {
-      throw new ApiError('CONFLICT', '该收藏已经上传过图片', HttpStatus.CONFLICT);
-    }
-    if (!asset) {
-      try {
-        asset = await this.prisma.imageAsset.create({
-          data: {
-            userId,
-            collectibleId: collectible.id,
-            kind: AssetKind.ORIGINAL,
-            status: AssetStatus.RESERVED,
-            objectKey: key,
-            contentType: input.contentType,
-            declaredByteSize: BigInt(input.size),
-            byteSize: 0n,
-            reservationExpiresAt: expiresAt,
-            version: collectible.processingVersion
-          }
-        });
-      } catch (error) {
-        if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2002') throw error;
-        asset = await this.prisma.imageAsset.findUnique({ where: identity });
-      }
-    }
-    if (!asset || asset.status !== AssetStatus.RESERVED) {
-      throw new ApiError('CONFLICT', '该收藏已经上传过图片', HttpStatus.CONFLICT);
-    }
-    const renewed = await this.prisma.imageAsset.updateMany({
-      where: { id: asset.id, status: AssetStatus.RESERVED },
-      data: {
-        objectKey: key,
-        contentType: input.contentType,
-        declaredByteSize: BigInt(input.size),
-        byteSize: 0n,
-        reservationExpiresAt: expiresAt
-      }
+      const version = (state?.processingVersion ?? 0) + 1;
+      const key = `users/${userId}/collectibles/${current.id}/${side.toLowerCase()}/original/v${version}.${this.extension(input.contentType)}`;
+      const row = await tx.imageAsset.create({ data: { userId, collectibleId: current.id, side, kind: AssetKind.ORIGINAL, status: AssetStatus.RESERVED,
+        objectKey: key, contentType: input.contentType, declaredByteSize: BigInt(input.size), byteSize: 0n,
+        reservationExpiresAt: new Date(Date.now() + config.COS_STS_DURATION_SECONDS * 1000), version } });
+      await tx.collectibleImageSide.upsert({ where: { collectibleId_side: { collectibleId: current.id, side } },
+        create: { collectibleId: current.id, side, sourceVersion: version, processingVersion: version },
+        update: { sourceVersion: version, processingVersion: version, processingStatus: ProcessingStatus.UPLOADING, processingError: null, crop: Prisma.DbNull } });
+      if (side === ImageSide.FRONT) await tx.collectible.update({ where: { id: current.id }, data: { processingVersion: version,
+        processingStatus: state?.publishedVersion ? ProcessingStatus.READY : ProcessingStatus.UPLOADING, processingError: null } });
+      return row;
     });
-    if (renewed.count !== 1) {
-      throw new ApiError('CONFLICT', '该收藏已经上传过图片', HttpStatus.CONFLICT);
-    }
+    const key = asset.objectKey;
+    const temporary = this.cos.isLocal() ? undefined : await this.sts(key);
+    const expiresAt = temporary ? new Date(temporary.expiredTime * 1000) : new Date(Date.now() + config.COS_STS_DURATION_SECONDS * 1000);
+    await this.prisma.imageAsset.update({ where: { id: asset.id }, data: { declaredByteSize: BigInt(input.size), reservationExpiresAt: expiresAt } });
     if (this.cos.isLocal()) {
       return {
         assetId: asset.id,
@@ -202,6 +171,8 @@ export class UploadsService {
       where: { id: assetId, userId, kind: AssetKind.ORIGINAL, status: AssetStatus.RESERVED }
     });
     if (!asset) throw new ApiError('UPLOAD_INVALID', '上传记录不存在或已完成', HttpStatus.BAD_REQUEST);
+    const item = await this.prisma.collectible.findFirstOrThrow({ where: { id: asset.collectibleId, userId } });
+    assertImageWritable(item);
     if (!contentType.startsWith('image/')) {
       throw new ApiError('UPLOAD_INVALID', '只允许上传图片', HttpStatus.BAD_REQUEST);
     }
@@ -224,9 +195,15 @@ export class UploadsService {
     });
     if (!asset) throw new ApiError('UPLOAD_INVALID', '上传记录不存在', HttpStatus.BAD_REQUEST);
 
+    const item = await this.prisma.collectible.findFirst({ where: { id: asset.collectibleId, userId } });
+    if (!item) throw new ApiError('NOT_FOUND', '收藏不存在', HttpStatus.NOT_FOUND);
+    assertImageWritable(item);
+    const state = await this.prisma.collectibleImageSide.findUnique({ where: { collectibleId_side: { collectibleId: asset.collectibleId, side: asset.side } } });
+    if (!state || state.sourceVersion !== asset.version || state.processingVersion !== asset.version) throw new ApiError('CONFLICT', '上传已过期，请重新选择图片', HttpStatus.CONFLICT);
+
     if (asset.status === AssetStatus.AVAILABLE) {
       const existingJob = await this.prisma.processingJob.findUnique({
-        where: { idempotencyKey: `normalize:${input.collectibleId}:v${asset.version}` }
+        where: { idempotencyKey: `normalize:${input.collectibleId}:${asset.side}:v${asset.version}` }
       });
       return { jobId: existingJob?.id, processingStatus: ProcessingStatus.NORMALIZING };
     }
@@ -244,8 +221,11 @@ export class UploadsService {
       throw new ApiError('UPLOAD_INVALID', '上传图片超过申请大小', HttpStatus.BAD_REQUEST);
     }
 
-    const idempotencyKey = `normalize:${input.collectibleId}:v${asset.version}`;
+    const idempotencyKey = `normalize:${input.collectibleId}:${asset.side}:v${asset.version}`;
     const result = await this.prisma.$transaction(async (transaction) => {
+      await lockImageOwner(transaction, asset.collectibleId, userId);
+      const active = await transaction.collectibleImageSide.findUniqueOrThrow({ where: { collectibleId_side: { collectibleId: asset.collectibleId, side: asset.side } } });
+      if (active.sourceVersion !== asset.version) throw new ApiError('CONFLICT', '上传已过期', HttpStatus.CONFLICT);
       const claimed = await transaction.imageAsset.updateMany({
         where: { id: asset.id, status: AssetStatus.RESERVED },
         data: {
@@ -265,15 +245,14 @@ export class UploadsService {
       if (quotaReserved !== 1) {
         throw new ApiError('QUOTA_EXCEEDED', '云端存储空间不足', HttpStatus.PAYLOAD_TOO_LARGE);
       }
-      await transaction.collectible.update({
-        where: { id: input.collectibleId },
-        data: { processingStatus: ProcessingStatus.NORMALIZING, processingError: null }
-      });
+      await transaction.collectibleImageSide.update({ where: { collectibleId_side: { collectibleId: asset.collectibleId, side: asset.side } }, data: { processingStatus: ProcessingStatus.NORMALIZING, processingError: null } });
+      if (asset.side === ImageSide.FRONT) await transaction.collectible.update({ where: { id: input.collectibleId }, data: { processingStatus: active.publishedVersion ? ProcessingStatus.READY : ProcessingStatus.NORMALIZING, processingError: null } });
       const job = await transaction.processingJob.upsert({
         where: { idempotencyKey },
         create: {
           userId,
           collectibleId: input.collectibleId,
+          side: asset.side, version: asset.version, sourceVersion: asset.version,
           type: JobType.NORMALIZE,
           status: JobStatus.QUEUED,
           idempotencyKey
@@ -286,16 +265,19 @@ export class UploadsService {
       const existingJob = await this.prisma.processingJob.findUnique({ where: { idempotencyKey } });
       return { jobId: existingJob?.id, processingStatus: ProcessingStatus.NORMALIZING };
     }
-    await this.queues.add(
+    try { await this.queues.add(
       'normalize',
       {
         processingJobId: result.jobId,
         collectibleId: input.collectibleId,
         userId,
-        version: asset.version
+        side: asset.side, sourceVersion: asset.version, version: asset.version
       },
       idempotencyKey
-    );
+    ); } catch (error) {
+      await failImageSubmission(this.prisma, { collectibleId: input.collectibleId, userId, side: asset.side, version: asset.version, processingJobId: result.jobId });
+      throw error;
+    }
     return { jobId: result.jobId, processingStatus: ProcessingStatus.NORMALIZING };
   }
 }

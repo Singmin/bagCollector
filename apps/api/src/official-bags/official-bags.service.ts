@@ -10,6 +10,7 @@ import {
   ProcessingStatus,
   ShelfTheme
 } from '@prisma/client';
+import { imageData } from '../common/image-sides.js';
 import { ApiError } from '../common/api-error.js';
 import { env } from '../common/env.js';
 import { QUOTA_COUNTED_STATUSES } from '../common/quota.js';
@@ -31,29 +32,12 @@ export class OfficialBagsService {
     private readonly settings: SettingsService
   ) {}
 
-  private async thumbnailUrl(officialBagId: string): Promise<string | undefined> {
-    const thumbnail = await this.prisma.officialBagImage.findFirst({
-      where: { officialBagId, kind: 'THUMBNAIL', status: 'AVAILABLE' },
-      orderBy: { version: 'desc' }
-    });
-    return thumbnail ? this.cos.signedUrl(thumbnail.objectKey) : undefined;
-  }
-
-  private async displayUrl(officialBagId: string): Promise<string | undefined> {
-    const display = await this.prisma.officialBagImage.findFirst({
-      where: { officialBagId, kind: 'DISPLAY', status: 'AVAILABLE' },
-      orderBy: { version: 'desc' }
-    });
-    return display ? this.cos.signedUrl(display.objectKey) : undefined;
-  }
-
   private async toDto(bag: BagWithBrand, claimed?: boolean): Promise<OfficialBagDto> {
-    const [thumbnailUrl, displayUrl] = await Promise.all([
-      this.thumbnailUrl(bag.id),
-      this.displayUrl(bag.id)
-    ]);
+    const resolved = await imageData(this.prisma, this.cos, bag.id, true);
+    const thumbnailUrl = resolved.sides.FRONT?.thumbnailUrl;
+    const displayUrl = resolved.sides.FRONT?.displayImageUrl;
     return {
-      id: bag.id,
+      id: bag.id, ...resolved,
       name: bag.name,
       ...(bag.brandId ? { brandId: bag.brandId } : {}),
       ...(bag.brand ? { brand: bag.brand.name } : {}),
@@ -179,12 +163,12 @@ export class OfficialBagsService {
    */
   private async queryImage(userId: string, collectibleId: string) {
     const standard = await this.prisma.imageAsset.findFirst({
-      where: { collectibleId, userId, kind: AssetKind.STANDARD, status: AssetStatus.AVAILABLE },
+      where: { collectibleId, userId, side: 'FRONT', kind: AssetKind.STANDARD, status: AssetStatus.AVAILABLE },
       orderBy: { version: 'desc' }
     });
     if (standard) return standard;
     return this.prisma.imageAsset.findFirst({
-      where: { collectibleId, userId, kind: AssetKind.ORIGINAL, status: AssetStatus.AVAILABLE },
+      where: { collectibleId, userId, side: 'FRONT', kind: AssetKind.ORIGINAL, status: AssetStatus.AVAILABLE },
       orderBy: { version: 'desc' }
     });
   }
@@ -313,7 +297,8 @@ export class OfficialBagsService {
   async claim(
     userId: string,
     id: string,
-    overrides: { name?: string; shelfId?: string; notes?: string; tags?: string[] } = {}
+    overrides: { name?: string; shelfId?: string; notes?: string; tags?: string[] } = {},
+    increment = false
   ) {
     const bag = await this.prisma.officialBag.findFirst({
       where: { id, status: OfficialBagStatus.PUBLISHED, processStatus: OfficialProcessStatus.READY },
@@ -323,10 +308,22 @@ export class OfficialBagsService {
 
     const existing = await this.prisma.officialClaim.findUnique({
       where: { userId_officialBagId: { userId, officialBagId: id } },
-      include: { officialBag: { select: { name: true } } }
+      select: { collectibleId: true }
     });
     if (existing) {
-      throw new ApiError('CONFLICT', '你已经拥有过这个袋子', HttpStatus.CONFLICT);
+      /* 默认（标记已有）重复认领仍报 409；扫描匹配再次认领同款（increment）则叠加数量 */
+      if (!increment) throw new ApiError('CONFLICT', '你已经拥有过这个袋子', HttpStatus.CONFLICT);
+      const updated = await this.prisma.collectible.update({
+        where: { id: existing.collectibleId },
+        data: { quantity: { increment: 1 } },
+        select: { id: true, quantity: true }
+      });
+      return {
+        collectibleId: updated.id,
+        processingStatus: ProcessingStatus.READY,
+        quantity: updated.quantity,
+        alreadyOwned: true
+      };
     }
 
     const [user, collectibleCount] = await Promise.all([
@@ -354,6 +351,10 @@ export class OfficialBagsService {
     let collectibleId: string;
     try {
       const collectible = await this.prisma.$transaction(async (transaction) => {
+        await transaction.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${userId} FOR UPDATE`;
+        await transaction.$queryRaw`SELECT "id" FROM "OfficialBag" WHERE "id" = ${bag.id} FOR UPDATE`;
+        const active = await transaction.officialBag.findUnique({ where: { id: bag.id } });
+        if (!active || active.status !== OfficialBagStatus.PUBLISHED || active.processStatus !== OfficialProcessStatus.READY) throw new ApiError('CONFLICT', '袋子已下架或图片暂不可用，请刷新后重试', HttpStatus.CONFLICT);
         const created = await transaction.collectible.create({
           data: {
             userId,
@@ -395,6 +396,6 @@ export class OfficialBagsService {
       throw error;
     }
 
-    return { collectibleId, processingStatus: ProcessingStatus.READY as ProcessingStatus };
+    return { collectibleId, processingStatus: ProcessingStatus.READY as ProcessingStatus, quantity: 1, alreadyOwned: false };
   }
 }

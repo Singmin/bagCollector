@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue';
 import { onLoad, onShow } from '@dcloudio/uni-app';
 import type { Brand, OfficialBag } from '../../types';
+import BagImagePreview from '../../components/BagImagePreview.vue';
 import { dataService } from '../../services/data';
 
 /* ── 官方图鉴页（从首页入口进入）：按品牌分类浏览官方袋子 + 搜索；
@@ -34,6 +35,7 @@ const wishlistIds = ref<Set<string>>(new Set());
 
 /* 详情浮层 */
 const detailBag = ref<OfficialBag | null>(null);
+const imagePreview = ref(false);
 /* 标记已有：直接调认领接口，不再拉半窗（claiming 用于防重复点击） */
 const claiming = ref(false);
 
@@ -164,11 +166,26 @@ function clearSearch() {
 }
 
 /* ── 卡片 / 详情 ── */
-function openBag(bag: OfficialBag) {
+let detailRequest = 0;
+async function openBag(bag: OfficialBag) {
+  const request = ++detailRequest;
+  imagePreview.value = false;
   detailBag.value = bag;
+  try {
+    const fresh = await dataService.officialBag(bag.id);
+    if (request !== detailRequest) return;
+    detailBag.value = fresh;
+    bags.value = bags.value.map(current => current.id === fresh.id ? fresh : current);
+  } catch (error) {
+    if (request !== detailRequest) return;
+    closeDetail();
+    uni.showToast({ title: error instanceof Error ? error.message : '详情加载失败', icon: 'none' });
+  }
 }
 
 function closeDetail() {
+  detailRequest++;
+  imagePreview.value = false;
   detailBag.value = null;
 }
 
@@ -354,11 +371,12 @@ onShow(() => {
       </view>
     </scroll-view>
 
+    <BagImagePreview :show="imagePreview" :sides="detailBag?.sides" :fallback="detailBag?.displayImageUrl" @close="imagePreview = false" />
     <!-- 详情浮层 -->
     <view v-if="detailBag" class="detail-layer">
       <view class="bag-backdrop" @tap="closeDetail" @touchmove.stop.prevent />
       <view class="detail-card">
-        <view class="detail-art">
+        <view class="detail-art" @tap="imagePreview = true">
           <image
             v-if="detailBag.displayImageUrl || detailBag.thumbnailUrl"
             :src="detailBag.displayImageUrl || detailBag.thumbnailUrl"

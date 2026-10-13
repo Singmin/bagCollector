@@ -1,6 +1,7 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { AssetKind, AssetStatus, OfficialBagStatus, OfficialProcessStatus, Prisma } from '@prisma/client';
 import type { CollectibleDto, CollectiblePageDto } from '@bagcollect/contracts';
+import { imageData } from '../common/image-sides.js';
 import { ApiError } from '../common/api-error.js';
 import { PrismaService } from '../database/prisma.service.js';
 import { CosService } from '../assets/cos.service.js';
@@ -29,12 +30,15 @@ export class FeedService {
       where: {
         officialBagId: { in: bagIds },
         kind: { in: [AssetKind.THUMBNAIL, AssetKind.DISPLAY] },
-        status: AssetStatus.AVAILABLE
+        side: 'FRONT', status: AssetStatus.AVAILABLE
       },
       orderBy: { version: 'desc' }
     });
+    const states = await this.prisma.officialBagImageSide.findMany({ where: { officialBagId: { in: bagIds }, side: 'FRONT' } });
+    const published = new Map(states.map(state => [state.officialBagId, state.publishedVersion]));
     const latest = new Map<string, string>();
     for (const image of images) {
+      if (image.version !== published.get(image.officialBagId)) continue;
       const key = `${image.officialBagId}:${image.kind}`;
       if (!latest.has(key)) latest.set(key, image.objectKey);
     }
@@ -56,7 +60,7 @@ export class FeedService {
     const thumbnail = urlFor(bag.id, AssetKind.THUMBNAIL);
     const display = urlFor(bag.id, AssetKind.DISPLAY);
     return {
-      id: bag.id,
+      id: bag.id, imageEditable: false, sourceOfficialBagId: bag.id, imageRevision: bag.updatedAt.toISOString(),
       name: bag.name,
       shelfId: '',
       shelfName: '',
@@ -167,6 +171,7 @@ export class FeedService {
     });
     if (!bag) return null;
     const urlFor = await this.imageUrls([bag.id]);
-    return this.toFeedItem(bag, urlFor);
+    const resolved = await imageData(this.prisma, this.cos, bag.id, true);
+    return { ...this.toFeedItem(bag, urlFor), ...resolved };
   }
 }

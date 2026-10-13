@@ -94,7 +94,7 @@ export class LearningSamplesService {
       this.prisma.learningSample.count({ where })
     ]);
     const items = await Promise.all(rows.map(async row => {
-      const bag = row.officialBagId ? await this.prisma.officialBag.findUnique({ where: { id: row.officialBagId }, select: { id: true, name: true, status: true, processStatus: true, images: { where: { status: 'AVAILABLE', kind: 'DISPLAY' }, orderBy: { version: 'desc' }, take: 1 } } }) : null;
+      const bag = row.officialBagId ? await this.prisma.officialBag.findUnique({ where: { id: row.officialBagId }, select: { id: true, name: true, status: true, processStatus: true, images: { where: { side: 'FRONT', status: 'AVAILABLE', kind: 'DISPLAY' }, orderBy: { version: 'desc' }, take: 1 } } }) : null;
       return { ...row, byteSize: Number(row.byteSize), url: row.objectKey && !row.deletedAt && !['STAGING', 'FAILED', 'DELETING'].includes(row.state) ? await this.cos.privateSignedUrl(row.objectKey) : null,
         bag: bag ? { id: bag.id, name: bag.name, status: bag.status, processStatus: bag.processStatus, url: bag.images[0] ? await this.cos.signedUrl(bag.images[0].objectKey) : null } : null };
     }));

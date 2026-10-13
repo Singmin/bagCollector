@@ -1,5 +1,6 @@
-import { AssetKind, AssetStatus, JobStatus, ProcessingStatus, PrismaClient } from '@prisma/client';
+import { AssetKind, AssetStatus, ImageSide, JobStatus, ProcessingStatus, PrismaClient } from '@prisma/client';
 import sharp from 'sharp';
+import type { ImageCrop } from '@bagcollect/contracts';
 import { upsertAssetRecord } from './asset-record.js';
 import { config } from './config.js';
 import { computeCropRect } from './geometry.js';
@@ -11,8 +12,11 @@ export interface ProcessingJobData {
   collectibleId: string;
   userId: string;
   version: number;
+  side?: ImageSide;
+  sourceVersion?: number;
+  crop?: ImageCrop;
   /* 已抠图的图再次裁剪时为 true：worker 必须重新调万象抠图，否则新展示图与旧透明图在构图上失配。
-     由 /crop 入口在「已有 CUTOUT 资产」时置位；同一张图只计一次万象扣费（配额在 /matte 入口计） */
+     由 /crop 入口在「已有 CUTOUT 资产」时置位；首次抠图计用户配额；重裁剪仍再次产生云服务成本 */
   rematte?: boolean;
 }
 
@@ -58,19 +62,26 @@ async function upsertAsset(input: {
   width: number;
   height: number;
   version: number;
+  side?: ImageSide;
+  sourceVersion?: number;
+  crop?: ImageCrop;
 }) {
   await putObject(input.key, input.body, input.contentType);
-  await upsertAssetRecord(prisma, {
+  try { await upsertAssetRecord(prisma, {
     userId: input.userId,
     collectibleId: input.collectibleId,
     kind: input.kind,
+    side: input.side ?? ImageSide.FRONT, sourceVersion: input.sourceVersion,
     key: input.key,
     contentType: input.contentType,
     byteSize: input.body.length,
     width: input.width,
     height: input.height,
     version: input.version
-  });
+  }); } catch (error) {
+    if (error instanceof Error && error.message === 'STALE_IMAGE_JOB') await deleteObjects([input.key]);
+    throw error;
+  }
 }
 
 /**
@@ -108,26 +119,26 @@ async function writeRenditions(data: ProcessingJobData, source: Buffer, baseKey:
   ]);
   if (!display.info.width || !display.info.height) throw new Error('无法读取展示图尺寸');
   if (!thumbnail.info.width || !thumbnail.info.height) throw new Error('无法读取缩略图尺寸');
-  await Promise.all([
-    upsertAsset({
-      ...data,
-      kind: AssetKind.DISPLAY,
-      key: `${baseKey}/display/v${data.version}.png`,
-      contentType: 'image/png',
-      body: display.data,
-      width: display.info.width,
-      height: display.info.height
-    }),
-    upsertAsset({
-      ...data,
-      kind: AssetKind.THUMBNAIL,
-      key: `${baseKey}/thumbnail/v${data.version}.webp`,
-      contentType: 'image/webp',
-      body: thumbnail.data,
-      width: thumbnail.info.width,
-      height: thumbnail.info.height
-    })
-  ]);
+  /* 串行写库：资产落库走 Serializable 事务并对同一 User/Collectible 行 FOR UPDATE，
+     并行提交会在等锁醒来时抛 40001 序列化冲突，图片编码（上面的 sharp）已并行，这里不求快求稳 */
+  await upsertAsset({
+    ...data,
+    kind: AssetKind.DISPLAY,
+    key: `${baseKey}/display/v${data.version}.png`,
+    contentType: 'image/png',
+    body: display.data,
+    width: display.info.width,
+    height: display.info.height
+  });
+  await upsertAsset({
+    ...data,
+    kind: AssetKind.THUMBNAIL,
+    key: `${baseKey}/thumbnail/v${data.version}.webp`,
+    contentType: 'image/webp',
+    body: thumbnail.data,
+    width: thumbnail.info.width,
+    height: thumbnail.info.height
+  });
 }
 
 /** 标准化产物：统一 ≤4096px，透明输入可保留 alpha（PNG），其余为白底 JPEG。 */
@@ -142,7 +153,7 @@ export interface StandardImage {
 /**
  * 原图标准化为 ≤4096px 的图片，供裁剪/抠图/展示链路复用。
  *
- * - 默认输出 JPEG：用户链路标准化后必然走裁剪 + 万象抠图，透明度由抠图重新生成，
+ * - 默认输出 JPEG：用户链路标准化后可裁剪，并可选择万象抠图，透明度由抠图生成，
  *   JPEG 体积小且抠图输入更稳定。JPEG 不支持透明通道，透明像素先铺成白色
  *   （sharp 默认合成到黑色背景，会导致黑底）。
  * - `keepTransparency: true` 且原图带 alpha 时输出 PNG：官方库常直接上传现成的
@@ -193,26 +204,32 @@ export async function normalizeImage(data: ProcessingJobData) {
     where: {
       collectibleId: data.collectibleId,
       userId: data.userId,
+      side: data.side ?? ImageSide.FRONT,
       kind: AssetKind.ORIGINAL,
-      version: data.version,
+      version: data.sourceVersion ?? data.version,
       status: AssetStatus.AVAILABLE
     },
     orderBy: { createdAt: 'desc' }
   });
   const source = await getObject(original.objectKey);
-  // 用户链路标准化后必然走裁剪 + 抠图，透明度由抠图重新生成，统一白底 JPEG。
+  // 用户链路统一白底 JPEG，后续裁剪和抠图分别按用户选择执行。
   const standard = await standardImage(source);
-  const key = `users/${data.userId}/collectibles/${data.collectibleId}/standard/v${data.version}.${standard.extension}`;
+  const key = `users/${data.userId}/collectibles/${data.collectibleId}/${(data.side ?? ImageSide.FRONT).toLowerCase()}/standard/v${data.version}.${standard.extension}`;
   await upsertAsset({
     ...data,
     ...standard,
     kind: AssetKind.STANDARD,
     key
   });
-  await prisma.collectible.update({
-    where: { id: data.collectibleId },
-    data: { processingStatus: ProcessingStatus.AWAITING_CROP, processingError: null }
-  });
+  if (data.sourceVersion !== undefined) {
+    await prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT "id" FROM "Collectible" WHERE "id" = ${data.collectibleId} FOR UPDATE`;
+      const changed = await tx.collectibleImageSide.updateMany({ where: { collectibleId: data.collectibleId, side: data.side ?? ImageSide.FRONT, sourceVersion: data.sourceVersion, processingVersion: data.version }, data: { processingStatus: ProcessingStatus.AWAITING_CROP, processingError: null } });
+      if (!changed.count) throw new Error('STALE_IMAGE_JOB');
+      const state = await tx.collectibleImageSide.findUniqueOrThrow({ where: { collectibleId_side: { collectibleId: data.collectibleId, side: data.side ?? ImageSide.FRONT } } });
+      if ((data.side ?? ImageSide.FRONT) === ImageSide.FRONT) await tx.collectible.update({ where: { id: data.collectibleId }, data: { processingStatus: state.publishedVersion ? ProcessingStatus.READY : ProcessingStatus.AWAITING_CROP, processingError: null } });
+    });
+  } else await prisma.collectible.update({ where: { id: data.collectibleId }, data: { processingStatus: ProcessingStatus.AWAITING_CROP, processingError: null } });
   await setSucceeded(data.processingJobId);
 }
 
@@ -244,9 +261,10 @@ async function cropToAsset(data: ProcessingJobData) {
     where: {
       collectibleId: data.collectibleId,
       userId: data.userId,
+      side: data.side ?? ImageSide.FRONT,
       kind: AssetKind.STANDARD,
       status: AssetStatus.AVAILABLE,
-      version: { lte: data.version }
+      version: data.sourceVersion !== undefined ? data.sourceVersion : { lte: data.version }
     },
     orderBy: { version: 'desc' }
   });
@@ -259,6 +277,7 @@ async function cropToAsset(data: ProcessingJobData) {
     });
   }
   if (!standard) throw new Error('缺少标准图');
+  if (data.crop) Object.assign(collectible, { cropX: data.crop.x, cropY: data.crop.y, cropWidth: data.crop.width, cropHeight: data.crop.height, cropRotation: data.crop.rotation, cropBrightness: data.crop.brightness, cropContrast: data.crop.contrast, cropSaturation: data.crop.saturation });
   if (
     collectible.cropX === null ||
     collectible.cropY === null ||
@@ -268,11 +287,14 @@ async function cropToAsset(data: ProcessingJobData) {
   ) {
     throw new Error('缺少裁剪参数');
   }
+
   const source = await getObject(standard.objectKey);
   /* P1：任意角度旋转（非 90° 倍数时必须给 background 补角，这里用白底，输出 JPEG 无透明通道） */
-  const rotated = sharp(source, { limitInputPixels: config.MAX_IMAGE_PIXELS })
-    .rotate(collectible.cropRotation ?? 0, { background: '#ffffff' });
-  const metadata = await rotated.metadata();
+  // metadata() describes the input, not the dimensions after rotation. Materialize
+  // raw pixels so crop coordinates use the actual rotated bounds, without JPEG re-encoding.
+  const rotated = await sharp(source, { limitInputPixels: config.MAX_IMAGE_PIXELS })
+    .rotate(collectible.cropRotation ?? 0, { background: '#ffffff' }).raw().toBuffer({ resolveWithObject: true });
+  const metadata = rotated.info;
   if (!metadata.width || !metadata.height) throw new Error('无法读取裁剪图尺寸');
   const rect = computeCropRect(metadata.width, metadata.height, {
     x: collectible.cropX,
@@ -286,12 +308,12 @@ async function cropToAsset(data: ProcessingJobData) {
   const brightness = collectible.cropBrightness ?? 1;
   const contrast = collectible.cropContrast ?? 1;
   const saturation = collectible.cropSaturation ?? 1;
-  let pipeline = rotated.extract(rect).flatten({ background: { r: 255, g: 255, b: 255 } });
+  let pipeline = sharp(rotated.data, { raw: { width: metadata.width, height: metadata.height, channels: metadata.channels } }).extract(rect).flatten({ background: { r: 255, g: 255, b: 255 } });
   if (brightness !== 1 || saturation !== 1) pipeline = pipeline.modulate({ brightness, saturation });
   if (contrast !== 1) pipeline = pipeline.linear(contrast, -(128 * contrast) + 128); // 标准对比度公式
   const cropped = await pipeline.jpeg({ quality: 90, mozjpeg: true }).toBuffer();
-  const croppedKey = `users/${data.userId}/collectibles/${data.collectibleId}/cropped/v${data.version}.jpg`;
-  const baseKey = `users/${data.userId}/collectibles/${data.collectibleId}`;
+  const croppedKey = `users/${data.userId}/collectibles/${data.collectibleId}/${(data.side ?? ImageSide.FRONT).toLowerCase()}/cropped/v${data.version}.jpg`;
+  const baseKey = `users/${data.userId}/collectibles/${data.collectibleId}/${(data.side ?? ImageSide.FRONT).toLowerCase()}`;
   // 裁剪图必须先写入存储并在 COS 上可见，万象才读得到它。
   // 这里立刻挂一个空 catch，否则失败时会触发未处理拒绝，真正的错误在调用方 await 时抛出。
   const croppedAsset = upsertAsset({
@@ -316,25 +338,21 @@ export async function cropImage(data: ProcessingJobData) {
   await croppedAsset;
   if (data.rematte) {
     const cutout = await produceCutout({ croppedKey, croppedAsset, rect });
-    await Promise.all([
-      upsertAsset({
-        ...data,
-        kind: AssetKind.CUTOUT,
-        key: `${baseKey}/cutout/v${data.version}.png`,
-        contentType: 'image/png',
-        body: cutout,
-        width: rect.width,
-        height: rect.height
-      }),
-      writeRenditions(data, cutout, baseKey, { trim: true })
-    ]);
+    /* 串行写库，理由同 writeRenditions：避免同收藏并行 Serializable 事务互撞（40001） */
+    await upsertAsset({
+      ...data,
+      kind: AssetKind.CUTOUT,
+      key: `${baseKey}/cutout/v${data.version}.png`,
+      contentType: 'image/png',
+      body: cutout,
+      width: rect.width,
+      height: rect.height
+    });
+    await writeRenditions(data, cutout, baseKey, { trim: true });
   } else {
     await writeRenditions(data, cropped, baseKey, { trim: false });
   }
-  await prisma.collectible.update({
-    where: { id: data.collectibleId },
-    data: { processingStatus: ProcessingStatus.READY, processingError: null }
-  });
+  await publishSide(data, !!data.rematte);
   await setSucceeded(data.processingJobId);
 }
 
@@ -345,38 +363,53 @@ export async function matImage(data: ProcessingJobData) {
   const cutout = await produceCutout({ croppedKey, croppedAsset, rect });
 
   // 抠图结果尺寸已由万象实现按裁剪图尺寸校验过，无需再解码确认。
-  await Promise.all([
-    upsertAsset({
-      ...data,
-      kind: AssetKind.CUTOUT,
-      key: `${baseKey}/cutout/v${data.version}.png`,
-      contentType: 'image/png',
-      body: cutout,
-      width: rect.width,
-      height: rect.height
-    }),
-    writeRenditions(data, cutout, baseKey, { trim: true })
-  ]);
-
-  await prisma.collectible.update({
-    where: { id: data.collectibleId },
-    data: { processingStatus: ProcessingStatus.READY, processingError: null }
+  /* 串行写库，理由同 writeRenditions：避免同收藏并行 Serializable 事务互撞（40001） */
+  await upsertAsset({
+    ...data,
+    kind: AssetKind.CUTOUT,
+    key: `${baseKey}/cutout/v${data.version}.png`,
+    contentType: 'image/png',
+    body: cutout,
+    width: rect.width,
+    height: rect.height
   });
+  await writeRenditions(data, cutout, baseKey, { trim: true });
+
+  await publishSide(data, true);
   await setSucceeded(data.processingJobId);
+}
+
+async function publishSide(data: ProcessingJobData, matted: boolean) {
+  if (data.sourceVersion === undefined) {
+    await prisma.collectible.update({ where: { id: data.collectibleId }, data: { processingStatus: ProcessingStatus.READY, processingError: null } });
+    return;
+  }
+  await prisma.$transaction(async tx => {
+    await tx.$queryRaw`SELECT "id" FROM "Collectible" WHERE "id" = ${data.collectibleId} FOR UPDATE`;
+    const changed = await tx.collectibleImageSide.updateMany({ where: { collectibleId: data.collectibleId, side: data.side ?? ImageSide.FRONT, sourceVersion: data.sourceVersion, processingVersion: data.version }, data: { publishedVersion: data.version, publishedSourceVersion: data.sourceVersion, processingStatus: ProcessingStatus.READY, processingError: null, ...(matted ? { mattedSourceVersion: data.sourceVersion } : {}) } });
+    if (!changed.count) throw new Error('STALE_IMAGE_JOB');
+    if ((data.side ?? ImageSide.FRONT) === ImageSide.FRONT) await tx.collectible.update({ where: { id: data.collectibleId }, data: { processingStatus: ProcessingStatus.READY, processingError: null } });
+  });
 }
 
 export async function failProcessing(data: ProcessingJobData, error: unknown) {
   const message = error instanceof Error ? error.message.slice(0, 500) : '图片处理失败';
-  await prisma.$transaction([
-    prisma.processingJob.update({
-      where: { id: data.processingJobId },
-      data: { status: JobStatus.FAILED, errorMessage: message, finishedAt: new Date() }
-    }),
-    prisma.collectible.update({
-      where: { id: data.collectibleId },
-      data: { processingStatus: ProcessingStatus.FAILED, processingError: message }
-    })
-  ]);
+  if (data.sourceVersion === undefined) {
+    await prisma.$transaction([
+      prisma.processingJob.update({ where: { id: data.processingJobId }, data: { status: JobStatus.FAILED, errorMessage: message, finishedAt: new Date() } }),
+      prisma.collectible.update({ where: { id: data.collectibleId }, data: { processingStatus: ProcessingStatus.FAILED, processingError: message } })
+    ]);
+    return;
+  }
+  await prisma.$transaction(async tx => {
+    await tx.$queryRaw`SELECT "id" FROM "Collectible" WHERE "id" = ${data.collectibleId} FOR UPDATE`;
+    await tx.processingJob.updateMany({ where: { id: data.processingJobId }, data: { status: JobStatus.FAILED, errorMessage: message, finishedAt: new Date() } });
+    const changed = await tx.collectibleImageSide.updateMany({ where: { collectibleId: data.collectibleId, side: data.side ?? ImageSide.FRONT, processingVersion: data.version, sourceVersion: data.sourceVersion }, data: { processingStatus: ProcessingStatus.FAILED, processingError: message } });
+    if (changed.count && (data.side ?? ImageSide.FRONT) === ImageSide.FRONT) {
+      const state = await tx.collectibleImageSide.findUniqueOrThrow({ where: { collectibleId_side: { collectibleId: data.collectibleId, side: ImageSide.FRONT } } });
+      await tx.collectible.update({ where: { id: data.collectibleId }, data: { processingStatus: state.publishedVersion ? ProcessingStatus.READY : ProcessingStatus.FAILED, processingError: message } });
+    }
+  });
 }
 
 /**
@@ -384,13 +417,20 @@ export async function failProcessing(data: ProcessingJobData, error: unknown) {
  * 可重新触发。AWAITING_CROP 是在等用户裁剪，可能合法停留很久，不参与对账。
  */
 export async function reconcileStuckProcessing(stuckBefore: Date) {
-  const result = await prisma.collectible.updateMany({
-    where: {
-      processingStatus: { in: [ProcessingStatus.NORMALIZING, ProcessingStatus.MATTING] },
-      updatedAt: { lt: stuckBefore }
-    },
-    data: { processingStatus: ProcessingStatus.FAILED, processingError: '处理超时，请重新上传图片' }
-  });
+  const stuck = await prisma.collectibleImageSide.findMany({ where: { processingStatus: { in: [ProcessingStatus.NORMALIZING, ProcessingStatus.CROPPING, ProcessingStatus.MATTING, ProcessingStatus.UPLOADING] }, sourceVersion: { gt: 0 }, updatedAt: { lt: stuckBefore } } });
+  let count = 0;
+  for (const state of stuck) {
+    const jobs = await prisma.processingJob.findMany({ where: { collectibleId: state.collectibleId, side: state.side, version: state.processingVersion, status: { in: [JobStatus.QUEUED, JobStatus.RUNNING] } } });
+    for (const job of jobs) await failProcessing({ processingJobId: job.id, collectibleId: job.collectibleId, userId: job.userId, side: state.side, version: state.processingVersion, sourceVersion: state.sourceVersion }, new Error('处理超时，请重试或重新上传图片'));
+    if (!jobs.length) await prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT "id" FROM "Collectible" WHERE "id" = ${state.collectibleId} FOR UPDATE`;
+      const message = '上传超时，请重新选择图片';
+      const changed = await tx.collectibleImageSide.updateMany({ where: { collectibleId: state.collectibleId, side: state.side, processingVersion: state.processingVersion, processingStatus: state.processingStatus, updatedAt: { lt: stuckBefore } }, data: { processingStatus: ProcessingStatus.FAILED, processingError: message } });
+      if (changed.count && state.side === ImageSide.FRONT) await tx.collectible.update({ where: { id: state.collectibleId }, data: { processingStatus: state.publishedVersion !== null ? ProcessingStatus.READY : ProcessingStatus.FAILED, processingError: message } });
+    });
+    count++;
+  }
+  const result = { count };
   if (result.count > 0) {
     console.warn(JSON.stringify({ event: 'reconcile_stuck_collectible', count: result.count }));
   }

@@ -1,91 +1,88 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import { onLoad, onUnload } from '@dcloudio/uni-app';
-import type { Collectible } from '../../../types';
 import { dataService } from '../../../services/data';
-
-const id = ref(''); const stage = ref<'normalize' | 'crop' | 'matting' | ''>(''); const item = ref<Collectible | null>(null);
-const elapsed = ref(0); const failureMessage = ref(''); const deleting = ref(false); const retrying = ref(false);
+import { getSide, sideLabel, readEditor, writeEditor, clearEditor, type ImageOperation, type ImageSide } from '../../../services/image-editor';
+const id = ref(''); const stage = ref(''); const side = ref<ImageSide>('FRONT');
+const operations = ref<ImageOperation[]>([]);
+const elapsed = ref(0); const failureMessage = ref(''); const retrying = ref(false);
 let timer: ReturnType<typeof setTimeout> | undefined;
-let startedAt = 0;
-
-// 轮询间隔决定用户看到状态变化的滞后，1 秒兼顾响应速度和服务端压力。
-const POLL_INTERVAL_MS = 1_000;
-
+let startedAt = 0; let alive = true;
+function toMetadata() {
+  writeEditor(id.value, 'selected', side.value);
+  const pages = getCurrentPages();
+  const previous = pages.slice(0, -1).map(page => page.route).lastIndexOf('package-editor/pages/metadata/index');
+  if (previous >= 0) uni.navigateBack({ delta: pages.length - 1 - previous });
+  else uni.redirectTo({ url: `/package-editor/pages/metadata/index?id=${id.value}&side=${side.value}` });
+}
 async function poll() {
+  if (!alive) return;
   try {
-    item.value = await dataService.collectible(id.value);
-    // 用真实时间戳计算等待时长：轮询本身有耗时，按次数累加会低估实际等待。
+    const item = await dataService.collectible(id.value);
     elapsed.value = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
-    if (item.value.processingStatus === 'AWAITING_CROP') {
-      /* 抠图改为用户可选（2026-09-29）：规范化完成后直接进编辑页，
-         由编辑页的「自动抠图」按钮手动触发，不再自动全幅 crop。 */
-      return void uni.redirectTo({ url: `/package-editor/pages/metadata/index?id=${item.value.id}` });
+    const pending: ImageOperation[] = []; const errors: string[] = [];
+    for (const op of operations.value) {
+      const image = getSide(item, op.side);
+      if (op.error && !op.jobId) { pending.push(op); errors.push(`${sideLabel(op.side)}：${op.error}`); continue; }
+      if (image?.processingStatus === 'READY' && (op.version === undefined || image.publishedVersion === op.version)) {
+        const crop = readEditor<{ drafts: Partial<Record<ImageSide, { dirty: boolean }>> }>(id.value, 'crop');
+        if (crop?.drafts[op.side]) { crop.drafts[op.side]!.dirty = false; writeEditor(id.value, 'crop', crop); }
+        continue;
+      }
+      if (stage.value === 'normalize' && image?.processingStatus === 'AWAITING_CROP') continue;
+      if (!image || image.processingStatus === 'FAILED' || (op.version !== undefined && image.processingVersion !== op.version)) {
+        op.error = image?.processingError || '图片处理失败或已被替换';
+        errors.push(`${sideLabel(op.side)}：${op.error}`);
+      }
+      pending.push(op);
     }
-    if (item.value.processingStatus === 'READY') return void uni.redirectTo({ url: `/package-editor/pages/metadata/index?id=${item.value.id}` });
-    if (item.value.processingStatus === 'FAILED') {
-      failureMessage.value = item.value.processingError || '服务未返回图片处理失败原因';
-      return;
-    }
-    timer = setTimeout(() => void poll(), POLL_INTERVAL_MS);
-  } catch (error) {
-    failureMessage.value = error instanceof Error ? error.message : '图片处理状态查询失败';
-  }
+    operations.value = pending; writeEditor(id.value, 'operations', pending);
+    if (!pending.length) { clearEditor(id.value, 'operations'); clearEditor(id.value, 'crop'); toMetadata(); return; }
+    const running = pending.some(op => !op.error);
+    if (errors.length && !running) { failureMessage.value = errors.join('；'); retrying.value = false; return; }
+    if (elapsed.value > 120) { failureMessage.value = '图片处理超时，请重试或返回编辑'; retrying.value = false; return; }
+    timer = setTimeout(() => void poll(), 1000);
+  } catch (error) { if (alive) { failureMessage.value = error instanceof Error ? error.message : '状态查询失败'; retrying.value = false; } }
 }
-
-async function deleteAndExit() {
-  if (deleting.value) return;
-  deleting.value = true;
-  try {
-    await dataService.removeCollectible(id.value);
-    uni.reLaunch({ url: '/pages/showcase/index' });
-  } catch (error) {
-    uni.showToast({ title: error instanceof Error ? error.message : '删除失败', icon: 'none' });
-    deleting.value = false;
-  }
-}
-/* 失败重试：裁剪（免费）或抠图用各自端点重跑一次，沿用已保存的裁剪参数（抠图可省参） */
 async function retry() {
-  if (retrying.value) return;
-  retrying.value = true;
+  if (retrying.value) return; retrying.value = true;
   try {
-    if (stage.value === 'matting') await dataService.matte(id.value);
-    else if (stage.value === 'crop') await dataService.crop(id.value, item.value?.crop ?? { x: 0, y: 0, width: 1, height: 1, rotation: 0 });
-    else await dataService.crop(id.value, item.value?.crop ?? { x: 0, y: 0, width: 1, height: 1, rotation: 0 });
-    failureMessage.value = ''; elapsed.value = 0; startedAt = Date.now();
-    void poll();
-  } catch (error) {
-    failureMessage.value = error instanceof Error ? error.message : '重试失败';
-    retrying.value = false;
-  }
+    const current = await dataService.collectible(id.value);
+    for (const op of operations.value) {
+      const image = getSide(current, op.side);
+      if (image?.processingStatus === 'READY' && image.publishedVersion === op.version) continue;
+      if (op.jobId && image && ['NORMALIZING', 'CROPPING', 'MATTING'].includes(image.processingStatus)) { op.error = undefined; continue; }
+      if (op.sourceVersion !== undefined && op.sourceVersion !== image?.sourceVersion) { op.error = '图片已替换，请返回编辑'; continue; }
+      const crop = op.crop ?? image?.crop ?? { x: 0, y: 0, width: 1, height: 1, rotation: 0 };
+      try {
+        const result = op.matte && !image?.matted ? await dataService.matte(id.value, { ...crop, side: op.side, sourceVersion: op.sourceVersion }) : await dataService.crop(id.value, { ...crop, side: op.side, sourceVersion: op.sourceVersion });
+        op.jobId = result.jobId; op.version = result.version; op.error = undefined;
+      } catch (error) { op.jobId = undefined; op.error = error instanceof Error ? error.message : '重试失败'; }
+    }
+    writeEditor(id.value, 'operations', operations.value);
+    failureMessage.value = ''; startedAt = Date.now(); void poll();
+  } catch (error) { failureMessage.value = error instanceof Error ? error.message : '重试失败'; retrying.value = false; }
 }
-/* 返回编辑：失败态也能回编辑页（那里仍可重试或放弃），避免只能删除的死路 */
-function backToEdit() {
-  uni.redirectTo({ url: `/package-editor/pages/metadata/index?id=${id.value}` });
-}
-onLoad((query) => {
-  if (typeof query?.id !== 'string' || (query.stage !== 'normalize' && query.stage !== 'crop' && query.stage !== 'matting')) {
-    failureMessage.value = '图片处理页面参数无效';
-    return;
-  }
-  id.value = query.id;
-  stage.value = query.stage;
-  startedAt = Date.now();
-  void poll();
+function backToEdit() { toMetadata(); }
+onLoad(query => {
+  if (typeof query?.id !== 'string') { failureMessage.value = '处理页面参数无效'; return; }
+  id.value = query.id; stage.value = String(query.stage ?? 'crop'); side.value = query.side === 'BACK' ? 'BACK' : 'FRONT';
+  operations.value = readEditor<ImageOperation[]>(id.value, 'operations') ?? [{ side: side.value, matte: stage.value === 'matting' }];
+  startedAt = Date.now(); void poll();
 });
-onUnload(() => { if (timer) clearTimeout(timer); });
+onUnload(() => { alive = false; if (timer) clearTimeout(timer); });
 </script>
 
 <template>
   <view class="page processing-page"><view class="processing-card card">
     <view v-if="!failureMessage" class="spinner"><view /><view /><view /></view><view v-else class="failed-mark">!</view>
-    <text class="eyebrow">AUTO CUTOUT</text><text class="title">{{ failureMessage ? '图片处理失败' : stage === 'normalize' ? '正在准备照片' : stage === 'crop' ? '正在裁剪照片' : '正在自动抠图' }}</text>
+    <text class="eyebrow">AUTO CUTOUT</text><text class="title">{{ failureMessage ? '部分图片处理失败' : stage === 'normalize' ? '正在准备照片' : stage === 'crop' ? '正在裁剪照片' : '正在自动抠图' }}</text>
     <text class="description">{{ failureMessage || (stage === 'crop' ? '裁剪完成后将回到信息填写，可再选择是否抠图。' : '抠图结束后，将自动进入信息与分类填写。') }}</text>
     <text v-if="!failureMessage" class="elapsed">已等待 {{ elapsed }} 秒</text>
     <view v-else class="actions">
       <button class="primary-button" :disabled="retrying || !id" @tap="retry">{{ retrying ? '正在重试…' : '重试' }}</button>
       <button class="secondary-button" :disabled="retrying" @tap="backToEdit">返回编辑</button>
-      <button class="ghost-button" :disabled="deleting || retrying || !id" @tap="deleteAndExit">{{ deleting ? '正在删除…' : '删除这次记录' }}</button>
+
     </view>
   </view></view>
 </template>

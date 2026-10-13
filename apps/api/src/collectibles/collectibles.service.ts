@@ -1,5 +1,7 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { AssetKind, AssetStatus, JobStatus, JobType, ProcessingStatus, Prisma } from '@prisma/client';
+import { AssetKind, AssetStatus, ImageSide, JobStatus, JobType, ProcessingStatus, Prisma } from '@prisma/client';
+import { imageRevision, selectSideAssets } from '@bagcollect/contracts';
+import { assertImageWritable, imageData, lockImageOwner, failImageSubmission } from '../common/image-sides.js';
 import type { CropInput, MatteInput } from '@bagcollect/contracts';
 import { ApiError } from '../common/api-error.js';
 import { QUOTA_COUNTED_STATUSES } from '../common/quota.js';
@@ -37,91 +39,41 @@ export class CollectiblesService {
       });
   }
 
-  /** 官方袋子的最新可用图片签名 URL（按 kind）。认领的收藏自己没有图时回退到这里。 */
-  private async officialUrlsByKind(bagId: string): Promise<Partial<Record<AssetKind, string>>> {
-    const assets = await this.prisma.officialBagImage.findMany({
-      where: { officialBagId: bagId, status: AssetStatus.AVAILABLE },
-      orderBy: { version: 'desc' }
-    });
-    const first = (kind: AssetKind) => assets.find((asset) => asset.kind === kind);
-    const entries = await Promise.all(
-      [AssetKind.THUMBNAIL, AssetKind.DISPLAY, AssetKind.STANDARD, AssetKind.CUTOUT].map(async (kind) => {
-        const asset = first(kind);
-        return [kind, asset ? await this.cos.signedUrl(asset.objectKey) : undefined] as const;
-      })
-    );
-    return Object.fromEntries(entries) as Partial<Record<AssetKind, string>>;
-  }
-
-  /** 官方袋子缩略图签名 URL（列表页认领收藏按需回退，只查缩略图）。 */
-  private async officialThumbnailUrl(bagId: string): Promise<string | undefined> {
-    const thumbnail = await this.prisma.officialBagImage.findFirst({
-      where: { officialBagId: bagId, kind: AssetKind.THUMBNAIL, status: AssetStatus.AVAILABLE },
-      orderBy: { version: 'desc' }
-    });
-    return thumbnail ? this.cos.signedUrl(thumbnail.objectKey) : undefined;
-  }
-
   private async toDto(collectible: any) {
-    const urls = await this.assets.urlsByKind(collectible.id, collectible.userId);
-    const official = collectible.sourceOfficialBagId
-      ? await this.officialUrlsByKind(collectible.sourceOfficialBagId)
-      : {};
-    const url = (kind: AssetKind) => urls[kind] ?? official[kind];
+    const official = !!collectible.sourceOfficialBagId;
+    const images = await imageData(this.prisma, this.cos, collectible.sourceOfficialBagId ?? collectible.id, official);
+    const front = images.sides.FRONT;
     return {
-      id: collectible.id,
-      name: collectible.name,
-      notes: collectible.notes,
-      quantity: collectible.quantity ?? 1,
-      visibility: collectible.visibility ?? 'PUBLIC',
+      id: collectible.id, name: collectible.name, notes: collectible.notes,
+      quantity: collectible.quantity ?? 1, visibility: collectible.visibility ?? 'PUBLIC',
       tags: collectible.tags.map((entry: any) => entry.tag.displayName),
-      shelfId: collectible.shelfId,
-      shelfName: collectible.shelf.name,
+      shelfId: collectible.shelfId, shelfName: collectible.shelf.name,
       processingStatus: collectible.processingStatus,
-      ...(collectible.processingError ? { processingError: collectible.processingError } : {}),
-      ...(url(AssetKind.THUMBNAIL) ? { thumbnailUrl: url(AssetKind.THUMBNAIL) } : {}),
-      ...(url(AssetKind.DISPLAY) ? { displayImageUrl: url(AssetKind.DISPLAY) } : {}),
-      ...(url(AssetKind.STANDARD) ? { standardImageUrl: url(AssetKind.STANDARD) } : {}),
-      /* 抠图结果：有值表示已有透明图，编辑页据此隐藏「自动抠图」按钮（裁剪不产出该资产） */
-      ...(url(AssetKind.CUTOUT) ? { cutoutImageUrl: url(AssetKind.CUTOUT) } : {}),
-      /* 已保存的裁剪参数：编辑页「自动抠图」要原样回传，否则会把用户裁好的画面重置成全幅 */
-      ...(collectible.cropX !== null
-        ? {
-            crop: {
-              x: collectible.cropX,
-              y: collectible.cropY ?? 0,
-              width: collectible.cropWidth ?? 1,
-              height: collectible.cropHeight ?? 1,
-              rotation: collectible.cropRotation ?? 0,
-              ...(collectible.cropBrightness !== null ? { brightness: collectible.cropBrightness } : {}),
-              ...(collectible.cropContrast !== null ? { contrast: collectible.cropContrast } : {}),
-              ...(collectible.cropSaturation !== null ? { saturation: collectible.cropSaturation } : {})
-            }
-          }
-        : {}),
-      addedAt: collectible.addedAt.toISOString(),
-      updatedAt: collectible.updatedAt.toISOString()
+      ...images, imageEditable: !official,
+      ...(official ? { sourceOfficialBagId: collectible.sourceOfficialBagId } : {}),
+      ...(front?.processingError ? { processingError: front.processingError } : {}),
+      ...(front ? { thumbnailUrl: front.thumbnailUrl, displayImageUrl: front.displayImageUrl,
+        standardImageUrl: front.standardImageUrl, cutoutImageUrl: front.cutoutImageUrl, crop: front.crop } : {}),
+      addedAt: collectible.addedAt.toISOString(), updatedAt: collectible.updatedAt.toISOString()
     };
   }
 
   private async toSummary(collectible: any) {
-    const thumbnail = collectible.imageAssets[0];
-    const thumbnailUrl = thumbnail
-      ? await this.assets.signedUrlForObjectKey(thumbnail.objectKey)
-      : collectible.sourceOfficialBagId
-        ? await this.officialThumbnailUrl(collectible.sourceOfficialBagId)
-        : undefined;
+    const source = collectible.sourceOfficialBagId ? collectible.sourceOfficialBag : collectible;
+    const states = source?.imageSides ?? [];
+    const front = states.find((state: any) => state.side === 'FRONT');
+    const candidates = source?.images ?? source?.imageAssets ?? [];
+    const thumbnail = front ? selectSideAssets(candidates, front).THUMBNAIL : candidates[0];
+    const thumbnailUrl = thumbnail ? await this.assets.signedUrlForObjectKey((thumbnail as { objectKey: string }).objectKey) : undefined;
     return {
-      id: collectible.id,
-      name: collectible.name,
-      shelfId: collectible.shelfId,
-      shelfName: collectible.shelf.name,
-      quantity: collectible.quantity ?? 1,
-      visibility: collectible.visibility ?? 'PUBLIC',
-      processingStatus: collectible.processingStatus,
+      id: collectible.id, name: collectible.name, shelfId: collectible.shelfId,
+      shelfName: collectible.shelf.name, quantity: collectible.quantity ?? 1,
+      visibility: collectible.visibility ?? 'PUBLIC', processingStatus: collectible.processingStatus,
+      imageEditable: !collectible.sourceOfficialBagId,
+      ...(collectible.sourceOfficialBagId ? { sourceOfficialBagId: collectible.sourceOfficialBagId } : {}),
+      imageRevision: imageRevision(collectible.sourceOfficialBagId ?? collectible.id, states),
       ...(thumbnailUrl ? { thumbnailUrl } : {}),
-      addedAt: collectible.addedAt.toISOString(),
-      updatedAt: collectible.updatedAt.toISOString()
+      addedAt: collectible.addedAt.toISOString(), updatedAt: collectible.updatedAt.toISOString()
     };
   }
 
@@ -134,12 +86,9 @@ export class CollectiblesService {
 
   private listInclude() {
     return {
-      shelf: true,
-      imageAssets: {
-        where: { kind: AssetKind.THUMBNAIL, status: AssetStatus.AVAILABLE },
-        orderBy: { version: 'desc' as const },
-        take: 1
-      }
+      shelf: true, imageSides: true,
+      imageAssets: { where: { kind: AssetKind.THUMBNAIL, side: ImageSide.FRONT, status: AssetStatus.AVAILABLE } },
+      sourceOfficialBag: { include: { imageSides: true, images: { where: { kind: AssetKind.THUMBNAIL, side: ImageSide.FRONT, status: AssetStatus.AVAILABLE } } } }
     } satisfies Prisma.CollectibleInclude;
   }
 
@@ -261,176 +210,76 @@ export class CollectiblesService {
     return this.detail(userId, id);
   }
 
-  /* 只有「空闲」状态才允许再发起一次处理：AWAITING_CROP 是首次，READY / FAILED 可重跑；
-     正在处理中（UPLOADING / NORMALIZING / CROPPING / MATTING）一律拒绝 */
-  private assertIdle(status: ProcessingStatus, conflictMessage: string) {
-    const idle: ProcessingStatus[] = [
-      ProcessingStatus.AWAITING_CROP,
-      ProcessingStatus.READY,
-      ProcessingStatus.FAILED
-    ];
-    if (!idle.includes(status)) throw new ApiError('CONFLICT', conflictMessage, HttpStatus.CONFLICT);
-  }
-
-  /* 重跑（READY / FAILED 之后再提交）递增版本号：产物写到新版本，
-     不然同名对象被覆盖、签名 URL 不变，前端可能还在读旧图 */
-  private nextVersion(collectible: { processingStatus: ProcessingStatus; processingVersion: number }) {
-    return collectible.processingStatus === ProcessingStatus.AWAITING_CROP
-      ? collectible.processingVersion
-      : collectible.processingVersion + 1;
-  }
-
-  /* 成本闸门：抠图按次计费（万象），每张图只允许成功抠一次。
-     判据是「有没有可用的 CUTOUT 资产」，而不是状态 —— 状态会被后续裁剪改写。
-     仅在 READY（上一次已成功跑完）时把闸门拉死；FAILED 允许重试，避免一次网络抖动就废掉整张图 */
-  private async assertNotMatted(userId: string, collectibleId: string, conflictMessage: string) {
-    const cutout = await this.prisma.imageAsset.findFirst({
-      where: {
-        userId,
-        collectibleId,
-        kind: AssetKind.CUTOUT,
-        status: AssetStatus.AVAILABLE
-      },
-      select: { id: true }
+  private async enqueueImage(userId: string, id: string, input: MatteInput, matte: boolean) {
+    const side = input.side ?? ImageSide.FRONT;
+    const result = await this.prisma.$transaction(async tx => {
+      await lockImageOwner(tx, id, userId);
+      const item = await tx.collectible.findFirst({ where: { id, userId } });
+      if (!item) throw new ApiError('NOT_FOUND', '收藏不存在', HttpStatus.NOT_FOUND);
+      assertImageWritable(item);
+      const state = await tx.collectibleImageSide.findUnique({ where: { collectibleId_side: { collectibleId: id, side } } });
+      if (!state?.sourceVersion) throw new ApiError('CONFLICT', '请先上传这一面的图片', HttpStatus.CONFLICT);
+      if (!['AWAITING_CROP', 'READY', 'FAILED'].includes(state.processingStatus)) throw new ApiError('CONFLICT', '这一面的图片正在处理中', HttpStatus.CONFLICT);
+      if (input.sourceVersion !== undefined && input.sourceVersion !== state.sourceVersion) throw new ApiError('CONFLICT', '图片已替换，请重新打开编辑页', HttpStatus.CONFLICT);
+      const matted = state.mattedSourceVersion === state.sourceVersion;
+      if (matte && matted) throw new ApiError('CONFLICT', '这张来源图片已经抠过图', HttpStatus.CONFLICT);
+      if (matte) {
+        const start = new Date(); start.setHours(0, 0, 0, 0);
+        const [user, count] = await Promise.all([
+          tx.user.findUniqueOrThrow({ where: { id: userId } }),
+          tx.processingJob.count({ where: { userId, type: JobType.MATTING, createdAt: { gte: start }, status: { in: [JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.SUCCEEDED] } } })
+        ]);
+        if (count >= user.dailyMattingQuota) throw new ApiError('QUOTA_EXCEEDED', '今日自动抠图次数已用完', HttpStatus.TOO_MANY_REQUESTS);
+      }
+      const old = (state.crop ?? {}) as Partial<CropInput>;
+      const crop = { x: input.x ?? old.x ?? 0, y: input.y ?? old.y ?? 0,
+        width: input.width ?? old.width ?? 1, height: input.height ?? old.height ?? 1,
+        rotation: input.rotation ?? old.rotation ?? 0,
+        brightness: input.brightness ?? old.brightness ?? 1,
+        contrast: input.contrast ?? old.contrast ?? 1, saturation: input.saturation ?? old.saturation ?? 1 };
+      if (crop.x + crop.width > 1.000001 || crop.y + crop.height > 1.000001) throw new ApiError('VALIDATION', '裁剪区域超出图片', HttpStatus.BAD_REQUEST);
+      const version = state.processingVersion + 1;
+      const status = matte ? ProcessingStatus.MATTING : ProcessingStatus.CROPPING;
+      await tx.collectibleImageSide.update({ where: { collectibleId_side: { collectibleId: id, side } }, data: { processingVersion: version, processingStatus: status, processingError: null, crop } });
+      if (side === ImageSide.FRONT) await tx.collectible.update({ where: { id }, data: {
+        processingStatus: state.publishedVersion ? ProcessingStatus.READY : status, processingVersion: version, processingError: null,
+        cropX: crop.x, cropY: crop.y, cropWidth: crop.width, cropHeight: crop.height, cropRotation: crop.rotation,
+        cropBrightness: crop.brightness, cropContrast: crop.contrast, cropSaturation: crop.saturation
+      } });
+      const name: 'matting' | 'crop' = matte ? 'matting' : 'crop';
+      const key = `${name}:${id}:${side}:v${version}`;
+      const job = await tx.processingJob.create({ data: { userId, collectibleId: id, side, version, sourceVersion: state.sourceVersion,
+        type: matte ? JobType.MATTING : JobType.CROP, status: JobStatus.QUEUED, idempotencyKey: key } });
+      return { name, key, data: { processingJobId: job.id, collectibleId: id, userId, side, version, sourceVersion: state.sourceVersion, crop, rematte: !matte && matted }, status };
     });
-    if (cutout) throw new ApiError('CONFLICT', conflictMessage, HttpStatus.CONFLICT);
-  }
-
-  private cropFields(crop: Partial<CropInput>) {
-    return {
-      cropX: crop.x ?? 0,
-      cropY: crop.y ?? 0,
-      cropWidth: crop.width ?? 1,
-      cropHeight: crop.height ?? 1,
-      cropRotation: crop.rotation ?? 0,
-      cropBrightness: crop.brightness ?? null,
-      cropContrast: crop.contrast ?? null,
-      cropSaturation: crop.saturation ?? null
-    };
-  }
-
-  /** POST /collectibles/:id/crop —— 裁剪：按裁剪参数重新出图（展示图 / 缩略图）。
-   *  该图已抠过时（rematte）会顺带重新抠图，保持透明图与新展示图对齐；
-   *  此举不消耗每日配额（同一张图只计一次万象扣费，配额在 /matte 入口计），也不会被成本闸门拦截。 */
-  private async enqueueCrop(userId: string, id: string, crop: CropInput) {
-    const collectible = await this.prisma.collectible.findFirst({ where: { id, userId } });
-    if (!collectible) throw new ApiError('NOT_FOUND', '收藏不存在', HttpStatus.NOT_FOUND);
-    this.assertIdle(collectible.processingStatus, '图片尚未准备好裁剪');
-    /* 已有透明图的图再次裁剪：必须重新抠图，否则新展示图与旧透明图构图上失配。
-       不拦截、不计配额 —— worker 据 rematte 走「裁剪 + 重新抠图」流水线。
-       透明图判定含官方源：认领的官方袋子若官方已抠图，用户裁剪同样要保持透明 */
-    const rematte = await this.isTransparent(userId, collectible);
-    const version = this.nextVersion(collectible);
-    const idempotencyKey = `crop:${id}:v${version}`;
-    const job = await this.prisma.$transaction(async (transaction) => {
-      await transaction.collectible.update({
-        where: { id },
-        data: {
-          processingStatus: ProcessingStatus.CROPPING,
-          processingError: null,
-          processingVersion: version,
-          ...this.cropFields(crop)
-        }
-      });
-      return transaction.processingJob.upsert({
-        where: { idempotencyKey },
-        create: { userId, collectibleId: id, type: JobType.CROP, status: JobStatus.QUEUED, idempotencyKey },
-        update: { status: JobStatus.QUEUED, errorMessage: null }
-      });
-    });
-    await this.queues.add('crop', { processingJobId: job.id, collectibleId: id, userId, version, rematte }, idempotencyKey);
-    return { jobId: job.id, processingStatus: ProcessingStatus.CROPPING };
-  }
-
-  /** 该图是否已有可用的抠图结果（CUTOUT 资产）。抠图按次计费，凭此判定「是否已抠过」 */
-  private async hasCutout(userId: string, collectibleId: string) {
-    const cutout = await this.prisma.imageAsset.findFirst({
-      where: { userId, collectibleId, kind: AssetKind.CUTOUT, status: AssetStatus.AVAILABLE },
-      select: { id: true }
-    });
-    return !!cutout;
-  }
-
-  /** 该收藏是否已有透明图（决定裁剪是否要 rematte 重抠）：
-   *  用户自己抠过，或引用官方袋子且官方已抠过图（透明展示图）。 */
-  private async isTransparent(userId: string, collectible: { id: string; sourceOfficialBagId: string | null }) {
-    if (await this.hasCutout(userId, collectible.id)) return true;
-    if (!collectible.sourceOfficialBagId) return false;
-    const official = await this.prisma.officialBagImage.findFirst({
-      where: { officialBagId: collectible.sourceOfficialBagId, kind: AssetKind.CUTOUT, status: AssetStatus.AVAILABLE },
-      select: { id: true }
-    });
-    return !!official;
-  }
-
-  /** POST /collectibles/:id/matte —— 抠图：沿用已保存的裁剪参数（从未裁剪过则全幅），
-      override 可只覆盖其中几个字段。配额按次计，与裁剪无关 */
-  private async enqueueMatting(userId: string, id: string, override: MatteInput) {
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-    const [collectible, user, todayJobs] = await Promise.all([
-      this.prisma.collectible.findFirst({ where: { id, userId } }),
-      this.prisma.user.findUnique({ where: { id: userId } }),
-      /* 配额只计「已成功 + 进行中」的抠图，失败的不计入——
-         否则一次万象抖动就会吃掉当日名额、还挡住重试（P1 修复）。
-         同一张图不会并发两次（assertIdle 拦 MATTING），故 QUEUED/RUNNING 不会重复计数 */
-      this.prisma.processingJob.count({
-        where: {
-          userId,
-          type: JobType.MATTING,
-          createdAt: { gte: startOfDay },
-          status: { in: [JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.SUCCEEDED] }
-        }
-      })
-    ]);
-    if (!collectible || !user) throw new ApiError('NOT_FOUND', '收藏不存在', HttpStatus.NOT_FOUND);
-    this.assertIdle(collectible.processingStatus, '图片尚未准备好抠图');
-    /* 每张图只允许抠一次（万象按次计费）：已成功抠过就直接拒绝，不再重复扣费 */
-    if (collectible.processingStatus === ProcessingStatus.READY) {
-      await this.assertNotMatted(userId, id, '这张图片已经抠过图了，每张图片仅支持抠图一次');
+    try { await this.queues.add(result.name, result.data, result.key); }
+    catch (error) {
+      await failImageSubmission(this.prisma, result.data);
+      throw error;
     }
-    if (todayJobs >= user.dailyMattingQuota) {
-      throw new ApiError('QUOTA_EXCEEDED', '今日自动抠图次数已用完', HttpStatus.TOO_MANY_REQUESTS);
-    }
-    const version = this.nextVersion(collectible);
-    /* 抠图不能凭空改变画面：优先用请求里给的字段，其次用上次保存的裁剪参数，都没有才按全幅 */
-    const crop = {
-      x: override.x ?? collectible.cropX ?? 0,
-      y: override.y ?? collectible.cropY ?? 0,
-      width: override.width ?? collectible.cropWidth ?? 1,
-      height: override.height ?? collectible.cropHeight ?? 1,
-      rotation: override.rotation ?? collectible.cropRotation ?? 0,
-      brightness: override.brightness ?? collectible.cropBrightness ?? undefined,
-      contrast: override.contrast ?? collectible.cropContrast ?? undefined,
-      saturation: override.saturation ?? collectible.cropSaturation ?? undefined
-    };
-    const idempotencyKey = `matting:${id}:v${version}`;
-    const job = await this.prisma.$transaction(async (transaction) => {
-      await transaction.collectible.update({
-        where: { id },
-        data: {
-          processingStatus: ProcessingStatus.MATTING,
-          processingError: null,
-          processingVersion: version,
-          ...this.cropFields(crop)
-        }
-      });
-      return transaction.processingJob.upsert({
-        where: { idempotencyKey },
-        create: { userId, collectibleId: id, type: JobType.MATTING, status: JobStatus.QUEUED, idempotencyKey },
-        update: { status: JobStatus.QUEUED, errorMessage: null }
-      });
+    return { jobId: result.data.processingJobId, side, version: result.data.version, processingStatus: result.status };
+  }
+  crop(userId: string, id: string, crop: CropInput) { return this.enqueueImage(userId, id, crop, false); }
+  matte(userId: string, id: string, input: MatteInput) { return this.enqueueImage(userId, id, input, true); }
+
+  async removeImage(userId: string, id: string, side: ImageSide) {
+    if (side !== ImageSide.BACK) throw new ApiError('CONFLICT', '正面主图不能移除，请替换图片', HttpStatus.CONFLICT);
+    const keys = await this.prisma.$transaction(async tx => {
+      await lockImageOwner(tx, id, userId);
+      const item = await tx.collectible.findFirst({ where: { id, userId } });
+      if (!item) throw new ApiError('NOT_FOUND', '收藏不存在', HttpStatus.NOT_FOUND);
+      assertImageWritable(item);
+      const state = await tx.collectibleImageSide.findUnique({ where: { collectibleId_side: { collectibleId: id, side } } });
+      if (!state) return [];
+      const assets = await tx.imageAsset.findMany({ where: { collectibleId: id, side } });
+      await tx.collectibleImageSide.update({ where: { collectibleId_side: { collectibleId: id, side } }, data: { sourceVersion: 0, processingVersion: { increment: 1 }, publishedVersion: null, mattedSourceVersion: null, crop: Prisma.DbNull, processingStatus: ProcessingStatus.UPLOADING, processingError: null } });
+      await tx.imageAsset.deleteMany({ where: { collectibleId: id, side } });
+      const bytes = assets.reduce((sum, asset) => sum + (asset.status === AssetStatus.AVAILABLE ? asset.byteSize : 0n), 0n);
+      await tx.$executeRaw`UPDATE "User" SET "storageUsedBytes" = GREATEST(0, "storageUsedBytes" - ${bytes}) WHERE "id" = ${userId}`;
+      return assets.map(asset => asset.objectKey);
     });
-    await this.queues.add('matting', { processingJobId: job.id, collectibleId: id, userId, version }, idempotencyKey);
-    return { jobId: job.id, processingStatus: ProcessingStatus.MATTING };
-  }
-
-  crop(userId: string, id: string, crop: CropInput) {
-    return this.enqueueCrop(userId, id, crop);
-  }
-
-  matte(userId: string, id: string, override: MatteInput) {
-    return this.enqueueMatting(userId, id, override);
+    if (keys.length) await this.queues.add('cleanup', { keys });
+    return this.detail(userId, id);
   }
 
   async remove(userId: string, id: string) {

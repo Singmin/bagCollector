@@ -1,0 +1,22 @@
+# 本地 Windows 开发专用覆盖文件（无需提交）。
+#
+# 背景：Windows/Hyper-V 的动态端口保留范围（netsh int ipv4 show excludedportrange
+# protocol=tcp）常把 5336-5435 划走，导致 postgres-dev(5432) / postgres-test(5433)
+# 绑定失败："bind: An attempt was made to access a socket in a way forbidden by its
+# access permissions"。
+#
+# 这里把两个 Postgres 的宿主端口换到不受保留范围影响的 15432/15433。
+# 行尾的 !override 是 Compose v2.24+ 的写法：覆盖而不是追加基础文件里的 ports。
+# 使用方式：
+#   docker compose -f infra/docker-compose.local.yml \
+#     -f infra/docker-compose.local.override.yml up -d --wait
+# 同时 .env 里的 DATABASE_URL / TEST_DATABASE_URL 也要写成 15432 / 15433。
+
+services:
+  postgres-dev:
+    ports: !override
+      - "127.0.0.1:15432:5432"
+
+  postgres-test:
+    ports: !override
+      - "127.0.0.1:15433:5432"

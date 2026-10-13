@@ -1,6 +1,7 @@
+import { selectSideAssets, type ImageSideDto } from '@bagcollect/contracts';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import {
-  AssetKind,
+  AssetKind, ImageSide,
   AssetStatus,
   OfficialBagStatus,
   OfficialProcessStatus,
@@ -42,6 +43,7 @@ type CollectibleRow = Prisma.CollectibleGetPayload<{
 }>;
 
 interface ResolvedImages {
+  sides?: Partial<Record<ImageSide, ImageSideDto>>;
   thumbnailUrl?: string;
   displayImageUrl?: string;
   hasCutout: boolean;
@@ -86,32 +88,20 @@ export class SubmissionsAdminService {
       where: { collectibleId: { in: collectibleIds }, status: AssetStatus.AVAILABLE },
       orderBy: { version: 'desc' }
     });
-    const latest = new Map<string, Map<AssetKind, (typeof assets)[number]>>();
-    for (const asset of assets) {
-      const resolved = result.get(asset.collectibleId)!;
-      resolved.byteSize += Number(asset.byteSize);
-      const byKind = latest.get(asset.collectibleId) ?? new Map<AssetKind, (typeof assets)[number]>();
-      if (!byKind.has(asset.kind)) byKind.set(asset.kind, asset);
-      latest.set(asset.collectibleId, byKind);
-    }
-
-    const signTargets: { collectibleId: string; kind: AssetKind; objectKey: string }[] = [];
-    for (const [collectibleId, byKind] of latest) {
-      const resolved = result.get(collectibleId)!;
-      if (byKind.has(AssetKind.CUTOUT)) resolved.hasCutout = true;
-      const thumbnail = byKind.get(AssetKind.THUMBNAIL);
-      const display = byKind.get(AssetKind.DISPLAY);
-      if (thumbnail) signTargets.push({ collectibleId, kind: AssetKind.THUMBNAIL, objectKey: thumbnail.objectKey });
-      if (display) signTargets.push({ collectibleId, kind: AssetKind.DISPLAY, objectKey: display.objectKey });
-    }
-    await Promise.all(
-      signTargets.map(async ({ collectibleId, kind, objectKey }) => {
-        const resolved = result.get(collectibleId)!;
-        const url = await this.cos.signedUrl(objectKey);
-        if (kind === AssetKind.THUMBNAIL) resolved.thumbnailUrl = url;
-        else resolved.displayImageUrl = url;
-      })
-    );
+    const states = await this.prisma.collectibleImageSide.findMany({ where: { collectibleId: { in: collectibleIds } } });
+    for (const asset of assets) result.get(asset.collectibleId)!.byteSize += Number(asset.byteSize);
+    await Promise.all(states.map(async state => {
+      const selected = selectSideAssets(assets.filter(asset => asset.collectibleId === state.collectibleId), state);
+      const dto: ImageSideDto = { side: state.side, sourceVersion: state.sourceVersion, processingVersion: state.processingVersion,
+        publishedVersion: state.publishedVersion, processingStatus: state.processingStatus,
+        ...(state.processingError ? { processingError: state.processingError } : {}), matted: state.mattedSourceVersion === state.sourceVersion };
+      await Promise.all(Object.entries({ thumbnailUrl: 'THUMBNAIL', displayImageUrl: 'DISPLAY', cutoutImageUrl: 'CUTOUT' }).map(async ([key, kind]) => {
+        const asset = selected[kind]; if (asset) Object.assign(dto, { [key]: await this.cos.signedUrl(asset.objectKey) });
+      }));
+      const entry = result.get(state.collectibleId)!;
+      entry.sides ??= {}; entry.sides[state.side] = dto;
+      if (state.side === ImageSide.FRONT) { entry.thumbnailUrl = dto.thumbnailUrl; entry.displayImageUrl = dto.displayImageUrl; entry.hasCutout = !!dto.cutoutImageUrl; }
+    }));
     return result;
   }
 
@@ -129,7 +119,7 @@ export class SubmissionsAdminService {
       ...(collectible.promotedBagId ? { promotedBagId: collectible.promotedBagId } : {}),
       ...(images.thumbnailUrl ? { thumbnailUrl: images.thumbnailUrl } : {}),
       ...(images.displayImageUrl ? { displayImageUrl: images.displayImageUrl } : {}),
-      hasCutout: images.hasCutout,
+      sides: images.sides, hasCutout: images.hasCutout,
       byteSize: images.byteSize,
       addedAt: collectible.addedAt.toISOString(),
       ...(collectible.reviewedAt ? { reviewedAt: collectible.reviewedAt.toISOString() } : {})
@@ -236,7 +226,7 @@ export class SubmissionsAdminService {
       include: {
         shelf: { select: { name: true } },
         tags: { include: { tag: true } },
-        imageAssets: { where: { status: AssetStatus.AVAILABLE }, orderBy: { version: 'desc' } }
+        imageSides: true, imageAssets: { where: { status: AssetStatus.AVAILABLE }, orderBy: { version: 'desc' } }
       }
     });
     if (!collectible) throw new ApiError('NOT_FOUND', '用户袋子不存在', HttpStatus.NOT_FOUND);
@@ -244,22 +234,17 @@ export class SubmissionsAdminService {
       throw new ApiError('CONFLICT', '该袋子已纳入过官方库', HttpStatus.CONFLICT);
     }
 
-    const latest = new Map<AssetKind, (typeof collectible.imageAssets)[number]>();
-    for (const asset of collectible.imageAssets) {
-      if (!latest.has(asset.kind)) latest.set(asset.kind, asset);
-    }
-    const standard = latest.get(AssetKind.STANDARD);
-    const display = latest.get(AssetKind.DISPLAY);
-    const thumbnail = latest.get(AssetKind.THUMBNAIL);
-    if (!standard || !display || !thumbnail) {
-      throw new ApiError('CONFLICT', '该袋子图片尚未处理完成，无法纳入官方库', HttpStatus.CONFLICT);
-    }
-
+    const frontState = collectible.imageSides.find(state => state.side === ImageSide.FRONT);
+    if (!frontState?.publishedVersion) throw new ApiError('CONFLICT', '正面尚未处理完成', HttpStatus.CONFLICT);
+    const committedSides = collectible.imageSides.filter(state => state.publishedVersion !== null);
+    const selections = committedSides.map(state => ({ state, assets: selectSideAssets(collectible.imageAssets, { ...state, sourceVersion: state.publishedSourceVersion ?? state.sourceVersion }) }));
+    const latest = selections.find(selection => selection.state.side === ImageSide.FRONT)!.assets;
+    if (!latest.STANDARD || !latest.DISPLAY || !latest.THUMBNAIL) throw new ApiError('CONFLICT', '缺少完整正面产物，无法纳入官方库', HttpStatus.CONFLICT);
     const name = input.name?.trim() || collectible.name;
     const brandId = input.brandId !== undefined ? await this.resolveBrandId(input.brandId) : null;
     const notes = input.notes ?? collectible.notes;
     const tags = input.tags ? this.normalizeTags(input.tags) : collectible.tags.map((entry) => entry.tag.displayName);
-    const matting = latest.has(AssetKind.CUTOUT);
+    const matting = !!latest.CUTOUT;
 
     const max = await this.prisma.officialBag.aggregate({ _max: { sortOrder: true } });
     const bag = await this.prisma.officialBag.create({
@@ -279,29 +264,20 @@ export class SubmissionsAdminService {
 
     const copiedKeys: string[] = [];
     try {
-      const kinds: AssetKind[] = [AssetKind.STANDARD, AssetKind.DISPLAY, AssetKind.THUMBNAIL];
-      if (latest.has(AssetKind.CUTOUT)) kinds.push(AssetKind.CUTOUT);
-      for (const kind of kinds) {
-        const asset = latest.get(kind)!;
-        const body = await this.cos.getObject(asset.objectKey);
-        const extension = EXTENSION[asset.contentType] ?? 'bin';
-        const key = `official/${bag.id}/${kind.toLowerCase()}/v1.${extension}`;
-        await this.cos.putObject(key, body, asset.contentType);
-        copiedKeys.push(key);
-        await this.prisma.officialBagImage.create({
-          data: {
-            officialBagId: bag.id,
-            kind,
-            status: AssetStatus.AVAILABLE,
-            objectKey: key,
-            contentType: asset.contentType,
-            declaredByteSize: asset.byteSize,
-            byteSize: asset.byteSize,
-            width: asset.width,
-            height: asset.height,
-            version: 1
-          }
-        });
+      for (const { state, assets } of selections) {
+        const kinds: AssetKind[] = [AssetKind.STANDARD, AssetKind.DISPLAY, AssetKind.THUMBNAIL];
+        if (assets.CUTOUT) kinds.push(AssetKind.CUTOUT);
+        for (const kind of kinds) {
+          const asset = assets[kind];
+          if (!asset) throw new ApiError('CONFLICT', '这一面缺少完整图片产物', HttpStatus.CONFLICT);
+          const body = await this.cos.getObject(asset.objectKey);
+          const extension = EXTENSION[asset.contentType] ?? 'bin';
+          const key = `official/${bag.id}/${state.side.toLowerCase()}/${kind.toLowerCase()}/v1.${extension}`;
+          await this.cos.putObject(key, body, asset.contentType); copiedKeys.push(key);
+          await this.prisma.officialBagImage.create({ data: { officialBagId: bag.id, side: state.side, kind, status: AssetStatus.AVAILABLE,
+            objectKey: key, contentType: asset.contentType, declaredByteSize: asset.byteSize, byteSize: asset.byteSize, width: asset.width, height: asset.height, version: 1 } });
+        }
+        await this.prisma.officialBagImageSide.create({ data: { officialBagId: bag.id, side: state.side, sourceVersion: 1, processingVersion: 1, publishedVersion: 1, publishedSourceVersion: 1, processingStatus: OfficialProcessStatus.READY, matting: !!assets.CUTOUT } });
       }
     } catch (error) {
       // 复制失败回滚：删掉刚建的官方袋子（级联清除图片记录），并把已写出的对象交给清理队列。

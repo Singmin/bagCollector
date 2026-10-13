@@ -100,12 +100,19 @@ current_image() {
 previous_server=$(current_image api)
 previous_admin=$(current_image admin)
 previous_scan=$(current_image scan-worker)
+image_sides_upgrade=0
+image_sides_migrated=0
 
 # Scan-worker may not exist in a pre-upgrade image. Restore its own prior image,
 # or stop it on the first upgrade rollback; additive migrations remain in place.
 rollback() {
   exit_code=$?
   trap - EXIT
+  if [ "$exit_code" -ne 0 ] && [ "$image_sides_upgrade" -eq 1 ] && [ "$image_sides_migrated" -eq 1 ]; then
+    echo "双面结构迁移已完成，旧应用不能安全写入新结构；保留新 schema，停止图片应用，修复后向前发布。" >&2
+    compose stop api worker scan-worker || true
+    exit "$exit_code"
+  fi
   if [ "$exit_code" -ne 0 ] && [ -n "$previous_server" ] && [ -n "$previous_admin" ]; then
     echo "部署失败；正在恢复上一组应用镜像。数据库迁移是单向的，不会回退。"
     API_IMAGE="$previous_server" ADMIN_IMAGE="$previous_admin" \
@@ -196,10 +203,25 @@ fi
 echo "启动 postgres 与 redis 并等待健康检查通过"
 compose up -d --wait postgres redis
 
+if [ -n "$previous_server" ]; then
+  has_image_sides=$(compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At' <<'SQL'
+SELECT to_regclass('"CollectibleImageSide"');
+SQL
+  )
+  if [ -z "$has_image_sides" ]; then
+    image_sides_upgrade=1
+    echo "首次双面升级：暂停 API 图片写入，等待旧任务完成"
+    compose stop api
+    compose run -T --rm --no-deps --entrypoint node api apps/api/dist/scripts/drain-image-jobs.js
+    compose stop worker scan-worker
+  fi
+fi
+
 echo "执行数据库迁移"
 # --exit-code-from 会连带 --abort-on-container-exit：迁移一旦非 0 退出，
 # 整条命令也非 0 退出，trap 里的回滚才会被触发。
 compose up --no-deps --exit-code-from migrate migrate
+image_sides_migrated=1
 
 if grep -Eq '^VISION_ENABLED=1$' "$ENV_FILE"; then
   export COMPOSE_PROFILES=vision

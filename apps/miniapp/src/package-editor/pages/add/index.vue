@@ -21,6 +21,8 @@ const filePath = ref('');
 const flashOn = ref(false);
 const capturing = ref(false);
 const uploading = ref(false);
+const existingId = ref('');
+const imageSide = ref<'FRONT' | 'BACK'>('FRONT');
 const compressing = ref(false);
 const progress = ref(0);
 const errorMessage = ref('');
@@ -36,7 +38,7 @@ const scanId = ref('');
 /* ── 扫描匹配 ──
    打开时，拍照后先拿这张照片去比对官方袋子库：
    所有候选由用户点选确认；未找到时允许调整裁剪或继续手工上传。 */
-const scanMode = ref(false);
+const scanMode = ref(true);
 /** result = CANDIDATES 时的待选列表 */
 const candidates = ref<OfficialBagMatchCandidate[]>([]);
 const showCandidates = ref(false);
@@ -177,8 +179,9 @@ async function waitForProcessing(id: string) {
   const deadline = Date.now() + PROCESS_TIMEOUT_MS;
   while (Date.now() < deadline) {
     const item = await dataService.collectible(id);
-    if (item.processingStatus === 'AWAITING_CROP' || item.processingStatus === 'READY') return;
-    if (item.processingStatus === 'FAILED') throw new Error(item.processingError || '图片处理失败，请重新拍摄');
+    const status = item.sides?.[imageSide.value]?.processingStatus ?? item.processingStatus;
+    if (status === 'AWAITING_CROP' || status === 'READY') return;
+    if ((item.sides?.[imageSide.value]?.processingStatus ?? item.processingStatus) === 'FAILED') throw new Error(item.sides?.[imageSide.value]?.processingError || item.processingError || '图片处理失败，请重新拍摄');
     await sleep(POLL_INTERVAL_MS);
   }
   throw new Error('图片处理超时，请稍后在收藏架查看');
@@ -199,12 +202,12 @@ async function uploadAndPrepare(sourcePath: string) {
   const path = await prepareUpload(sourcePath);
   compressing.value = false;
   const size = await fileSize(path);
-  const collectible = await dataService.createCollectible({ name: '未命名纸袋', shelfId: await targetShelfId() });
+  const collectible = existingId.value ? { id: existingId.value } : await dataService.createCollectible({ name: '未命名纸袋', shelfId: await targetShelfId() });
   const sourceName = path.split('/').pop() || `paper-bag-${Date.now()}.jpg`;
   const policy = await api<UploadPolicy>('/uploads/policy', {
     method: 'POST',
     data: {
-      collectibleId: collectible.id,
+      collectibleId: collectible.id, side: imageSide.value,
       fileName: sourceName.includes('.') ? sourceName : `${sourceName}.jpg`,
       contentType: contentType(path),
       size
@@ -233,6 +236,9 @@ async function submit(sourcePath: string) {
   if (uploading.value) return;
   try {
     const id = await uploadAndPrepare(sourcePath);
+    /* 从完善信息页进来补拍 / 替换（existingId 有值）：处理完直接返回完善信息页，
+       由其 onShow 里的 load() 刷新出新图，不再绕道裁剪调色页 */
+    if (existingId.value) { uni.navigateBack({ delta: 1 }); return; }
     uni.redirectTo({ url: `/package-editor/pages/metadata/index?id=${id}` });
   } catch (error) {
     failUpload(error, '照片处理失败');
@@ -307,12 +313,21 @@ function adjustAndRetry() {
 /**
  * 命中或点选之后：认领官方袋子，并清掉扫描时那条只用于比对的临时记录。
  * 认领是引用模式（图片直接读官方库、不占用户存储），落库即就绪，所以立刻能在收藏里看到。
+ * 已拥有同款时走「叠加数量」：不新建收藏，把同款 quantity+1，并 toast 告诉用户这是第几个。
  */
 async function adoptMatch(bag: OfficialBag, corrected = false) {
   if (uploading.value) return;
   uploading.value = true;
   try {
-    if (!bag.claimed) await dataService.claimOfficialBag(bag.id);
+    let toastTitle: string;
+    if (bag.claimed) {
+      /* 已拥有同款：叠加数量（increment），后端返回叠加后的 quantity */
+      const result = await dataService.claimOfficialBag(bag.id, {}, true);
+      toastTitle = `这是你的第 ${result.quantity ?? 1} 个「${bag.name}」`;
+    } else {
+      await dataService.claimOfficialBag(bag.id);
+      toastTitle = `已匹配到「${bag.name}」`;
+    }
     if (scanId.value) await submitScanFeedback(scanId.value, corrected ? 'CORRECTED' : 'SELECTED', bag.id);
     correcting.value = false;
     showCandidates.value = false;
@@ -321,8 +336,8 @@ async function adoptMatch(bag: OfficialBag, corrected = false) {
     const stale = scannedCollectibleId.value;
     scannedCollectibleId.value = '';
     if (stale) await dataService.removeCollectible(stale).catch(() => undefined);
-    uni.showToast({ title: `已匹配到「${bag.name}」`, icon: 'none', duration: 1200 });
-    setTimeout(() => uni.switchTab({ url: '/pages/library/index' }), 1200);
+    uni.showToast({ title: toastTitle, icon: 'none', duration: 1500 });
+    setTimeout(() => uni.switchTab({ url: '/pages/library/index' }), 1500);
   } catch (error) {
     uni.showToast({ title: error instanceof Error ? error.message : '收进收藏失败，请重试', icon: 'none' });
   } finally { uploading.value = false; }
@@ -439,7 +454,10 @@ function back() {
   uni.navigateBack();
 }
 
-onLoad(() => {
+onLoad((query) => {
+  existingId.value = typeof query?.id === 'string' ? query.id : '';
+  imageSide.value = query?.side === 'BACK' ? 'BACK' : 'FRONT';
+  if (existingId.value) scanMode.value = false;
   void dataService.shelves().catch((error) => {
     errorMessage.value = error instanceof Error ? error.message : '分类加载失败';
   });
@@ -487,7 +505,7 @@ onShow(() => {
       <image v-else class="captured-image" :src="filePath" mode="aspectFit" />
       <view class="guide-frame" />
       <view
-        v-if="!filePath && !uploading"
+        v-if="!existingId && !filePath && !uploading"
         class="scan-toggle"
         :class="{ 'scan-toggle-on': scanMode }"
         @tap="toggleScanMode"
@@ -524,7 +542,7 @@ onShow(() => {
           <scroll-view class="match-list" scroll-y>
             <view v-for="bag in correctionResults" :key="bag.id" class="match-item" @tap="adoptMatch(bag, true)">
               <image class="match-thumb" :src="bag.thumbnailUrl" mode="aspectFit" />
-              <view class="match-info"><text class="match-name">{{ bag.name }}</text><text class="match-brand">{{ bag.brand }}{{ bag.claimed ? ' · 已收藏，点击标记' : '' }}</text></view>
+              <view class="match-info"><text class="match-name">{{ bag.name }}</text><text class="match-brand">{{ bag.brand }}{{ bag.claimed ? ' · 已收藏，点击叠加数量' : '' }}</text></view>
             </view>
             <button v-if="correctionCursor" :disabled="searching" @tap="searchCorrectBag(true)">加载更多</button>
             <text v-if="!searching && correctionQuery && !correctionResults.length" class="match-subtitle">未找到款式，请调整关键词</text>
@@ -540,7 +558,7 @@ onShow(() => {
             <view class="match-info">
               <text class="match-name">{{ item.bag.name }}</text>
               <text v-if="item.bag.brand" class="match-brand">{{ item.bag.brand }}</text>
-              <text v-if="item.bag.claimed" class="match-brand">已收藏，点击标记</text>
+              <text v-if="item.bag.claimed" class="match-brand">已收藏，点击叠加数量</text>
             </view>
           </view>
         </scroll-view>

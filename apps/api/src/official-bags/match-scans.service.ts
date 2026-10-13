@@ -35,8 +35,8 @@ export class MatchScansService {
       throw new ApiError('QUOTA_EXCEEDED', '扫描过于频繁，请稍后再试', 429);
     }
     // ORIGINAL preserves alpha and matches EXIF-oriented crop coordinates. STANDARD is only a fallback.
-    const image = await this.prisma.imageAsset.findFirst({ where: { collectibleId: input.collectibleId, userId, kind: 'ORIGINAL', status: 'AVAILABLE' }, orderBy: { version: 'desc' } })
-      ?? await this.prisma.imageAsset.findFirst({ where: { collectibleId: input.collectibleId, userId, kind: 'STANDARD', status: 'AVAILABLE' }, orderBy: { version: 'desc' } });
+    const image = await this.prisma.imageAsset.findFirst({ where: { collectibleId: input.collectibleId, userId, side: 'FRONT', kind: 'ORIGINAL', status: 'AVAILABLE' }, orderBy: { version: 'desc' } })
+      ?? await this.prisma.imageAsset.findFirst({ where: { collectibleId: input.collectibleId, userId, side: 'FRONT', kind: 'STANDARD', status: 'AVAILABLE' }, orderBy: { version: 'desc' } });
     if (!image) throw new ApiError('CONFLICT', '照片尚未准备好', 409);
     const settings = await this.settings.scanSettings();
     let scan;

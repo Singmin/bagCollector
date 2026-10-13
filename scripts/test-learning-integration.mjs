@@ -235,8 +235,8 @@ try {
   if (worker) { worker.kill(); await Promise.race([new Promise(resolve => worker.once('exit', resolve)), delay(3000)]); }
   const samples = await prisma.learningSample.findMany({ where: { OR: [{ userId: { in: [user?.id, other?.id].filter(Boolean) } }, { id: { in: extraSampleIds } }] } });
   await prisma.learningSample.deleteMany({ where: { id: { in: samples.map(s => s.id) } } });
-  await prisma.officialBag.deleteMany({ where: { id: { in: [bag?.id, offline?.id].filter(Boolean) } } });
   await prisma.user.deleteMany({ where: { id: { in: [user?.id, other?.id].filter(Boolean) } } });
+  await prisma.officialBag.deleteMany({ where: { id: { in: [bag?.id, offline?.id].filter(Boolean) } } });
   if (admin) { await prisma.auditLog.deleteMany({ where: { adminId: admin.id } }); await prisma.admin.delete({ where: { id: admin.id } }); }
   await deleteObjects([...new Set([...objectKeys, ...samples.flatMap(s => s.objectKey ? [s.objectKey] : [])])]);
   if (originalSettings) await prisma.appSetting.upsert({ where: { key: originalSettings.key }, create: originalSettings, update: { value: originalSettings.value } });

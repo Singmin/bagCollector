@@ -40,6 +40,7 @@ describe('CollectiblesService.list', () => {
     expect(result).toEqual({
       items: [{
         id: 'collectible-1',
+        imageEditable: true, imageRevision: 'collectible-1:FRONT:-:0:BACK:-:0',
         name: '纸袋一号',
         shelfId: 'shelf-1',
         shelfName: '旅行',
@@ -57,7 +58,8 @@ describe('CollectiblesService.list', () => {
     expect(assets.urlsByKind).not.toHaveBeenCalled();
     expect(prisma.collectible.findMany).toHaveBeenCalledWith(expect.objectContaining({
       include: expect.objectContaining({
-        imageAssets: expect.objectContaining({ take: 1 })
+        imageAssets: expect.objectContaining({ where: expect.objectContaining({ side: 'FRONT' }) }),
+        imageSides: true
       })
     }));
     expect(prisma.collectible.count.mock.calls[0][0].where).not.toHaveProperty('addedAt');

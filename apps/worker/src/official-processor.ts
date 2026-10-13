@@ -1,15 +1,16 @@
-import { AssetKind, AssetStatus, OfficialProcessStatus, PrismaClient, ProcessingStatus } from '@prisma/client';
+import { AssetKind, AssetStatus, ImageSide, OfficialProcessStatus, PrismaClient, ProcessingStatus } from '@prisma/client';
 import sharp from 'sharp';
-import { upsertAssetRecord } from './asset-record.js';
 import { ensureBagEmbedding } from './bag-embeddings.js';
 import { config } from './config.js';
 import { removeBackground, standardImage, trimTransparent } from './processor.js';
-import { getObject, putObject } from './object-store.js';
+import { getObject, putObject, deleteObjects } from './object-store.js';
 
 export interface OfficialProcessJobData {
   officialBagId: string;
   version: number;
   matting: boolean;
+  side?: ImageSide;
+  sourceVersion?: number;
 }
 
 export interface OfficialClaimJobData {
@@ -29,13 +30,22 @@ async function upsertOfficialAsset(input: {
   width: number;
   height: number;
   version: number;
+  side?: ImageSide;
+  sourceVersion?: number;
 }) {
   await putObject(input.key, input.body, input.contentType);
-  await prisma.officialBagImage.upsert({
+  try {
+    await prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT "id" FROM "OfficialBag" WHERE "id" = ${input.officialBagId} FOR UPDATE`;
+      if (input.sourceVersion !== undefined) {
+        const state = await tx.officialBagImageSide.findUnique({ where: { officialBagId_side: { officialBagId: input.officialBagId, side: input.side ?? ImageSide.FRONT } } });
+        if (!state || state.processingVersion !== input.version || state.sourceVersion !== input.sourceVersion) throw new Error('STALE_IMAGE_JOB');
+      }
+  await tx.officialBagImage.upsert({
     where: { objectKey: input.key },
     create: {
       officialBagId: input.officialBagId,
-      kind: input.kind,
+      kind: input.kind, side: input.side ?? ImageSide.FRONT,
       status: AssetStatus.AVAILABLE,
       objectKey: input.key,
       contentType: input.contentType,
@@ -54,6 +64,11 @@ async function upsertOfficialAsset(input: {
       height: input.height
     }
   });
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === 'STALE_IMAGE_JOB') await deleteObjects([input.key]);
+    throw error;
+  }
 }
 
 /**
@@ -82,7 +97,7 @@ async function writeOfficialRenditions(
   if (!thumbnail.info.width || !thumbnail.info.height) throw new Error('无法读取缩略图尺寸');
   await Promise.all([
     upsertOfficialAsset({
-      officialBagId: data.officialBagId,
+      officialBagId: data.officialBagId, side: data.side ?? ImageSide.FRONT, sourceVersion: data.sourceVersion,
       kind: AssetKind.DISPLAY,
       key: `${baseKey}/display/v${data.version}.png`,
       contentType: 'image/png',
@@ -92,7 +107,7 @@ async function writeOfficialRenditions(
       version: data.version
     }),
     upsertOfficialAsset({
-      officialBagId: data.officialBagId,
+      officialBagId: data.officialBagId, side: data.side ?? ImageSide.FRONT, sourceVersion: data.sourceVersion,
       kind: AssetKind.THUMBNAIL,
       key: `${baseKey}/thumbnail/v${data.version}.webp`,
       contentType: 'image/webp',
@@ -111,20 +126,13 @@ async function writeOfficialRenditions(
  * 不抠图时完全不调用腾讯云万象，官方库每天的录入量不受用户抠图配额与成本限制。
  */
 export async function processOfficialImage(data: OfficialProcessJobData) {
-  const current = await prisma.officialBag.findUnique({
-    where: { id: data.officialBagId },
-    select: { version: true }
-  });
-  // 图片已被替换或删除时 version 会变，旧任务直接丢弃，避免把已清理的图片写回来。
-  if (!current || current.version !== data.version) return;
-  await prisma.officialBag.update({
-    where: { id: data.officialBagId },
-    data: { processStatus: OfficialProcessStatus.PROCESSING, processError: null }
-  });
+  const side = data.side ?? ImageSide.FRONT;
+  const state = await prisma.officialBagImageSide.findUnique({ where: { officialBagId_side: { officialBagId: data.officialBagId, side } } });
+  if (!state || state.sourceVersion !== (data.sourceVersion ?? data.version) || state.processingVersion !== data.version) return;
   const original = await prisma.officialBagImage.findFirstOrThrow({
     where: {
       officialBagId: data.officialBagId,
-      kind: AssetKind.ORIGINAL,
+      side, kind: AssetKind.ORIGINAL,
       version: data.version,
       status: AssetStatus.AVAILABLE
     },
@@ -135,10 +143,10 @@ export async function processOfficialImage(data: OfficialProcessJobData) {
   // 转白底 JPEG 会丢掉透明背景；开抠图时仍统一白底 JPEG，万象输入更稳定。
   const standard = await standardImage(source, { keepTransparency: !data.matting });
   const transparent = !data.matting && standard.contentType === 'image/png';
-  const baseKey = `official/${data.officialBagId}`;
+  const baseKey = `official/${data.officialBagId}/${side.toLowerCase()}`;
   const standardKey = `${baseKey}/standard/v${data.version}.${standard.extension}`;
   await upsertOfficialAsset({
-    officialBagId: data.officialBagId,
+    officialBagId: data.officialBagId, side, sourceVersion: data.sourceVersion,
     kind: AssetKind.STANDARD,
     key: standardKey,
     contentType: standard.contentType,
@@ -157,7 +165,7 @@ export async function processOfficialImage(data: OfficialProcessJobData) {
     });
     await Promise.all([
       upsertOfficialAsset({
-        officialBagId: data.officialBagId,
+        officialBagId: data.officialBagId, side: data.side ?? ImageSide.FRONT, sourceVersion: data.sourceVersion,
         kind: AssetKind.CUTOUT,
         key: `${baseKey}/cutout/v${data.version}.png`,
         contentType: 'image/png',
@@ -173,32 +181,17 @@ export async function processOfficialImage(data: OfficialProcessJobData) {
     await writeOfficialRenditions(data, standard.body, baseKey, transparent);
   }
 
-  await prisma.officialBag.updateMany({
-    where: { id: data.officialBagId, version: data.version },
-    data: { processStatus: OfficialProcessStatus.READY, processError: null }
+  await prisma.$transaction(async tx => {
+    await tx.$queryRaw`SELECT "id" FROM "OfficialBag" WHERE "id" = ${data.officialBagId} FOR UPDATE`;
+    const changed = await tx.officialBagImageSide.updateMany({ where: { officialBagId: data.officialBagId, side, sourceVersion: data.sourceVersion ?? data.version, processingVersion: data.version }, data: { publishedVersion: data.version, publishedSourceVersion: data.sourceVersion ?? data.version, processingStatus: OfficialProcessStatus.READY, processingError: null } });
+    if (!changed.count) throw new Error('STALE_IMAGE_JOB');
+    await tx.officialBag.update({ where: { id: data.officialBagId }, data: side === ImageSide.FRONT ? { version: data.version, processStatus: OfficialProcessStatus.READY, processError: null } : { updatedAt: new Date() } });
   });
+  if (side === ImageSide.FRONT) await ensureBagEmbedding(data.officialBagId).catch(error => console.warn('embedding_pending', error instanceof Error ? error.message : 'unknown'));
 
-  /* 顺手把视觉向量算出来，让袋子发布后立刻能被「拍照扫描」匹配到（否则要等下一轮对账）。
-     提取失败绝不能影响图片处理的结果 —— 图和状态都已落定，这里只记日志，
-     由对账任务在后续轮次补上（见 bag-embeddings.ts）。 */
-  try {
-    await ensureBagEmbedding(data.officialBagId);
-  } catch (error) {
-    console.error(
-      JSON.stringify({
-        event: 'bag_embedding_inline_failed',
-        officialBagId: data.officialBagId,
-        error: error instanceof Error ? error.message : String(error)
-      })
-    );
-  }
 }
 
-/**
- * 用户「拥有」官方袋子：把官方图片资产复制到用户名下，成为一条普通 Collectible。
- * 复制 STANDARD / CUTOUT / DISPLAY / THUMBNAIL（不含 ORIGINAL，重新裁剪只需要标准图），
- * 存储计入用户配额（upsertAssetRecord 内部带配额校验），产出后即 READY。
- */
+/** Legacy queued claims now link to the official library instead of copying assets. */
 export async function claimOfficialBag(data: OfficialClaimJobData) {
   /* 认领可能已在任务排队期间被撤回（删除收藏会连带删认领记录）——
      此时无事可做，静默完成；不能 throw，否则 failOfficialClaim 对已删记录
@@ -207,55 +200,20 @@ export async function claimOfficialBag(data: OfficialClaimJobData) {
     where: { id: data.collectibleId, userId: data.userId }
   });
   if (!collectible) return;
-  const images = await prisma.officialBagImage.findMany({
-    where: {
-      officialBagId: data.officialBagId,
-      status: AssetStatus.AVAILABLE,
-      kind: { in: [AssetKind.STANDARD, AssetKind.CUTOUT, AssetKind.DISPLAY, AssetKind.THUMBNAIL] }
-    },
-    orderBy: { version: 'desc' }
-  });
-  // 同一 kind 只复制最新版本，与用户侧「按版本取最新」的读取口径一致。
-  const latest = new Map<AssetKind, (typeof images)[number]>();
-  for (const image of images) {
-    if (!latest.has(image.kind)) latest.set(image.kind, image);
-  }
-  if (!latest.has(AssetKind.STANDARD)) throw new Error('官方袋子缺少标准图');
-  if (!latest.has(AssetKind.DISPLAY) || !latest.has(AssetKind.THUMBNAIL)) {
-    throw new Error('官方袋子尚未完成图片处理');
-  }
+  await prisma.collectible.update({ where: { id: collectible.id }, data: { sourceOfficialBagId: data.officialBagId, processingStatus: ProcessingStatus.READY, processingError: null } });
 
-  for (const [kind, image] of latest) {
-    const body = await getObject(image.objectKey);
-    const extension = image.contentType === 'image/webp' ? 'webp' : image.contentType === 'image/png' ? 'png' : 'jpg';
-    const key = `users/${data.userId}/collectibles/${collectible.id}/${kind.toLowerCase()}/v1.${extension}`;
-    await putObject(key, body, image.contentType);
-    await upsertAssetRecord(prisma, {
-      userId: data.userId,
-      collectibleId: collectible.id,
-      kind,
-      key,
-      contentType: image.contentType,
-      byteSize: body.length,
-      width: image.width ?? 0,
-      height: image.height ?? 0,
-      version: 1
-    });
-  }
-
-  await prisma.collectible.update({
-    where: { id: collectible.id },
-    data: { processingStatus: ProcessingStatus.READY, processingError: null }
-  });
 }
 
 export async function failOfficialProcess(data: OfficialProcessJobData, error: unknown) {
   const message = error instanceof Error ? error.message.slice(0, 500) : '官方袋子图片处理失败';
-  // 过期任务（图片已被替换或删除）不再改动袋子状态。
-  await prisma.officialBag.updateMany({
-    where: { id: data.officialBagId, version: data.version },
-    data: { processStatus: OfficialProcessStatus.FAILED, processError: message }
+  const side = data.side ?? ImageSide.FRONT;
+  await prisma.$transaction(async tx => {
+    await tx.$queryRaw`SELECT "id" FROM "OfficialBag" WHERE "id" = ${data.officialBagId} FOR UPDATE`;
+    const changed = await tx.officialBagImageSide.updateMany({ where: { officialBagId: data.officialBagId, side, processingVersion: data.version, sourceVersion: data.sourceVersion ?? data.version }, data: { processingStatus: OfficialProcessStatus.FAILED, processingError: message } });
+    const state = await tx.officialBagImageSide.findUnique({ where: { officialBagId_side: { officialBagId: data.officialBagId, side } } });
+    if (changed.count && side === ImageSide.FRONT) await tx.officialBag.updateMany({ where: { id: data.officialBagId }, data: { processStatus: state?.publishedVersion ? OfficialProcessStatus.READY : OfficialProcessStatus.FAILED, processError: message } });
   });
+
 }
 
 /**
@@ -264,13 +222,9 @@ export async function failOfficialProcess(data: OfficialProcessJobData, error: u
  * 它最终跑完时仍会把状态写回 READY，不影响自愈。
  */
 export async function reconcileStuckOfficialProcessing(stuckBefore: Date) {
-  const result = await prisma.officialBag.updateMany({
-    where: { processStatus: OfficialProcessStatus.PROCESSING, updatedAt: { lt: stuckBefore } },
-    data: {
-      processStatus: OfficialProcessStatus.FAILED,
-      processError: '处理超时：任务长时间未完成，请重新上传图片触发重试'
-    }
-  });
+  const states = await prisma.officialBagImageSide.findMany({ where: { processingStatus: OfficialProcessStatus.PROCESSING, updatedAt: { lt: stuckBefore } } });
+  for (const state of states) await failOfficialProcess({ officialBagId: state.officialBagId, side: state.side, version: state.processingVersion, sourceVersion: state.sourceVersion, matting: state.matting }, new Error('处理超时，请重新上传这一面'));
+  const result = { count: states.length };
   if (result.count > 0) {
     console.warn(JSON.stringify({ event: 'reconcile_stuck_official', count: result.count }));
   }

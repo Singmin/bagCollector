@@ -1,10 +1,14 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
-import { onLoad } from '@dcloudio/uni-app';
+import { computed, ref, watch } from 'vue';
+import { onLoad, onShow } from '@dcloudio/uni-app';
 import type { Collectible, Shelf } from '../../../types';
+import { SIDES, getSide, sideLabel, readEditor, writeEditor, clearEditor, clearSideEditor, type ImageSide, type ImageOperation } from '../../../services/image-editor';
 import { daysAgoText } from '../../../services/format';
 import { dataService } from '../../../services/data';
 
+const selectedSide = ref<ImageSide>('FRONT');
+const isEdit = ref(false);
+let formInitialized = false;
 const id = ref(''); const item = ref<Collectible | null>(null);
 const name = ref(''); const notes = ref(''); const saving = ref(false); const loadError = ref('');
 /* 同款袋子数量（步进器）：>1 时卡片右上角显示 ×N 角标 */
@@ -61,19 +65,21 @@ const brand = ref('');
 /* 抠图按钮（自动抠图）显隐判据是「有没有抠图结果（cutoutImageUrl）」而不是 processingStatus ——
    裁剪（/crop，只裁剪）之后状态也是 READY，若按状态判断按钮会永久消失（Bug）。
    裁剪按钮始终在「空闲态」展示：包括已抠图之后也能再裁（/crop 会顺带重新抠图，保持透明图与展示图对齐）。 */
-const matted = computed(() => !!item.value?.cutoutImageUrl);
+const selectedImage = computed(() => getSide(item.value, selectedSide.value));
+const imageEditable = computed(() => item.value?.imageEditable !== false);
+const matted = computed(() => !!selectedImage.value?.matted);
 const idle = (status: string | undefined) =>
   status === 'AWAITING_CROP' || status === 'READY' || status === 'FAILED';
-const canMatte = computed(() => !!item.value && !matted.value && idle(item.value?.processingStatus));
-const canCrop = computed(() => !!item.value && idle(item.value?.processingStatus));
+const canMatte = computed(() => !!selectedImage.value?.standardImageUrl && !matted.value && imageEditable.value && idle(selectedImage.value?.processingStatus));
+const canCrop = computed(() => !!selectedImage.value?.standardImageUrl && imageEditable.value && idle(selectedImage.value?.processingStatus));
 const matting = ref(false);
-/* 抠图要花钱，先让用户确认一次（避免误触 / 试玩）。抠过也能再裁，所以文案不再说「不能再裁剪」 */
-const MATTING_CONFIRM = '每张图片仅自动抠图一次（按次计费）。确认现在抠图？之后仍可在「裁剪旋转」里按新构图重新抠图。';
+/* 抠图要花钱，先让用户确认一次（避免误触 / 试玩）。正文改为提示用干净背景拍摄，保证抠图准确度 */
+const MATTING_CONFIRM = '为确保准确度，请确保上传的图片是在干净的背景下拍摄。';
 /* 抠图要花钱，先让用户确认一次（避免误触 / 试玩） */
 function startMatting() {
   if (matting.value || !canMatte.value) return;
   uni.showModal({
-    title: '自动抠图（仅一次）',
+    title: '自动抠图',
     content: MATTING_CONFIRM,
     confirmText: '开始抠图',
     cancelText: '再想想',
@@ -81,15 +87,19 @@ function startMatting() {
   });
 }
 async function submitMatting() {
+  const side = selectedSide.value;
+  const sourceVersion = selectedImage.value?.sourceVersion;
+  const crop = selectedImage.value?.crop;
   matting.value = true;
   try {
     /* 抠图走独立端点：参数全省，后端沿用已保存的裁剪参数（没裁过则全幅），画面不会被重置 */
-    await dataService.matte(id.value);
-    uni.redirectTo({ url: `/package-editor/pages/processing/index?id=${id.value}&stage=matting` });
+    const result = await dataService.matte(id.value, { side, sourceVersion });
+    const pending = readEditor<ImageOperation[]>(id.value, 'operations') ?? [];
+    writeEditor(id.value, 'operations', [...pending.filter(op => op.side !== side), { side, sourceVersion, crop, matte: true, jobId: result.jobId, version: result.version }]);
+    uni.navigateTo({ url: `/package-editor/pages/processing/index?id=${id.value}&stage=matting&side=${side}` });
   } catch (error) {
     uni.showToast({ title: error instanceof Error ? error.message : '抠图启动失败', icon: 'none' });
-    matting.value = false;
-  }
+  } finally { matting.value = false; }
 }
 async function load() {
   try {
@@ -103,23 +113,29 @@ async function load() {
        只有连标准图都没有（如资产丢失）才算异常。 */
     if (!nextItem.displayImageUrl && !nextItem.standardImageUrl) throw new Error('收藏缺少展示图');
     if (!nextItem.displayImageUrl) nextItem.displayImageUrl = nextItem.standardImageUrl;
-    item.value = nextItem; shelves.value = nextShelves; name.value = nextItem.name === '未命名纸袋' ? '' : nextItem.name;
+    loadError.value = ''; item.value = nextItem; shelves.value = nextShelves;
+    if (formInitialized) return;
+    name.value = nextItem.name === '未命名纸袋' ? '' : nextItem.name;
     /* 编号 = 自有收藏总数（含本条，列表按 addedAt desc，本条最新即最大号） */
     collectNo.value = `NO.${String(Math.max(1, page.totalCount)).padStart(3, '0')}`;
     collectDateIso.value = nextItem.addedAt;
     notes.value = nextItem.notes; tagList.value = nextItem.tags.slice(0, 30); tagDraft.value = '';
     brand.value = nextItem.shelfName ?? '';
     quantity.value = nextItem.quantity ?? 1;
+    const draft = readEditor<{ name: string; notes: string; brand: string; quantity: number; tags: string[]; tagDraft: string; date: string; isEdit: boolean }>(id.value, 'form');
+    if (draft) { name.value = draft.name; notes.value = draft.notes; brand.value = draft.brand; quantity.value = draft.quantity; tagList.value = draft.tags; tagDraft.value = draft.tagDraft; collectDateIso.value = draft.date; isEdit.value = isEdit.value || draft.isEdit; }
+    formInitialized = true;
+    persistForm();
   } catch (error) { loadError.value = error instanceof Error ? error.message : '收藏信息加载失败'; }
 }
 /* 裁剪旋转：跳转裁剪页（提交后由后端 sharp 重新出图，回本页刷新） */
 function openCrop() {
-  uni.navigateTo({ url: `/package-editor/pages/crop/index?id=${id.value}` });
+  uni.navigateTo({ url: `/package-editor/pages/crop/index?id=${id.value}&side=${selectedSide.value}` });
 }
 /* 高级调色：与「裁剪旋转」完全复用同一页面（不再有单独的「仅调色」模式）——
    裁剪页已常驻调色滑杆，单独模式只会让两个入口长得像两个页面，且少掉比例/旋转能力 */
 function openColor() {
-  uni.navigateTo({ url: `/package-editor/pages/crop/index?id=${id.value}` });
+  uni.navigateTo({ url: `/package-editor/pages/crop/index?id=${id.value}&side=${selectedSide.value}` });
 }
 /* 首次上传完成后状态停在 AWAITING_CROP（等用户裁剪）：此时只有标准图，没有展示图/缩略图，
    而收藏架列表只返回 READY —— 用户不点「裁剪旋转/自动抠图」直接「确定添加」的话，这条收藏会永远看不到。
@@ -127,12 +143,13 @@ function openColor() {
    产出展示图/缩略图并把状态推进到 READY；轮询等待就绪后再跳收藏架。 */
 const CROP_WAIT_TIMEOUT_MS = 30_000;
 const CROP_WAIT_POLL_MS = 1_000;
-async function waitForCropReady(id: string) {
+async function waitForCropReady(id: string, side: ImageSide) {
   const deadline = Date.now() + CROP_WAIT_TIMEOUT_MS;
   while (Date.now() < deadline) {
     const current = await dataService.collectible(id);
-    if (current.processingStatus === 'READY') return;
-    if (current.processingStatus === 'FAILED') throw new Error(current.processingError || '图片处理失败');
+    const image = getSide(current, side);
+    if (image?.processingStatus === 'READY') return;
+    if (image?.processingStatus === 'FAILED') throw new Error(image.processingError || `${sideLabel(side)}处理失败`);
     await new Promise((resolve) => setTimeout(resolve, CROP_WAIT_POLL_MS));
   }
   throw new Error('图片处理超时，请稍后在收藏架下拉刷新');
@@ -153,37 +170,69 @@ async function save() {
     if (!shelf) shelf = await dataService.createShelf({ name: normalizedBrand, theme: 'SAGE' });
     if (!shelves.value.some((current) => current.id === shelf!.id)) shelves.value = [...shelves.value, shelf];
     await dataService.updateCollectible(id.value, { name: normalizedName, shelfId: shelf.id, notes: notes.value.trim(), tags: [...tagList.value], quantity: quantity.value });
-    if (item.value.processingStatus === 'AWAITING_CROP') {
-      await dataService.crop(id.value, { x: 0, y: 0, width: 1, height: 1, rotation: 0 });
-      await waitForCropReady(id.value);
+    if (imageEditable.value) {
+      const current = await dataService.collectible(id.value);
+      for (const side of SIDES) {
+        const image = getSide(current, side);
+        if (!image?.sourceVersion) continue;
+        if (image.processingStatus === 'FAILED') throw new Error(`${sideLabel(side)}处理失败，请重试${side === 'BACK' ? '或移除反面' : '或替换图片'}`);
+        if (image.processingStatus === 'AWAITING_CROP') await dataService.crop(id.value, { side, sourceVersion: image.sourceVersion, x: 0, y: 0, width: 1, height: 1, rotation: 0 });
+        await waitForCropReady(id.value, side);
+      }
     }
+    clearEditor(id.value, 'form'); clearEditor(id.value, 'operations'); clearEditor(id.value, 'crop');
     uni.showToast({ title: '已加入陈列柜', icon: 'success' }); setTimeout(() => uni.switchTab({ url: '/pages/library/index' }), 700);
   } catch (error) { uni.showToast({ title: error instanceof Error ? error.message : '保存失败', icon: 'none' }); saving.value = false; }
 }
 onLoad((query) => {
   if (typeof query?.id !== 'string') return void (loadError.value = '收藏页面参数无效');
-  id.value = query.id;
+  id.value = query.id; isEdit.value = query.edit === '1';
+  selectedSide.value = query.side === 'BACK' ? 'BACK' : readEditor<ImageSide>(id.value, 'selected') ?? 'FRONT';
   void load();
 });
 /* 取消 = 放弃填写返回上一页（不保存任何信息） */
-function goBack() { uni.navigateBack({ delta: 1 }); }
+function goBack() { clearEditor(id.value, 'form'); uni.navigateBack({ delta: 1 }); }
+function selectSide(side: ImageSide) { selectedSide.value = side; writeEditor(id.value, 'selected', side); }
+function addImage(side: ImageSide) {
+  selectSide(side);
+  uni.navigateTo({ url: `/package-editor/pages/add/index?id=${id.value}&side=${side}` });
+}
+function replaceImage() {
+  uni.showActionSheet({ itemList: ['拍照 / 从相册替换', ...(selectedSide.value === 'BACK' ? ['移除反面'] : [])],
+    success: result => { if (result.tapIndex === 0) addImage(selectedSide.value); else void removeBack(); } });
+}
+async function removeBack() {
+  try { item.value = await dataService.removeImage(id.value, 'BACK'); clearSideEditor(id.value, 'BACK'); selectSide('FRONT'); }
+  catch (error) { uni.showToast({ title: error instanceof Error ? error.message : '移除失败', icon: 'none' }); }
+}
+function persistForm() {
+  if (formInitialized && id.value) writeEditor(id.value, 'form', { name: name.value, notes: notes.value, brand: brand.value, quantity: quantity.value, tags: tagList.value, tagDraft: tagDraft.value, date: collectDateIso.value, isEdit: isEdit.value });
+}
+watch([name, notes, brand, quantity, tagList, tagDraft, collectDateIso, isEdit], persistForm, { deep: true, flush: 'sync' });
+onShow(() => {
+  if (formInitialized) {
+    selectedSide.value = readEditor<ImageSide>(id.value, 'selected') ?? selectedSide.value;
+    void load();
+  }
+});
 </script>
 
 <template>
   <view class="page metadata-page"><nav-bar title="完善信息" back />
     <view v-if="loadError" class="error">{{ loadError }}</view>
-    <view v-else-if="item" class="preview"><image :src="item.displayImageUrl" mode="aspectFit" /></view>
-    <!-- 三个独立入口（不再混在一起）：裁剪旋转 / 高级调色 / 自动抠图 —— 文案统一四字，等宽一行更齐。
-         前两者始终展示（含已抠图之后，已抠图再裁/调色会按当前构图重新生成抠图）；
-         自动抠图常驻展示：已抠过时置为「已抠图」完成态并禁用（不再隐藏，避免三按钮宽度跳动） -->
-    <view v-if="!loadError" class="entry-row">
+    <view v-else-if="item" class="preview-duo">
+      <view v-for="side in SIDES" :key="side" class="preview-cell" :class="{ selected: selectedSide === side, empty: !getSide(item, side)?.sourceVersion }" @tap="getSide(item, side)?.sourceVersion ? selectSide(side) : imageEditable && addImage(side)">
+        <text class="preview-cap">{{ side === 'FRONT' ? '正面 · 主图' : '反面' }}</text>
+        <image v-if="getSide(item, side)?.displayImageUrl || getSide(item, side)?.standardImageUrl" :src="getSide(item, side)?.displayImageUrl || getSide(item, side)?.standardImageUrl" mode="aspectFit" />
+        <text v-else class="preview-empty">{{ imageEditable ? '＋ 添加反面' : '暂无反面' }}</text>
+        <text v-if="getSide(item, side)?.processingStatus === 'FAILED'" class="preview-error">处理失败</text>
+      </view>
+    </view>
+    <view v-if="imageEditable && !loadError" class="editing-label">正在编辑：{{ sideLabel(selectedSide) }} <text v-if="selectedImage?.sourceVersion" @tap="replaceImage">替换 / 管理图片</text></view>
+    <view v-if="!loadError && imageEditable" class="entry-row">
       <button v-if="canCrop" class="entry-button" @tap="openCrop">
-        <image class="entry-button__icon" src="/static/figma/crop-black.svg" mode="aspectFit" />
-        <text class="entry-button__label">裁剪旋转</text>
-      </button>
-      <button v-if="canCrop" class="entry-button" @tap="openColor">
         <image class="entry-button__icon" src="/static/figma/color-black.svg" mode="aspectFit" />
-        <text class="entry-button__label">高级调色</text>
+        <text class="entry-button__label">裁剪调色</text>
       </button>
       <button v-if="canCrop" class="entry-button" :class="{ 'is-done': matted }" :disabled="matted || matting" @tap="startMatting">
         <image class="entry-button__icon" src="/static/figma/cutout-black.svg" mode="aspectFit" />
@@ -251,13 +300,24 @@ function goBack() { uni.navigateBack({ delta: 1 }); }
     <view class="bottom-bar">
       <view class="detail-actions">
         <button class="detail-edit" @tap="goBack">取消</button>
-        <button class="detail-save" :class="{ 'is-busy': saving }" @tap="save">{{ saving ? '保存中…' : '确定添加' }}</button>
+        <button class="detail-save" :class="{ 'is-busy': saving }" @tap="save">{{ saving ? '保存中…' : isEdit ? '保存修改' : '确定添加' }}</button>
       </view>
     </view>
   </view>
 </template>
 
 <style scoped>
+.preview-duo { display:flex; gap:20rpx; margin:16rpx 30rpx; }
+.preview-cell { flex:1; height:344rpx; position:relative; border:2rpx solid transparent; border-radius:24rpx; display:flex; align-items:center; justify-content:center; }
+.preview-cell.selected { border-color:#c50405; }
+.preview-cell.empty { border:2rpx dashed #b5b1aa; }
+.preview-cell image { width:100%; height:280rpx; }
+.preview-cap { position:absolute; top:10rpx; left:12rpx; font-size:22rpx; color:#777; }
+.preview-empty { color:#777; font-size:26rpx; }
+.preview-error { position:absolute; bottom:8rpx; color:#c50405; font-size:22rpx; }
+.editing-label { margin:16rpx 30rpx; font-size:24rpx; color:#777; display:flex; justify-content:space-between; }
+.editing-label text { color:#141414; text-decoration:underline; }
+
 /* 页面接 nav-bar 组件：导航栏必须全宽顶到屏幕最上沿（含状态栏区），
    因此清零 .page 的四周内边距，改由各内容块自带边距（预埋 200rpx 底部避让按钮条） */
 .metadata-page { padding: 0 0 200rpx; background: #f2f3f7; }

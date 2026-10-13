@@ -11,7 +11,7 @@ BagCollect 是一个私人视觉陈列柜。当前发布方向是基于 **uni-ap
 - `packages/contracts`：共享 Schema、DTO 与错误码。
 - `infra`：Docker Compose、Nginx 和自动部署脚本。
 
-完整的本次修改说明见 [uni-app 重构与交付说明](docs/UNIAPP_REFACTOR_SUMMARY.md)，环境变量、腾讯云、微信后台和 CI/CD 配置见 [uni-app 微信小程序运行与发布](docs/WECHAT_NATIVE.md)。抠图方案以 [腾讯云数据万象抠图实施方案](docs/TENCENT_CI_MATTING.md) 为准，主链路只有万象一条抠图路径。COS 桶名、地域与 CAM 密钥的获取步骤见 [腾讯云凭据获取教程](docs/TENCENT_CLOUD_SETUP.md)。自托管 rembg/BiRefNet 的代码保留未删除，但不在主链路上，其历史决策与性能实测见 [开源抠图实施方案](docs/OPEN_SOURCE_MATTING.md)。
+完整的本次修改说明见 [uni-app 重构与交付说明](docs/UNIAPP_REFACTOR_SUMMARY.md)，环境变量、腾讯云、微信后台和 CI/CD 配置见 [uni-app 微信小程序运行与发布](docs/WECHAT_NATIVE.md)。抠图方案以 [腾讯云数据万象抠图实施方案](docs/TENCENT_CI_MATTING.md) 为准，主链路只有万象一条抠图路径。COS 桶名、地域与 CAM 密钥的获取步骤见 [腾讯云凭据获取教程](docs/TENCENT_CLOUD_SETUP.md)。自托管 rembg/BiRefNet 的代码保留未删除，但不在主链路上，其历史决策与性能实测见 [开源抠图实施方案](docs/OPEN_SOURCE_MATTING.md)。收藏与官方袋子的 A/B 面（正反面）设计见 [纸袋 A/B 面](docs/BAG_SIDES.md)。
 
 ## 本地验证
 

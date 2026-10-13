@@ -36,7 +36,7 @@ export class SettingsService {
     const model = engine === 'dino' ? DINO_SCAN_MODEL : COLOR_SCAN_MODEL;
     const bags = await this.prisma.officialBag.findMany({
       where: { status: 'PUBLISHED', processStatus: 'READY' },
-      select: { id: true, version: true, images: { where: { status: 'AVAILABLE', kind: { in: ['CUTOUT', 'DISPLAY'] } }, select: { version: true, kind: true } },
+      select: { id: true, version: true, images: { where: { side: 'FRONT', status: 'AVAILABLE', kind: { in: ['CUTOUT', 'DISPLAY'] } }, select: { version: true, kind: true } },
         scanEmbeddings: { where: { model, referenceKey: 'primary' }, select: { sourceVersion: true, sourceKind: true, vector: true, colorVector: true } } }
     });
     const ready = bags.filter(b => {

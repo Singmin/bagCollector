@@ -1,3 +1,4 @@
+import type { ImageSide, ImageSideDto } from '../../../packages/contracts/src/image-sides';
 import { useCallback, useEffect, useState } from 'react';
 import {
   App as AntdApp,
@@ -72,6 +73,7 @@ interface Job {
 }
 
 interface OfficialBag {
+  sides?: Partial<Record<ImageSide, ImageSideDto>>;
   id: string;
   name: string;
   brandId?: string;
@@ -108,6 +110,7 @@ interface Brand {
 }
 
 interface Submission {
+  sides?: Partial<Record<ImageSide, ImageSideDto>>;
   id: string;
   name: string;
   notes: string;
@@ -492,7 +495,7 @@ export function App() {
   // 有图片在后台处理时轮询刷新，让「处理中 → 图片就绪」自动出现。
   useEffect(() => {
     if (!token || page !== 'bags') return;
-    if (!bags.some((bag) => bag.processStatus === 'PROCESSING')) return;
+    if (!bags.some((bag) => bag.processStatus === 'PROCESSING' || Object.values(bag.sides ?? {}).some(side => side.processingStatus === 'PROCESSING'))) return;
     const timer = window.setInterval(() => void loadBags(), 3_000);
     return () => window.clearInterval(timer);
   }, [token, page, bags, loadBags]);
@@ -921,7 +924,7 @@ export function App() {
                       width: 84,
                       render: (_, sub) =>
                         sub.thumbnailUrl ? (
-                          <Image src={sub.thumbnailUrl} alt={sub.name} width={56} height={56} style={{ objectFit: 'contain' }} />
+                          <Image.PreviewGroup><Space><Image src={sub.displayImageUrl ?? sub.thumbnailUrl} alt={`${sub.name} · 正面`} width={56} height={56} style={{ objectFit: 'contain' }} />{sub.sides?.BACK?.displayImageUrl && <Image src={sub.sides.BACK.displayImageUrl} alt={`${sub.name} · 反面`} width={56} height={56} style={{ objectFit: 'contain' }} />}</Space></Image.PreviewGroup>
                         ) : (
                           <Tag>未处理</Tag>
                         )
@@ -1664,21 +1667,22 @@ function BagEditor({
   const { message } = AntdApp.useApp();
   const isMobile = useIsMobile();
   const [form] = Form.useForm<BagFormValues>();
+  const [createdId, setCreatedId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [removing, setRemoving] = useState(false);
-  const [fileList, setFileList] = useState<UploadFile[]>([]);
+  const [sideFiles, setSideFiles] = useState<Record<ImageSide, UploadFile[]>>({ FRONT: [], BACK: [] });
+  const [backMatting, setBackMatting] = useState(bag?.sides?.BACK?.matting ?? false);
   const [quickBrandOpen, setQuickBrandOpen] = useState(false);
   const [quickBrandName, setQuickBrandName] = useState('');
   const [quickBrandSaving, setQuickBrandSaving] = useState(false);
 
-  const selectedFile = fileList[0]?.originFileObj ?? null;
 
-  async function uploadTo(bagId: string, file: File, matting: boolean) {
+  async function uploadTo(bagId: string, file: File, matting: boolean, side: ImageSide = 'FRONT') {
     const data = new FormData();
     data.append('file', file);
     // 把当前开关一起带上：勾了抠图这次上传就按抠图处理，无需先保存表单。
-    return api<{ version: number; processStatus: string }>(`/official-bags/${bagId}/image?matting=${matting}`, {
+    return api<{ version: number; processStatus: string }>(`/official-bags/${bagId}/image?matting=${matting}&side=${side}`, {
       method: 'POST',
       body: data
     });
@@ -1693,14 +1697,21 @@ function BagEditor({
         notes: values.notes ?? '',
         tags: values.tags ? values.tags.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean) : [],
         matting: values.matting,
+        backMatting,
         ...(bag ? { sortOrder: values.sortOrder } : {})
       };
-      if (bag) {
-        await api(`/official-bags/${bag.id}`, { method: 'PATCH', body: JSON.stringify(payload) });
-      } else {
+      let targetId = bag?.id ?? createdId;
+      if (targetId) await api(`/official-bags/${targetId}`, { method: 'PATCH', body: JSON.stringify(payload) });
+      else {
         const created = await api<OfficialBag>('/official-bags', { method: 'POST', body: JSON.stringify(payload) });
-        // 新建后如果已经选了文件，直接上传图片。
-        if (selectedFile) await uploadTo(created.id, selectedFile, values.matting ?? false);
+        targetId = created.id; setCreatedId(targetId);
+      }
+      for (const side of ['FRONT', 'BACK'] as const) {
+        const file = sideFiles[side][0]?.originFileObj;
+        if (file) {
+          await uploadTo(targetId, file, side === 'FRONT' ? values.matting ?? false : backMatting, side);
+          setSideFiles(current => ({ ...current, [side]: [] }));
+        }
       }
       message.success('保存成功');
       onDone();
@@ -1711,15 +1722,16 @@ function BagEditor({
     }
   }
 
-  async function replaceImage() {
+  async function replaceImage(side: ImageSide) {
     if (!bag) return;
-    if (!selectedFile) {
+    const file = sideFiles[side][0]?.originFileObj;
+    if (!file) {
       message.warning('请先点击「选择图片」选一张图片');
       return;
     }
     setUploading(true);
     try {
-      await uploadTo(bag.id, selectedFile, Boolean(form.getFieldValue('matting')));
+      await uploadTo(bag.id, file, side === 'FRONT' ? Boolean(form.getFieldValue('matting')) : backMatting, side);
       message.success('已上传，图片处理中');
       onDone();
     } catch (requestError) {
@@ -1729,12 +1741,12 @@ function BagEditor({
     }
   }
 
-  /** 删除袋子当前图片（原图与衍生图），袋子回到未上传状态；已发布袋子会自动下架。 */
-  async function removeImage() {
+  /** 按面删除原图与衍生图；已发布正面须先下架。 */
+  async function removeImage(side: ImageSide) {
     if (!bag) return;
     setRemoving(true);
     try {
-      await api(`/official-bags/${bag.id}/image`, { method: 'DELETE' });
+      await api(`/official-bags/${bag.id}/image?side=${side}`, { method: 'DELETE' });
       message.success('图片已删除，可重新上传');
       onDone();
     } catch (requestError) {
@@ -1828,40 +1840,27 @@ function BagEditor({
           {bag && ' 开关只作用于下一次上传：勾选后点「上传 / 替换图片」会立刻按新设置重新处理。'}
         </Typography.Paragraph>
 
-        <Form.Item label="图片">
-          <Space direction="vertical" style={{ width: '100%' }} size={12}>
-            <Upload
-              accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
-              maxCount={1}
-              fileList={fileList}
-              beforeUpload={() => false}
-              onChange={({ fileList: next }) => setFileList(next)}
-            >
-              <Button icon={<UploadOutlined />}>选择图片</Button>
-            </Upload>
-            {bag?.thumbnailUrl && (
-              <Space size={12} align="center">
-                <Image src={bag.thumbnailUrl} alt={bag.name} width={96} style={{ objectFit: 'contain' }} />
-                <Popconfirm
-                  title="删除这张图片？"
-                  description="删除后袋子回到未上传状态；已发布的袋子会自动下架。"
-                  okText="删除"
-                  okButtonProps={{ danger: true }}
-                  onConfirm={() => void removeImage()}
-                >
-                  <Button danger size="small" loading={removing}>
-                    删除图片
-                  </Button>
-                </Popconfirm>
-              </Space>
-            )}
-            {bag && (
-              <Button onClick={() => void replaceImage()} loading={uploading}>
-                上传 / 替换图片
-              </Button>
-            )}
-            {!bag && <Typography.Text type="secondary">新建保存后，如已选择图片将自动上传并开始处理。</Typography.Text>}
-          </Space>
+        <Form.Item label="A/B 面图片">
+          <Row gutter={[12, 12]}>
+            {(['FRONT', 'BACK'] as const).map(side => {
+              const image = bag?.sides?.[side];
+              const url = image?.displayImageUrl ?? (side === 'FRONT' ? bag?.displayImageUrl : undefined);
+              return <Col span={12} key={side}><Card size="small" title={side === 'FRONT' ? 'A 面 · 正面主图' : 'B 面 · 反面（可选）'}>
+                <Space direction="vertical" style={{ width: '100%' }}>
+                  {url ? <Image src={url} width={120} height={140} style={{ objectFit: 'contain' }} /> : <Typography.Text type="secondary">暂无图片</Typography.Text>}
+                  {image && <Tag>{image.processingStatus === 'PROCESSING' ? '处理中' : image.processingStatus === 'READY' ? '就绪' : image.processingStatus === 'FAILED' ? '失败' : '未上传'}</Tag>}
+                  {image?.processingError && <Typography.Text type="danger">{image.processingError}</Typography.Text>}
+                  {side === 'BACK' && <Space><Switch checked={backMatting} onChange={setBackMatting} /><Typography.Text>反面抠图</Typography.Text></Space>}
+                  <Upload accept="image/jpeg,image/png,image/webp,image/heic,image/heif" maxCount={1} fileList={sideFiles[side]} beforeUpload={() => false} onChange={({ fileList: files }) => setSideFiles(current => ({ ...current, [side]: files }))}>
+                    <Button icon={<UploadOutlined />}>选择图片</Button>
+                  </Upload>
+                  {bag && <Button onClick={() => void replaceImage(side)} loading={uploading} disabled={image?.processingStatus === 'PROCESSING'}>上传 / 替换</Button>}
+                  {bag && !!image?.sourceVersion && <Popconfirm title={`移除${side === 'FRONT' ? '正面' : '反面'}图片？`} description={side === 'FRONT' ? '正面主图须先下架才能移除。' : '已认领收藏刷新后也将移除反面。'} onConfirm={() => void removeImage(side)}><Button danger size="small" loading={removing} disabled={side === 'FRONT' && bag.status === 'PUBLISHED'}>移除图片</Button></Popconfirm>}
+                </Space>
+              </Card></Col>;
+            })}
+          </Row>
+          <Typography.Text type="secondary">保存后将上传已选择的 A/B 面图片，并保存两面的抠图设置。</Typography.Text>
         </Form.Item>
 
         <Form.Item style={{ marginBottom: 0 }}>

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { Queue } from 'bullmq';
 import { Redis } from 'ioredis';
@@ -20,7 +21,7 @@ export class QueueService implements OnModuleDestroy {
     // 由管理后台或用户手动重新触发。
     const retryable = name === 'cleanup' || name === 'official-claim';
     return this.images.add(name, data, {
-      ...(jobId ? { jobId } : {}),
+      ...(jobId ? { jobId: createHash('sha256').update(jobId).digest('hex') } : {}),
       attempts: retryable ? 3 : 1,
       ...(retryable ? { backoff: { type: 'exponential' as const, delay: 2_000 } } : {}),
       removeOnComplete: 500,

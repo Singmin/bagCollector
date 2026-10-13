@@ -1,7 +1,8 @@
 import { BAG_FEATURE_MODEL, DINO_SCAN_MODEL } from '@bagcollect/bag-vision';
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { AssetKind, AssetStatus, OfficialBagStatus, OfficialProcessStatus, Prisma } from '@prisma/client';
+import { AssetKind, AssetStatus, ImageSide, OfficialBagStatus, OfficialProcessStatus, Prisma } from '@prisma/client';
 import type { OfficialBagDto, OfficialBagStatus as OfficialBagStatusContract } from '@bagcollect/contracts';
+import { imageData } from '../common/image-sides.js';
 import { ApiError } from '../common/api-error.js';
 import { QueueService } from '../common/queue.service.js';
 import { PrismaService } from '../database/prisma.service.js';
@@ -56,7 +57,9 @@ export class OfficialBagsAdminService {
       where: { officialBagId: bag.id, status: AssetStatus.AVAILABLE },
       orderBy: { version: 'desc' }
     });
-    const first = (kind: AssetKind) => images.find((image) => image.kind === kind);
+    const resolved = await imageData(this.prisma, this.cos, bag.id, true);
+    const frontState = await this.prisma.officialBagImageSide.findUnique({ where: { officialBagId_side: { officialBagId: bag.id, side: ImageSide.FRONT } } });
+    const first = (kind: AssetKind) => images.find((image) => image.side === ImageSide.FRONT && image.kind === kind && image.version === frontState?.publishedVersion);
     const [thumbnail, display] = await Promise.all([
       first(AssetKind.THUMBNAIL),
       first(AssetKind.DISPLAY)
@@ -64,8 +67,8 @@ export class OfficialBagsAdminService {
     /* 「是否已有特征向量」：当前版本图的提特征来源（CUTOUT 优先，DISPLAY 兜底），
        与 DINO 主参考向量的 sourceKind + sourceVersion 一致才算就绪，口径与匹配覆盖率一致。 */
     const featureSource =
-      images.find((image) => image.kind === AssetKind.CUTOUT && image.version === bag.version) ??
-      images.find((image) => image.kind === AssetKind.DISPLAY && image.version === bag.version);
+      images.find((image) => image.side === ImageSide.FRONT && image.kind === AssetKind.CUTOUT && image.version === frontState?.publishedVersion) ??
+      images.find((image) => image.side === ImageSide.FRONT && image.kind === AssetKind.DISPLAY && image.version === frontState?.publishedVersion);
     const hasEmbedding =
       Boolean(featureSource) &&
       bag.scanEmbeddings.some(
@@ -74,7 +77,7 @@ export class OfficialBagsAdminService {
           embedding.sourceVersion === featureSource!.version
       );
     return {
-      id: bag.id,
+      id: bag.id, ...resolved,
       name: bag.name,
       ...(bag.brandId ? { brandId: bag.brandId } : {}),
       ...(bag.brand ? { brand: bag.brand.name } : {}),
@@ -109,7 +112,7 @@ export class OfficialBagsAdminService {
 
   async create(
     adminId: string,
-    input: { name: string; brandId?: string | null; notes?: string; tags?: string[]; matting?: boolean }
+    input: { name: string; brandId?: string | null; notes?: string; tags?: string[]; matting?: boolean; backMatting?: boolean }
   ) {
     // 新袋子自动排在最前（数字越大越靠前），运营不用手动填排序号。
     const max = await this.prisma.officialBag.aggregate({ _max: { sortOrder: true } });
@@ -122,6 +125,7 @@ export class OfficialBagsAdminService {
         notes: input.notes ?? '',
         tags: input.tags ? this.normalizeTags(input.tags) : [],
         ...(input.matting !== undefined ? { matting: input.matting } : {}),
+        imageSides: { create: [{ side: ImageSide.FRONT, matting: input.matting ?? false }, { side: ImageSide.BACK, matting: input.backMatting ?? false }] },
         sortOrder: (max._max.sortOrder ?? -1) + 1,
         createdById: adminId
       },
@@ -248,24 +252,24 @@ export class OfficialBagsAdminService {
       notes?: string;
       tags?: string[];
       matting?: boolean;
+      backMatting?: boolean;
       status?: OfficialBagStatusContract;
       sortOrder?: number;
     }
   ) {
     const bag = await this.findBag(id);
-    if (input.status === OfficialBagStatus.PUBLISHED) {
-      const hasImage = await this.prisma.officialBagImage.findFirst({
-        where: { officialBagId: id, kind: AssetKind.ORIGINAL, status: AssetStatus.AVAILABLE }
-      });
-      if (!hasImage || bag.processStatus !== OfficialProcessStatus.READY) {
-        throw new ApiError('CONFLICT', '图片尚未上传或处理完成，不能发布', HttpStatus.CONFLICT);
+    const brandId = input.brandId !== undefined ? await this.resolveBrandId(input.brandId) : undefined;
+    await this.prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT "id" FROM "OfficialBag" WHERE "id" = ${id} FOR UPDATE`;
+      if (input.status === OfficialBagStatus.PUBLISHED) {
+        const front = await tx.officialBagImageSide.findUnique({ where: { officialBagId_side: { officialBagId: id, side: ImageSide.FRONT } } });
+        if (front?.publishedVersion == null) throw new ApiError('CONFLICT', '正面图片尚未处理完成，不能发布', HttpStatus.CONFLICT);
       }
-    }
-    await this.prisma.officialBag.update({
+      await tx.officialBag.update({
       where: { id },
       data: {
         ...(input.name !== undefined ? { name: input.name } : {}),
-        ...(input.brandId !== undefined ? { brandId: await this.resolveBrandId(input.brandId) } : {}),
+        ...(brandId !== undefined ? { brandId } : {}),
         ...(input.notes !== undefined ? { notes: input.notes } : {}),
         ...(input.tags ? { tags: this.normalizeTags(input.tags) } : {}),
         ...(input.matting !== undefined ? { matting: input.matting } : {}),
@@ -279,6 +283,11 @@ export class OfficialBagsAdminService {
             }
           : {})
       }
+      });
+      for (const [side, matting] of [[ImageSide.FRONT, input.matting], [ImageSide.BACK, input.backMatting]] as const) {
+        if (matting === undefined) continue;
+        await tx.officialBagImageSide.upsert({ where: { officialBagId_side: { officialBagId: id, side } }, create: { officialBagId: id, side, matting }, update: { matting } });
+      }
     });
     await this.audit(adminId, 'OFFICIAL_BAG_UPDATE', id, { status: input.status });
     return this.toDto(
@@ -291,115 +300,82 @@ export class OfficialBagsAdminService {
    * 上传后自动入队处理（可选抠图），处理状态在袋子上跟踪。
    * `matting` 由后台表单传入时会同时覆盖袋子的抠图设置。
    */
-  async uploadImage(
-    adminId: string,
-    id: string,
-    file: { body: Buffer; contentType: string; matting?: boolean }
-  ) {
+  async uploadImage(adminId: string, id: string, file: { body: Buffer; contentType: string; matting?: boolean; side?: ImageSide }) {
+    if (!ALLOWED_CONTENT_TYPES.includes(file.contentType as (typeof ALLOWED_CONTENT_TYPES)[number]) || !file.body.length) throw new ApiError('UPLOAD_INVALID', '图片格式或大小不正确', HttpStatus.BAD_REQUEST);
+    const side = file.side ?? ImageSide.FRONT;
     const bag = await this.findBag(id);
-    if (!ALLOWED_CONTENT_TYPES.includes(file.contentType as (typeof ALLOWED_CONTENT_TYPES)[number])) {
-      throw new ApiError('UPLOAD_INVALID', '只支持 JPEG / PNG / WebP / HEIC 图片', HttpStatus.BAD_REQUEST);
+    const result = await this.prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT "id" FROM "OfficialBag" WHERE "id" = ${id} FOR UPDATE`;
+      const state = await tx.officialBagImageSide.findUnique({ where: { officialBagId_side: { officialBagId: id, side } } });
+      if (state?.processingStatus === OfficialProcessStatus.PROCESSING) throw new ApiError('CONFLICT', '这一面的图片正在处理', HttpStatus.CONFLICT);
+      const version = (state?.processingVersion ?? 0) + 1;
+      const matting = file.matting ?? state?.matting ?? (side === ImageSide.FRONT ? bag.matting : false);
+      await tx.officialBagImageSide.upsert({ where: { officialBagId_side: { officialBagId: id, side } },
+        create: { officialBagId: id, side, sourceVersion: version, processingVersion: version, processingStatus: OfficialProcessStatus.PROCESSING, matting },
+        update: { sourceVersion: version, processingVersion: version, processingStatus: OfficialProcessStatus.PROCESSING, processingError: null, matting } });
+      if (side === ImageSide.FRONT) await tx.officialBag.update({ where: { id }, data: { processStatus: state?.publishedVersion ? OfficialProcessStatus.READY : OfficialProcessStatus.PROCESSING, processError: null, matting } });
+      return { version, matting };
+    });
+    const extension = ({ 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/heic': 'heic', 'image/heif': 'heif' } as Record<string, string>)[file.contentType];
+    const key = `official/${id}/${side.toLowerCase()}/original/v${result.version}.${extension}`;
+    try {
+      await this.cos.putObject(key, file.body, file.contentType);
+      await this.prisma.$transaction(async tx => {
+        await tx.$queryRaw`SELECT "id" FROM "OfficialBag" WHERE "id" = ${id} FOR UPDATE`;
+        const active = await tx.officialBagImageSide.findUnique({ where: { officialBagId_side: { officialBagId: id, side } } });
+        if (!active || active.processingVersion !== result.version || active.sourceVersion !== result.version) throw new ApiError('CONFLICT', '这次图片上传已被取消', HttpStatus.CONFLICT);
+      await tx.officialBagImage.create({ data: { officialBagId: id, side, kind: AssetKind.ORIGINAL, objectKey: key, contentType: file.contentType,
+        declaredByteSize: BigInt(file.body.length), byteSize: BigInt(file.body.length), version: result.version } });
+      });
+      await this.queues.add('official-process', { officialBagId: id, side, version: result.version, sourceVersion: result.version, matting: result.matting }, `official-process:${id}:${side}:v${result.version}`);
+    } catch (error) {
+      await this.prisma.$transaction(async tx => {
+        await tx.$queryRaw`SELECT "id" FROM "OfficialBag" WHERE "id" = ${id} FOR UPDATE`;
+        const state = await tx.officialBagImageSide.findUnique({ where: { officialBagId_side: { officialBagId: id, side } } });
+        if (!state || state.processingVersion !== result.version || state.processingStatus !== OfficialProcessStatus.PROCESSING) return;
+        const message = '图片上传或任务提交失败，请重新上传';
+        await tx.officialBagImageSide.update({ where: { officialBagId_side: { officialBagId: id, side } }, data: { processingStatus: OfficialProcessStatus.FAILED, processingError: message } });
+        if (side === ImageSide.FRONT) await tx.officialBag.update({ where: { id }, data: { processStatus: state.publishedVersion !== null ? OfficialProcessStatus.READY : OfficialProcessStatus.FAILED, processError: message } });
+      });
+      throw error;
     }
-    if (file.body.length <= 0) {
-      throw new ApiError('UPLOAD_INVALID', '图片内容为空', HttpStatus.BAD_REQUEST);
-    }
-    const version = bag.version + 1;
-    const extension = ({
-      'image/jpeg': 'jpg',
-      'image/png': 'png',
-      'image/webp': 'webp',
-      'image/heic': 'heic',
-      'image/heif': 'heif'
-    } as Record<string, string>)[file.contentType] ?? 'bin';
-    const key = `official/${bag.id}/original/v${version}.${extension}`;
-    await this.cos.putObject(key, file.body, file.contentType);
-    await this.prisma.officialBagImage.create({
-      data: {
-        officialBagId: bag.id,
-        kind: AssetKind.ORIGINAL,
-        status: AssetStatus.AVAILABLE,
-        objectKey: key,
-        contentType: file.contentType,
-        declaredByteSize: BigInt(file.body.length),
-        byteSize: BigInt(file.body.length),
-        version
-      }
-    });
-    // 表单里的「执行抠图」开关直接决定这次处理：勾了就按抠图跑，不必先保存再上传。
-    const matting = file.matting ?? bag.matting;
-    await this.prisma.officialBag.update({
-      where: { id: bag.id },
-      data: {
-        version,
-        processStatus: OfficialProcessStatus.PROCESSING,
-        processError: null,
-        ...(file.matting !== undefined ? { matting: file.matting } : {})
-      }
-    });
-    await this.queues.add(
-      'official-process',
-      { officialBagId: bag.id, version, matting },
-      `official-process:${bag.id}:v${version}`
-    );
-    await this.audit(adminId, 'OFFICIAL_BAG_UPLOAD', bag.id, {
-      version,
-      byteSize: file.body.length,
-      matting
-    });
-    return { version, processStatus: OfficialProcessStatus.PROCESSING };
+    await this.audit(adminId, 'official-bag.upload-image', id, { side, version: result.version });
+    return { ...result, side, processStatus: OfficialProcessStatus.PROCESSING };
   }
 
-  /**
-   * 删除袋子上的全部图片（原图 + 各版本衍生图），把袋子退回「未上传图片」状态。
-   * 已发布袋子会一并下架，避免小程序端展示空图；已被拥有的袋子同样允许操作。
-   * version 继续自增，让仍在处理中的旧任务判定为过期，不再把图片写回来。
-   */
-  async removeImage(adminId: string, id: string) {
-    const bag = await this.findBag(id);
-    const images = await this.prisma.officialBagImage.findMany({
-      where: { officialBagId: id },
-      select: { objectKey: true }
+  async removeImage(adminId: string, id: string, side: ImageSide = ImageSide.FRONT) {
+    const keys = await this.prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT "id" FROM "OfficialBag" WHERE "id" = ${id} FOR UPDATE`;
+      const bag = await tx.officialBag.findUniqueOrThrow({ where: { id } });
+      if (side === ImageSide.FRONT && bag.status === OfficialBagStatus.PUBLISHED) throw new ApiError('CONFLICT', '请先下架袋子，再移除正面主图', HttpStatus.CONFLICT);
+      const images = await tx.officialBagImage.findMany({ where: { officialBagId: id, side } });
+      await tx.officialBagImageSide.upsert({ where: { officialBagId_side: { officialBagId: id, side } }, create: { officialBagId: id, side }, update: { sourceVersion: 0, processingVersion: { increment: 1 }, publishedVersion: null, processingStatus: OfficialProcessStatus.PENDING, processingError: null } });
+      await tx.officialBagImage.deleteMany({ where: { officialBagId: id, side } });
+      if (side === ImageSide.FRONT) await tx.officialBag.update({ where: { id }, data: { version: { increment: 1 }, processStatus: OfficialProcessStatus.PENDING, processError: null } });
+      return images.map(image => image.objectKey);
     });
-    await this.prisma.$transaction([
-      this.prisma.officialBagImage.deleteMany({ where: { officialBagId: id } }),
-      this.prisma.officialBag.update({
-        where: { id },
-        data: {
-          version: bag.version + 1,
-          processStatus: OfficialProcessStatus.PENDING,
-          processError: null,
-          status: bag.status === OfficialBagStatus.PUBLISHED ? OfficialBagStatus.OFFLINE : bag.status
-        }
-      })
-    ]);
-    if (images.length) {
-      await this.queues.add('cleanup', { keys: images.map((image) => image.objectKey) });
-    }
-    await this.audit(adminId, 'OFFICIAL_BAG_IMAGE_DELETE', id, {
-      version: bag.version,
-      objectCount: images.length
-    });
-    return this.toDto(await this.prisma.officialBag.findUniqueOrThrow({ where: { id }, include: bagInclude }));
+    if (keys.length) await this.queues.add('cleanup', { keys });
+    await this.audit(adminId, 'official-bag.remove-image', id, { side });
+    return this.detail(id);
   }
 
-  /**
-   * 删除官方袋子。已被用户「拥有」的也允许删（管理端会二次确认）：
-   * 用户的拥有记录（OfficialClaim）与心愿标记（WishlistItem）由数据库级联清除，
-   * 用户已收藏到自己架子的袋子是独立副本，不受影响。
-   */
   async remove(adminId: string, id: string) {
     const bag = await this.findBag(id);
-    const images = await this.prisma.officialBagImage.findMany({
-      where: { officialBagId: id },
-      select: { objectKey: true }
+    const keys = await this.prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT "id" FROM "OfficialBag" WHERE "id" = ${id} FOR UPDATE`;
+      const [collections, claims] = await Promise.all([
+        tx.collectible.count({ where: { sourceOfficialBagId: id } }),
+        tx.officialClaim.count({ where: { officialBagId: id } })
+      ]);
+      if (collections || claims) throw new ApiError('CONFLICT', '此袋子仍被用户收藏引用，请下架保留，不能删除', HttpStatus.CONFLICT);
+      const images = await tx.officialBagImage.findMany({ where: { officialBagId: id }, select: { objectKey: true } });
+      const references = await tx.bagReferenceImage.findMany({ where: { officialBagId: id }, select: { objectKey: true } });
+      // Learned images retain their own lifecycle and capacity accounting.
+      images.push(...references.filter(ref => !ref.objectKey.startsWith('learning-samples/')));
+      await tx.officialBag.delete({ where: { id } });
+      return images.map(image => image.objectKey);
     });
-    const references = await this.prisma.bagReferenceImage.findMany({ where: { officialBagId: id }, select: { objectKey: true } });
-    // Learned images retain their own lifecycle and capacity accounting.
-    images.push(...references.filter(ref => !ref.objectKey.startsWith('learning-samples/')));
-    await this.prisma.officialBag.delete({ where: { id } });
-    if (images.length) {
-      await this.queues.add('cleanup', { keys: images.map((image) => image.objectKey) });
-    }
+    if (keys.length) await this.queues.add('cleanup', { keys });
     await this.audit(adminId, 'OFFICIAL_BAG_DELETE', id, { name: bag.name });
     return { success: true };
   }
