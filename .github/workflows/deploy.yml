@@ -23,6 +23,7 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   # 复用 ci.yml，保证「部署的一定是通过了 lint / typecheck / 单测 / 迁移 / 构建的那份代码」。
