@@ -63,14 +63,18 @@ export class CollectiblesService {
     const states = source?.imageSides ?? [];
     const front = states.find((state: any) => state.side === 'FRONT');
     const candidates = source?.images ?? source?.imageAssets ?? [];
-    const thumbnail = front ? selectSideAssets(candidates, front).THUMBNAIL : candidates[0];
-    const thumbnailUrl = thumbnail ? await this.assets.signedUrlForObjectKey((thumbnail as { objectKey: string }).objectKey) : undefined;
+    const thumbnail = front
+      ? selectSideAssets<{ side: ImageSide; kind: string; version: number; objectKey: string }>(candidates, front).THUMBNAIL
+      : candidates[0];
+    const thumbnailUrl = thumbnail ? await this.assets.signedUrlForObjectKey(thumbnail.objectKey) : undefined;
     /* B 面缩略图：与详情接口同口径（sourceVersion>0 或已发布才算有该面），
        让小程序详情卡在打开瞬间就能按 A/B 布局渲染，不等详情返回再跳变 */
     const back = states.find((state: any) => state.side === 'BACK');
     const backVisible = !!back && (back.sourceVersion > 0 || back.publishedVersion !== null);
-    const backThumbnail = backVisible ? selectSideAssets(candidates, back).THUMBNAIL : undefined;
-    const backThumbnailUrl = backThumbnail ? await this.assets.signedUrlForObjectKey((backThumbnail as { objectKey: string }).objectKey) : undefined;
+    const backThumbnail = backVisible
+      ? selectSideAssets<{ side: ImageSide; kind: string; version: number; objectKey: string }>(candidates, back).THUMBNAIL
+      : undefined;
+    const backThumbnailUrl = backThumbnail ? await this.assets.signedUrlForObjectKey(backThumbnail.objectKey) : undefined;
     return {
       id: collectible.id, name: collectible.name, shelfId: collectible.shelfId,
       shelfName: collectible.shelf.name, quantity: collectible.quantity ?? 1,
