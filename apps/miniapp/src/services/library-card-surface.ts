@@ -2,6 +2,7 @@ import type { CardRect } from './library-card-motion';
 
 export interface SurfacePose { x: number; y: number }
 export interface DevicePose { alpha: number; beta: number; gamma: number }
+export type DevicePoseUnit = 'radians' | 'degrees';
 export interface LibraryCardSurfaceHandle {
   allowTap(): boolean;
   notifyScroll(): void;
@@ -13,6 +14,7 @@ export const SURFACE_LIMIT = 8;
 export const SURFACE_IDLE_DELAY = 1200;
 export const SURFACE_SCROLL_DELAY = 200;
 export const SURFACE_TRANSITION = 100;
+const DEVICE_SURFACE_SCALE = 0.8;
 
 // A delayed start callback from an old card must not stop a newer card's sensor.
 let sensorSequence = 0;
@@ -35,21 +37,25 @@ export function validSurfaceBounds(bounds: CardRect | null): bounds is CardRect 
     && bounds.width > 0 && bounds.height > 0;
 }
 
-export function pointerSurfacePose(point: { x: number; y: number }, bounds: CardRect | null): SurfacePose | null {
-  if (!validSurfaceBounds(bounds) || ![point.x, point.y].every(Number.isFinite)) return null;
-  return {
-    x: clampSurfaceAngle(-(2 * (point.y - bounds.top) / bounds.height - 1) * SURFACE_LIMIT),
-    y: clampSurfaceAngle((2 * (point.x - bounds.left) / bounds.width - 1) * SURFACE_LIMIT)
-  };
-}
-
 export function validDevicePose(value: unknown): value is DevicePose {
   if (typeof value !== 'object' || value === null) return false;
   const { alpha, beta, gamma } = value as DevicePose;
-  // WeChat reports radians. Reject malformed or incorrectly scaled readings.
+  // The tracker accepts radians only; native readings are normalized at the inlet.
   return [alpha, beta, gamma].every(Number.isFinite)
     && Math.abs(alpha) <= 2 * Math.PI + 0.01
     && Math.abs(beta) <= Math.PI + 0.01 && Math.abs(gamma) <= Math.PI / 2 + 0.01;
+}
+
+/** Keep all quaternion calculations in radians, including degree-valued native callbacks. */
+export function normalizeDevicePose(value: unknown, unit: DevicePoseUnit): DevicePose | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const { alpha, beta, gamma } = value as DevicePose;
+  if (![alpha, beta, gamma].every(Number.isFinite)) return null;
+  if (unit === 'radians') return validDevicePose(value) ? { alpha, beta, gamma } : null;
+  if (Math.abs(alpha) > 360.01 || Math.abs(beta) > 180.01 || Math.abs(gamma) > 90.01) return null;
+  const radians = Math.PI / 180;
+  const pose = { alpha: alpha * radians, beta: beta * radians, gamma: gamma * radians };
+  return validDevicePose(pose) ? pose : null;
 }
 
 interface DeviceQuaternion { x: number; y: number; z: number; w: number }
@@ -89,13 +95,13 @@ function quaternionSurfacePose(value: DeviceQuaternion, baseline: DeviceQuaterni
   const q = relativeQuaternion(value, baseline);
   const length = Math.hypot(q.x, q.y, q.z);
   if (length < 1e-8) return { x: 0, y: 0 };
-  // Rotation vector in degrees, with the requested 0.5 input gain.
+  // Convert the quaternion half-angle to degrees, then scale the sensor tilt.
   const gain = Math.atan2(length, q.w) / length * 180 / Math.PI;
   return {
-    x: clampSurfaceAngle(q.x * gain),
+    x: clampSurfaceAngle(q.x * gain) * DEVICE_SURFACE_SCALE,
     // Sideways tilting an upright phone rolls around its screen normal (Z).
     // Map that roll to the card's horizontal tilt as well as a Y-axis turn.
-    y: clampSurfaceAngle((q.y - q.z) * gain)
+    y: clampSurfaceAngle((q.y - q.z) * gain) * DEVICE_SURFACE_SCALE
   };
 }
 

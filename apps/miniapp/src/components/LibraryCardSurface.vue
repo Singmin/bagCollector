@@ -5,18 +5,17 @@ export default { options: { virtualHost: true } };
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
-import type { CardMotionFrame, CardRect } from '../services/library-card-motion';
+import type { CardMotionFrame } from '../services/library-card-motion';
 import {
-  clampSurfaceAngle, createDeviceSurfaceTracker, pointerSurfacePose, validDevicePose,
+  clampSurfaceAngle, createDeviceSurfaceTracker, normalizeDevicePose,
   claimSurfaceSensor, ownsSurfaceSensor, releaseSurfaceSensor, hasSurfaceSensor,
   SURFACE_IDLE_DELAY, SURFACE_SCROLL_DELAY, SURFACE_TRANSITION,
-  type DevicePose, type SurfacePose, type LibraryCardSurfaceHandle
+  type DevicePose, type DevicePoseUnit, type SurfacePose, type LibraryCardSurfaceHandle
 } from '../services/library-card-surface';
 
 const props = defineProps<{
   phase: CardMotionFrame['phase'];
   paused: boolean;
-  bounds: CardRect | null;
 }>();
 
 interface TouchPoint { clientX?: number; clientY?: number; x?: number; y?: number }
@@ -32,7 +31,6 @@ const frozen = ref(false);
 const showGlare = ref(false);
 let enabled = false;
 let touching = false;
-let verticalGesture = false;
 let multiGesture = false;
 let scrolling = false;
 let gestureBlocked = false;
@@ -56,6 +54,9 @@ let sensorToken = 0;
 let deviceSampleLogged = false;
 let invalidDeviceSampleLogged = false;
 let devicePoseLogged = false;
+// Retain a detected native unit across pause/resume. Small degree readings must
+// not switch back to radians merely because they fit inside radian bounds.
+let deviceAngleUnit: DevicePoseUnit = 'radians';
 
 const tiltStyle = computed(() => ({
   transform: `translateZ(0) rotateX(${pose.value.x}deg) rotateY(${pose.value.y}deg)`,
@@ -124,10 +125,10 @@ function pauseIdle() {
 
 function armIdle() {
   pauseIdle();
-  if (!enabled || touching || scrolling || frozen.value) return;
+  if (!enabled || scrolling || frozen.value) return;
   idleTimer = setTimeout(() => {
     idleTimer = undefined;
-    if (!enabled || touching || scrolling || frozen.value) return;
+    if (!enabled || scrolling || frozen.value) return;
     idleEnabled.value = true;
     publishPose(pose.value);
     idleDeviceAnchor = { ...deviceTarget };
@@ -157,7 +158,7 @@ function notifyScroll() {
   clearTimeout(scrollTimer);
   scrollTimer = setTimeout(() => {
     scrollTimer = undefined;
-    if (!enabled || (touching && verticalGesture)) return;
+    if (!enabled) return;
     scrolling = false;
     // Resume from the present grip, instead of snapping to an old direction.
     deviceTracker.reset(latestDevice);
@@ -171,12 +172,10 @@ function notifyScroll() {
 function onTouchStart(event: Event) {
   const e = event as unknown as SurfaceTouchEvent;
   if (!enabled || frozen.value) return;
-  // Let native controls generate their own tap; excluding them from tilt
-  // must not require catchtouchstart/catchtouchend on their parent view.
+  // Track gestures only to prevent a drag or pinch from flipping the card.
+  // Touch positions never update the card's tilt or its idle animation.
   if (e.target?.dataset?.surfaceControl === true || e.target?.dataset?.surfaceControl === 'true') return;
-  pauseIdle();
   touchOrigin = touchPoint(event);
-  verticalGesture = false;
   multiGesture = false;
   gestureBlocked = false;
   blockedUntil = 0;
@@ -184,12 +183,8 @@ function onTouchStart(event: Event) {
   if (e.touches?.length !== 1) {
     multiGesture = true;
     blockGesture();
-    setTarget({ x: 0, y: 0 });
     return;
   }
-  if (scrolling || !touchOrigin) return;
-  const next = pointerSurfacePose(touchOrigin, props.bounds);
-  if (next) setTarget(next);
 }
 
 function onTouchMove(event: Event) {
@@ -198,21 +193,13 @@ function onTouchMove(event: Event) {
   if (multiGesture || e.touches?.length !== 1) {
     multiGesture = true;
     blockGesture();
-    setTarget({ x: 0, y: 0 });
     return;
   }
   const point = touchPoint(event);
   if (!point || !touchOrigin) return;
   const dx = point.x - touchOrigin.x;
   const dy = point.y - touchOrigin.y;
-  if (Math.hypot(dx, dy) > 8) {
-    blockGesture();
-    if (Math.abs(dy) > Math.abs(dx)) verticalGesture = true;
-  }
-  if (verticalGesture) return notifyScroll();
-  if (scrolling) return;
-  const next = pointerSurfacePose(point, props.bounds);
-  if (next) setTarget(next);
+  if (Math.hypot(dx, dy) > 8) blockGesture();
 }
 
 function onTouchEnd(event: Event) {
@@ -225,11 +212,6 @@ function onTouchEnd(event: Event) {
   touching = false;
   touchOrigin = null;
   if (gestureBlocked) blockedUntil = Date.now() + 500;
-  if (verticalGesture || scrolling) notifyScroll();
-  else {
-    setTarget(deviceTarget);
-    armIdle();
-  }
 }
 
 function onTouchCancel() {
@@ -237,16 +219,30 @@ function onTouchCancel() {
   blockGesture();
   touching = false;
   touchOrigin = null;
-  verticalGesture = false;
-  notifyScroll();
 }
 
 function onDeviceChange(value: unknown) {
   if (!enabled || !deviceListening || !ownsSurfaceSensor(sensorToken)) return;
-  if (!validDevicePose(value)) {
+  let normalized = normalizeDevicePose(value, deviceAngleUnit);
+  if (!normalized && deviceAngleUnit === 'radians') {
+    normalized = normalizeDevicePose(value, 'degrees');
+    if (normalized) {
+      deviceAngleUnit = 'degrees';
+      // Earlier ambiguous readings must not remain the reference orientation.
+      deviceTracker.reset();
+      latestDevice = null;
+      deviceTarget = { x: 0, y: 0 };
+      idleDeviceAnchor = { ...deviceTarget };
+      console.info(`[LibraryCardSurface] 方向角输入为角度制，已转换为弧度 | session=${sensorToken}`);
+    }
+  }
+  if (!normalized) {
     if (!invalidDeviceSampleLogged) {
       invalidDeviceSampleLogged = true;
-      console.warn('[LibraryCardSurface] 数据被过滤：方向角无效或超出弧度范围', { session: sensorToken, raw: value });
+      const raw = value && typeof value === 'object' ? value as Record<string, unknown> : null;
+      const fields = (['alpha', 'beta', 'gamma'] as const)
+        .map(axis => `${axis}=${String(raw?.[axis])}(${typeof raw?.[axis]})`).join(' | ');
+      console.warn(`[LibraryCardSurface] 数据被过滤：方向角无效或超出范围 | session=${sensorToken} | unit=${deviceAngleUnit} | ${fields}`, { raw: value });
     }
     return;
   }
@@ -254,16 +250,16 @@ function onDeviceChange(value: unknown) {
     deviceSampleLogged = true;
     clearTimeout(deviceDataTimer);
     deviceDataTimer = undefined;
-    console.info('[LibraryCardSurface] 收到方向数据', {
-      session: sensorToken, raw: { alpha: value.alpha, beta: value.beta, gamma: value.gamma },
+    console.info(`[LibraryCardSurface] 收到方向数据 | session=${sensorToken} | inputUnit=${deviceAngleUnit} | alpha=${normalized.alpha} | beta=${normalized.beta} | gamma=${normalized.gamma}`, {
+      session: sensorToken, raw: value, radians: { ...normalized },
       touching, scrolling, frozen: frozen.value
     });
   }
-  latestDevice = { alpha: value.alpha, beta: value.beta, gamma: value.gamma };
+  latestDevice = normalized;
   const next = deviceTracker.update(latestDevice);
   if (!next) return;
   deviceTarget = next;
-  if (touching || scrolling || frozen.value) return;
+  if (scrolling || frozen.value) return;
   // Rendering a filtered target is not necessarily deliberate movement.
   // Small sensor fluctuations must neither restart the idle timer nor steer
   // the card during its native sway. Slow real motion accumulates from this
@@ -351,7 +347,7 @@ function startDevice() {
         logDeviceFailure('调用失败 startDeviceMotionListening', error);
         stopDevice('启动失败');
         deviceTarget = { x: 0, y: 0 };
-        if (!touching && !scrolling) setTarget(deviceTarget);
+        if (!scrolling) setTarget(deviceTarget);
       }
     });
   } catch (error) {
@@ -374,7 +370,7 @@ function suspend() {
   enabled = false;
   stopDevice();
   clearTimers();
-  touching = scrolling = verticalGesture = multiGesture = false;
+  touching = scrolling = multiGesture = false;
   touchOrigin = null;
   idleRunning.value = idleEnabled.value = false;
   showGlare.value = false;
@@ -441,10 +437,12 @@ defineExpose<LibraryCardSurfaceHandle>({
 .card-surface__idle.has-idle { animation: surface-idle-sway 6s ease-in-out infinite; }
 /* Keep shine clear of native header/footer controls even when a miniapp
    renderer does not pass hits through a transformed decorative layer. */
-.card-surface__glare { position: absolute; z-index: 30; top: 100rpx; right: 0; bottom: 160rpx; left: 0; border-radius: 55rpx; overflow: hidden; pointer-events: none; transition: opacity .18s linear; }
+/* Feather the glare's top/bottom cutoffs so the shine fades out before the
+   clipped edges instead of leaving dark bands where the layer is absent. */
+.card-surface__glare { position: absolute; z-index: 30; top: 100rpx; right: 0; bottom: 160rpx; left: 0; border-radius: 55rpx; overflow: hidden; pointer-events: none; transition: opacity .18s linear; -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 140rpx, #000 calc(100% - 200rpx), transparent 100%); mask-image: linear-gradient(180deg, transparent 0, #000 140rpx, #000 calc(100% - 200rpx), transparent 100%); }
 .card-surface__glare-position, .card-surface__glare-drift { pointer-events: none; }
 .card-surface__glare-position { position: absolute; top: -50%; right: -50%; bottom: -50%; left: -50%; will-change: transform; transition-property: transform; transition-timing-function: linear; }
-.card-surface__glare-drift { position: absolute; top: 0; right: 0; bottom: 0; left: 0; transform: translate3d(0,0,0); transition: transform .15s ease-out; background: radial-gradient(ellipse at center, #fff 0%, rgba(255,246,224,.65) 25%, rgba(255,255,255,0) 60%); }
+.card-surface__glare-drift { position: absolute; top: 0; right: 0; bottom: 0; left: 0; transform: translate3d(0,0,0); transition: transform .15s ease-out; background: radial-gradient(ellipse at center, #fff 0%, rgba(255,246,224,.65) 22%, rgba(255,255,255,0) 46%); }
 .card-surface__glare-drift.has-idle { animation: surface-idle-glint 6s ease-in-out infinite; }
 @keyframes surface-idle-sway {
   0%, 50%, 100% {

@@ -129,6 +129,12 @@ export function createLibraryCardMotion(
         publish({ ...frame, phase: 'open' });
       });
     },
+    flip() {
+      if (frame.phase !== 'open' || active) return;
+      animate({ ...frame, animation: undefined, angle: frame.angle + 180 }, 400, () => {
+        publish({ ...frame, phase: 'open' });
+      });
+    },
     close(immediate = false) {
       if (frame.phase === 'idle') return;
       if (immediate || frame.phase === 'measuring') return reset();

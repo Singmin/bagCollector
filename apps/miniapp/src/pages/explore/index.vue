@@ -568,7 +568,7 @@ onShow(() => {
 .gallery-title { color: #141414; font-size: 54rpx; font-weight: 800; letter-spacing: 1rpx; line-height: 1.06; }
 .gallery-overview { display: block; margin-top: 8rpx; color: #8d877c; font-size: 24rpx; line-height: 1.4; }
 
-.gallery-search { display: flex; align-items: center; gap: 18rpx; margin-top: 22rpx; padding: 0 29rpx; height: 88rpx; border: 2rpx solid rgba(255,255,255,.8); border-radius: 44rpx; background: rgba(255,255,255,.86); box-shadow: inset 0 2rpx 0 rgba(255,255,255,.9), 0 6rpx 20rpx rgba(52,66,92,.06); }
+.gallery-search { display: flex; align-items: center; gap: 18rpx; margin-top: 22rpx; padding: 0 29rpx; height: 88rpx; border: 2rpx solid rgba(255,255,255,.75); border-radius: 24rpx; background: rgba(255,255,255,.86); box-shadow: inset 0 2rpx 0 rgba(255,255,255,.9), 0 6rpx 20rpx rgba(52,66,92,.06); }
 .gallery-search__icon { flex: 0 0 32rpx; width: 32rpx; height: 32rpx; }
 .gallery-search__input { flex: 1 1 auto; min-width: 0; height: 100%; color: #141414; font-size: 26rpx; }
 .gallery-search__placeholder { color: #a8a49d; }
