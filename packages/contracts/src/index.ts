@@ -270,6 +270,9 @@ export interface CollectibleSummaryDto {
   shelfName: string;
   processingStatus: ProcessingStatus;
   thumbnailUrl?: string;
+  /** 摘要级 B 面缩略图：有值即表示该收藏/袋子存在已发布的 B 面图。
+      小程序详情卡据此在打开瞬间就按 A/B 并排布局渲染，不必等详情接口返回。 */
+  backThumbnailUrl?: string;
   addedAt: string;
   updatedAt: string;
   /** 发现页 feed / 心愿袋条目的主人昵称（官方精选时为品牌名）；用户自己的收藏没有该字段。 */

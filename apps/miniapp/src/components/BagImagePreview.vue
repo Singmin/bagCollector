@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import type { ImageSideDto } from '../services/image-editor';
-const props = defineProps<{ show: boolean; sides?: { FRONT?: ImageSideDto; BACK?: ImageSideDto }; fallback?: string }>();
+const props = defineProps<{ show: boolean; sides?: { FRONT?: ImageSideDto; BACK?: ImageSideDto }; fallback?: string; startSide?: 'FRONT' | 'BACK' }>();
 defineEmits<{ close: [] }>();
 const index = ref(0);
 const images = computed(() => {
@@ -11,15 +11,19 @@ const images = computed(() => {
   });
   return result.length ? result : props.fallback ? [{ side: 'FRONT', url: props.fallback }] : [];
 });
-watch(() => props.show, () => { index.value = 0; });
+watch(() => props.show, show => {
+  if (!show) return;
+  const start = images.value.findIndex(image => image.side === (props.startSide ?? 'FRONT'));
+  index.value = start >= 0 ? start : 0;
+});
 </script>
 <template>
   <view v-if="show" class="bag-image-preview" @tap.self="$emit('close')">
     <swiper class="bag-image-preview__swiper" :current="index" @change="index = $event.detail.current">
       <swiper-item v-for="image in images" :key="image.side"><image class="bag-image-preview__image" :src="image.url" mode="aspectFit" @tap="$emit('close')" /></swiper-item>
     </swiper>
-    <view class="bag-image-preview__labels"><text v-for="(image, i) in images" :key="image.side" :class="{ active: i === index }" @tap="index = i">{{ image.side === 'FRONT' ? '正面' : '反面' }}</text></view>
-    <text class="bag-image-preview__close" @tap="$emit('close')">关闭</text>
+    <view class="bag-image-preview__labels"><text v-for="(image, i) in images" :key="image.side" :class="{ active: i === index }" @tap.stop="index = i">{{ image.side === 'FRONT' ? '正面' : '反面' }}</text></view>
+    <text class="bag-image-preview__close" @tap.stop="$emit('close')">关闭</text>
   </view>
 </template>
 <style scoped>

@@ -23,17 +23,26 @@ export class UsersAdminController {
     @Query('status') status?: string,
     @Query('search') search?: string,
     @Query('page') rawPage?: string,
-    @Query('pageSize') rawPageSize?: string
+    @Query('pageSize') rawPageSize?: string,
+    @Query('sort') sort?: string,
+    @Query('order') order?: string
   ) {
     const statusValue =
       status && (userStatuses as readonly string[]).includes(status)
         ? (status as (typeof userStatuses)[number])
         : undefined;
+    const sortValue =
+      sort === 'collectibleCount' || sort === 'shelfCount' || sort === 'storageUsedBytes' || sort === 'lastLoginAt'
+        ? sort
+        : undefined;
+    const orderValue = order === 'asc' ? 'asc' : order === 'desc' ? 'desc' : undefined;
     return this.users.list({
       status: statusValue,
       search,
       page: rawPage ? Number(rawPage) : undefined,
-      pageSize: rawPageSize ? Number(rawPageSize) : undefined
+      pageSize: rawPageSize ? Number(rawPageSize) : undefined,
+      sort: sortValue,
+      order: orderValue
     });
   }
 

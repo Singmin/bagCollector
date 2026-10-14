@@ -71,6 +71,13 @@ try {
 const heroItem = ref<Collectible | null>(null);
 const heroDetail = ref<Collectible | null>(null);
 const flipped = ref(false);
+/* 主展位 AB 面：有 B 面图时正面图区变成双页轮播（两个圆点指示） */
+const heroSide = ref(0);
+const heroBackUrl = computed(() => heroItem.value?.backThumbnailUrl ?? '');
+const heroHasBack = computed(() => {
+  const id = heroItem.value?.id;
+  return !!id && !!heroBackUrl.value && !!thumbnailUrls.value[id] && !failedThumbnails.value[id];
+});
 const detailCache = new Map<string, Collectible>();
 
 const heroTags = computed(() => heroDetail.value?.tags ?? []);
@@ -258,6 +265,7 @@ async function loadMore() {
 function selectHero(item: Collectible | null) {
   heroItem.value = item;
   flipped.value = false;
+  heroSide.value = 0;
   heroDetail.value = item;
 }
 
@@ -568,19 +576,35 @@ async function onRefresherRefresh() {
           </view>
         </view>
 
-        <view class="flip-face flip-face--front">
+        <view class="flip-face flip-face--front" @tap="toggleFlip">
           <image class="frame85-background" src="/static/figma/indexBg.svg" mode="scaleToFill" />
           <view class="glass-glow" />
           <view class="corner-glow" />
 
           <view class="flip-face__art">
+            <!-- 有 B 面图：图区变双页轮播（横滑切换，右侧两个圆点指示）；
+                 轻点仍翻面看详情。没有 B 面：维持单图 -->
+            <swiper
+              v-if="heroHasBack"
+              class="hero-swiper"
+              :current="heroSide"
+              circular
+              @change="heroSide = $event.detail.current"
+            >
+              <swiper-item><image :src="thumbnailUrls[heroItem.id]" mode="aspectFit" @error="failedThumbnails[heroItem.id] = true" /></swiper-item>
+              <swiper-item><image :src="heroBackUrl" mode="aspectFit" /></swiper-item>
+            </swiper>
             <image
-              v-if="thumbnailUrls[heroItem.id] && !failedThumbnails[heroItem.id]"
+              v-else-if="thumbnailUrls[heroItem.id] && !failedThumbnails[heroItem.id]"
               :src="thumbnailUrls[heroItem.id]"
               mode="aspectFit"
               @error="failedThumbnails[heroItem.id] = true"
             />
             <view v-else class="art-placeholder" />
+            <view v-if="heroHasBack" class="hero-dots" @tap.stop>
+              <view class="hero-dots__dot" :class="{ 'is-on': heroSide === 0 }" @tap.stop="heroSide = 0" />
+              <view class="hero-dots__dot" :class="{ 'is-on': heroSide === 1 }" @tap.stop="heroSide = 1" />
+            </view>
           </view>
 
           <view class="front-caption">
@@ -833,7 +857,9 @@ async function onRefresherRefresh() {
 /* 下内边距 46rpx（H5 是 33rpx）：字号提到 12pt 后底部提示语变高，
    还按 33rpx 会顶到上面那两行文字 */
 /* 2026-09-26 多轮调整：内容整体上移一点，给底部「轻点翻面」提示留出上方间距 */
-.flip-face--front { z-index: 1; display: flex; flex-direction: column; align-items: center; padding: 60rpx 36rpx 40rpx; }
+/* 正面提到整卡点击层(.flip-card__hit z6)之上：AB 面轮播的横滑手势才能到达 swiper；
+   点击翻面由正面自身的 @tap 承担（背面仍由 .flip-face--back 的 @tap 承担） */
+.flip-face--front { z-index: 7; display: flex; flex-direction: column; align-items: center; padding: 60rpx 36rpx 40rpx; }
 .flip-face--back { z-index: 2; transform: rotateY(-180deg); opacity: 0; }
 .flip-card.is-flipped .flip-face--front { opacity: 0; transition: opacity .06s linear 0s; }
 /* 翻面后把整个背面层提到整卡点击层（.flip-card__hit z 6）之上：
@@ -860,6 +886,11 @@ async function onRefresherRefresh() {
 .flip-face__art { position: relative; z-index: 3; flex: 0 0 auto; width: 100%; height: 400rpx; }
 .flip-face__art image { width: 100%; height: 400rpx; filter: drop-shadow(0 7rpx 18rpx rgba(0,0,0,.18)); }
 .art-placeholder { position: absolute; left: 50%; top: 50%; width: 258rpx; height: 340rpx; margin: -170rpx 0 0 -129rpx; border-radius: 28rpx; background: rgba(255,255,255,.46); }
+/* ── 主展位 AB 面轮播：铺满图区，横滑切面；右侧竖排两个圆点，实心红 = 当前面 ── */
+.hero-swiper { position: absolute; z-index: 8; top: 0; left: 0; right: 0; bottom: 0; }
+.hero-dots { position: absolute; z-index: 9; right: 4rpx; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 14rpx; }
+.hero-dots__dot { width: 12rpx; height: 12rpx; border-radius: 50%; background: rgba(20,20,20,.16); transition: background .18s ease, transform .18s ease; }
+.hero-dots__dot.is-on { background: #c50405; transform: scale(1.2); }
 
 /* 袋子下方两行（H5 .front-caption：margin-top 8px；title 21px；sub 10.5px、gap 7px、margin 5px）。
    ⚠ 字号换算基准：H5 字体是固定 px，在 375 屏上不随手壳缩放，所以这里按 1px=2rpx
@@ -1110,8 +1141,8 @@ async function onRefresherRefresh() {
 .card-wish.is-pressed { transform: scale(.86); }
 /* 主卡右上角固定快捷操作：心形（心愿袋）+ 靶心（标记已有）。
    ⚠ 放在 flip-card 直属层（不在任何一面里），翻面时位置不动、始终可见；
-   z-index 8 必须 > 整卡点击层 .flip-card__hit(6)，否则点击会被翻面截走 */
-.hero-quick { position: absolute; z-index: 8; top: 22rpx; right: 22rpx; display: flex; gap: 14rpx; }
+   z-index 9 必须 > 正面层 .flip-face--front(7，AB 面轮播也在其上)，否则点击会被截走 */
+.hero-quick { position: absolute; z-index: 9; top: 22rpx; right: 22rpx; display: flex; gap: 14rpx; }
 .hero-quick__btn { width: 60rpx; height: 60rpx; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: rgba(255,255,255,.88); transition: transform .18s ease; }
 .hero-quick__btn.is-pressed { transform: scale(.88); }
 .hero-quick__icon { width: 32rpx; height: 32rpx; }

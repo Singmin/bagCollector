@@ -42,14 +42,16 @@ export class AdminController {
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('page') rawPage?: string,
-    @Query('pageSize') rawPageSize?: string
+    @Query('pageSize') rawPageSize?: string,
+    @Query('order') order?: string
   ) {
     return this.admin.auditLogs({
       action,
       from,
       to,
       page: rawPage ? Number(rawPage) : undefined,
-      pageSize: rawPageSize ? Number(rawPageSize) : undefined
+      pageSize: rawPageSize ? Number(rawPageSize) : undefined,
+      order: order === 'asc' ? 'asc' : order === 'desc' ? 'desc' : undefined
     });
   }
 }

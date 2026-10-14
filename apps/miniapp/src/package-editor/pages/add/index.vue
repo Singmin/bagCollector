@@ -562,9 +562,11 @@ onShow(() => {
             </view>
           </view>
         </scroll-view>
-        <button class="match-cancel" :disabled="uploading" @tap="openCorrection">候选都不对，搜索正确款式</button>
-        <button class="match-cancel" :disabled="uploading" @tap="adjustAndRetry">调整裁剪后重试</button>
-        <button class="match-cancel" :disabled="uploading" @tap="goManual('请手动填写信息完成上传')">继续手动上传</button>
+        <button class="match-primary" :disabled="uploading" @tap="openCorrection">都不是，搜索正确款式</button>
+        <view class="match-secondary-row">
+          <button class="match-secondary" :disabled="uploading" @tap="adjustAndRetry">调整裁剪重试</button>
+          <button class="match-secondary" :disabled="uploading" @tap="goManual('请手动填写信息完成上传')">继续手动上传</button>
+        </view>
         </template>
       </view>
     </view>
@@ -636,4 +638,9 @@ onShow(() => {
 .match-name { display: block; font-size: 28rpx; font-weight: 500; }
 .match-brand { display: block; margin-top: 8rpx; font-size: 24rpx; color: #9d9890; }
 .match-cancel { margin-top: 8rpx; padding: 0; border: none; border-radius: 999rpx; background: #f2f3f7; color: #444; font-size: 28rpx; line-height: 88rpx; }
+.match-primary { margin-top: 8rpx; padding: 0; border: none; border-radius: 999rpx; background: #1a1a1a; color: #fff; font-size: 30rpx; font-weight: 600; line-height: 96rpx; }
+.match-primary[disabled] { background: #1a1a1a; color: rgba(255, 255, 255, 0.5); }
+.match-secondary-row { display: flex; gap: 20rpx; margin-top: 20rpx; }
+.match-secondary { flex: 1 1 0; margin: 0; padding: 0; border: none; border-radius: 999rpx; background: #f2f3f7; color: #444; font-size: 28rpx; line-height: 88rpx; }
+.match-secondary[disabled] { background: #f2f3f7; color: #bbb; }
 </style>

@@ -323,6 +323,9 @@ export function App() {
   const [submissionPage, setSubmissionPage] = useState(1);
   const [submissionPageSize, setSubmissionPageSize] = useState(20);
   const [submissionTotal, setSubmissionTotal] = useState(0);
+  /* 服务端排序：sort/order 传给 /submissions 接口，全量口径排序后分页（不再前端本页排） */
+  const [submissionSort, setSubmissionSort] = useState<'name' | 'byteSize' | 'addedAt'>();
+  const [submissionOrder, setSubmissionOrder] = useState<'asc' | 'desc'>();
   const [promoting, setPromoting] = useState<Submission | null>(null);
   const [rejecting, setRejecting] = useState<Submission | null>(null);
   const [processFilter, setProcessFilter] = useState<ProcessFilter>('ALL');
@@ -336,6 +339,8 @@ export function App() {
   const [userPage, setUserPage] = useState(1);
   const [userPageSize, setUserPageSize] = useState(20);
   const [userTotal, setUserTotal] = useState(0);
+  const [userSort, setUserSort] = useState<'collectibleCount' | 'shelfCount' | 'storageUsedBytes' | 'lastLoginAt'>();
+  const [userOrder, setUserOrder] = useState<'asc' | 'desc'>();
   const [userDetail, setUserDetail] = useState<AdminUserDetail | null>(null);
   const [userDetailLoading, setUserDetailLoading] = useState(false);
   const [editingQuotaUser, setEditingQuotaUser] = useState<AdminUserDetail | null>(null);
@@ -345,6 +350,7 @@ export function App() {
   const [auditDateRange, setAuditDateRange] = useState<[string, string] | null>(null);
   const [auditPage, setAuditPage] = useState(1);
   const [auditPageSize, setAuditPageSize] = useState(50);
+  const [auditOrder, setAuditOrder] = useState<'asc' | 'desc'>();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -407,6 +413,10 @@ export function App() {
       /* 处理状态筛选也交给服务端：分页之后再做客户端过滤只能过滤当前页，
          「只看失败」会变成「只看当前页里失败的」—— 那是错的。 */
       if (processFilter !== 'ALL') params.set('process', processFilter);
+      if (submissionSort) {
+        params.set('sort', submissionSort);
+        params.set('order', submissionOrder ?? 'desc');
+      }
       params.set('page', String(submissionPage));
       params.set('pageSize', String(submissionPageSize));
       const result = await api<SubmissionPage>(`/submissions?${params.toString()}`);
@@ -417,7 +427,7 @@ export function App() {
     } finally {
       setLoading(false);
     }
-  }, [submissionStatusFilter, submissionSearch, submissionDateRange, processFilter, submissionPage, submissionPageSize]);
+  }, [submissionStatusFilter, submissionSearch, submissionDateRange, processFilter, submissionPage, submissionPageSize, submissionSort, submissionOrder]);
 
   const loadUsers = useCallback(async () => {
     setLoading(true);
@@ -426,6 +436,10 @@ export function App() {
       const params = new URLSearchParams();
       if (userStatusFilter) params.set('status', userStatusFilter);
       if (userSearch.trim()) params.set('search', userSearch.trim());
+      if (userSort) {
+        params.set('sort', userSort);
+        params.set('order', userOrder ?? 'desc');
+      }
       params.set('page', String(userPage));
       params.set('pageSize', String(userPageSize));
       const result = await api<AdminUserPage>(`/users?${params.toString()}`);
@@ -436,7 +450,7 @@ export function App() {
     } finally {
       setLoading(false);
     }
-  }, [userStatusFilter, userSearch, userPage, userPageSize]);
+  }, [userStatusFilter, userSearch, userPage, userPageSize, userSort, userOrder]);
 
   const loadAuditLogs = useCallback(async () => {
     setLoading(true);
@@ -448,6 +462,7 @@ export function App() {
         params.set('from', auditDateRange[0]);
         params.set('to', auditDateRange[1]);
       }
+      if (auditOrder) params.set('order', auditOrder);
       params.set('page', String(auditPage));
       params.set('pageSize', String(auditPageSize));
       const result = await api<AuditLogPage>(`/audit-logs?${params.toString()}`);
@@ -458,7 +473,7 @@ export function App() {
     } finally {
       setLoading(false);
     }
-  }, [auditAction, auditDateRange, auditPage, auditPageSize]);
+  }, [auditAction, auditDateRange, auditPage, auditPageSize, auditOrder]);
 
   const openUserDetail = useCallback(async (id: string): Promise<AdminUserDetail | null> => {
     setUserDetailLoading(true);
@@ -916,6 +931,20 @@ export function App() {
                     }
                   }}
                   scroll={{ x: 1100 }}
+                  onChange={(_, _filters, sorter, extra) => {
+                    /* 排序交给服务端：仅响应排序动作（分页走 pagination.onChange，互不干扰） */
+                    if (extra.action !== 'sort') return;
+                    const active = Array.isArray(sorter) ? sorter[0] : sorter;
+                    const key = active?.columnKey;
+                    if (!active?.order || (key !== 'name' && key !== 'byteSize' && key !== 'addedAt')) {
+                      setSubmissionSort(undefined);
+                      setSubmissionOrder(undefined);
+                    } else {
+                      setSubmissionSort(key);
+                      setSubmissionOrder(active.order === 'ascend' ? 'asc' : 'desc');
+                    }
+                    setSubmissionPage(1);
+                  }}
                   columns={[
                     {
                       title: '图片',
@@ -931,7 +960,8 @@ export function App() {
                     {
                       title: '名称',
                       key: 'name',
-                      sorter: (a, b) => a.name.localeCompare(b.name, 'zh'),
+                      sorter: true,
+                      sortOrder: submissionSort === 'name' ? (submissionOrder === 'asc' ? 'ascend' : 'descend') : null,
                       render: (_, sub) => (
                         <div>
                           <Typography.Text strong>{sub.name}</Typography.Text>
@@ -981,14 +1011,16 @@ export function App() {
                       title: '图片大小',
                       key: 'byteSize',
                       width: 110,
-                      sorter: (a, b) => a.byteSize - b.byteSize,
+                      sorter: true,
+                      sortOrder: submissionSort === 'byteSize' ? (submissionOrder === 'asc' ? 'ascend' : 'descend') : null,
                       render: (_, sub) => (sub.byteSize > 0 ? formatBytes(sub.byteSize) : <span className="muted">—</span>)
                     },
                     {
                       title: '上传时间',
                       key: 'addedAt',
                       width: 170,
-                      sorter: (a, b) => new Date(a.addedAt).getTime() - new Date(b.addedAt).getTime(),
+                      sorter: true,
+                      sortOrder: submissionSort === 'addedAt' ? (submissionOrder === 'asc' ? 'ascend' : 'descend') : null,
                       render: (_, sub) => new Date(sub.addedAt).toLocaleString('zh-CN')
                     },
                     {
@@ -1092,6 +1124,19 @@ export function App() {
                     }
                   }}
                   scroll={{ x: 1080 }}
+                  onChange={(_, _filters, sorter, extra) => {
+                    if (extra.action !== 'sort') return;
+                    const active = Array.isArray(sorter) ? sorter[0] : sorter;
+                    const key = active?.columnKey;
+                    if (!active?.order || (key !== 'collectibleCount' && key !== 'shelfCount' && key !== 'storageUsedBytes' && key !== 'lastLoginAt')) {
+                      setUserSort(undefined);
+                      setUserOrder(undefined);
+                    } else {
+                      setUserSort(key as 'collectibleCount' | 'shelfCount' | 'storageUsedBytes' | 'lastLoginAt');
+                      setUserOrder(active.order === 'ascend' ? 'asc' : 'desc');
+                    }
+                    setUserPage(1);
+                  }}
                   columns={[
                     {
                       title: '用户标识',
@@ -1114,20 +1159,23 @@ export function App() {
                       dataIndex: 'collectibleCount',
                       key: 'collectibleCount',
                       width: 80,
-                      sorter: (a, b) => a.collectibleCount - b.collectibleCount
+                      sorter: true,
+                      sortOrder: userSort === 'collectibleCount' ? (userOrder === 'asc' ? 'ascend' : 'descend') : null
                     },
                     {
                       title: '架子',
                       dataIndex: 'shelfCount',
                       key: 'shelfCount',
                       width: 80,
-                      sorter: (a, b) => a.shelfCount - b.shelfCount
+                      sorter: true,
+                      sortOrder: userSort === 'shelfCount' ? (userOrder === 'asc' ? 'ascend' : 'descend') : null
                     },
                     {
                       title: '存储用量',
-                      key: 'storage',
+                      key: 'storageUsedBytes',
                       width: 150,
-                      sorter: (a, b) => a.storageUsedBytes - b.storageUsedBytes,
+                      sorter: true,
+                      sortOrder: userSort === 'storageUsedBytes' ? (userOrder === 'asc' ? 'ascend' : 'descend') : null,
                       render: (_, user) => (
                         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                           {formatBytes(user.storageUsedBytes)} / {formatBytes(user.storageQuotaBytes)}
@@ -1139,7 +1187,8 @@ export function App() {
                       dataIndex: 'lastLoginAt',
                       key: 'lastLoginAt',
                       width: 170,
-                      sorter: (a, b) => new Date(a.lastLoginAt).getTime() - new Date(b.lastLoginAt).getTime(),
+                      sorter: true,
+                      sortOrder: userSort === 'lastLoginAt' ? (userOrder === 'asc' ? 'ascend' : 'descend') : null,
                       render: (_, user) => new Date(user.lastLoginAt).toLocaleString('zh-CN')
                     },
                     {
@@ -1254,13 +1303,24 @@ export function App() {
                     }
                   }}
                   scroll={{ x: 960 }}
+                  onChange={(_, _filters, sorter, extra) => {
+                    if (extra.action !== 'sort') return;
+                    const active = Array.isArray(sorter) ? sorter[0] : sorter;
+                    if (!active?.order || active.columnKey !== 'createdAt') {
+                      setAuditOrder(undefined);
+                    } else {
+                      setAuditOrder(active.order === 'ascend' ? 'asc' : 'desc');
+                    }
+                    setAuditPage(1);
+                  }}
                   columns={[
                     {
                       title: '时间',
                       dataIndex: 'createdAt',
                       key: 'createdAt',
                       width: 170,
-                      sorter: (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+                      sorter: true,
+                      sortOrder: auditOrder ? (auditOrder === 'asc' ? 'ascend' : 'descend') : null,
                       render: (_, log) => new Date(log.createdAt).toLocaleString('zh-CN')
                     },
                     {

@@ -148,6 +148,10 @@ export class SubmissionsAdminService {
     to?: string;
     page?: number;
     pageSize?: number;
+    /* 服务端排序：name / addedAt 是主表列，直接数据库排序；
+       byteSize 是图片资产字节数的聚合值（不在主表上），走聚合查询排序。 */
+    sort?: 'name' | 'addedAt' | 'byteSize';
+    order?: 'asc' | 'desc';
   }): Promise<SubmissionPageDto> {
     /* 上限 200：这个列表每行都要签一次图片 URL，一次拉太多会把响应体与签名开销
        一起顶上去 —— 分页的目的本来就是「每次只取一屏」。 */
@@ -198,13 +202,61 @@ export class SubmissionsAdminService {
           }
         : {})
     } satisfies Prisma.CollectibleWhereInput;
+    const include = { shelf: { select: { name: true } }, tags: { include: { tag: true } } } satisfies Prisma.CollectibleInclude;
+    const order = query.order === 'asc' ? 'asc' : 'desc';
+    /* 主表列排序：数据库 orderBy（id 作稳定 tiebreaker），保持 skip/take 快路径 */
+    if (query.sort === 'name' || query.sort === 'addedAt') {
+      const key = query.sort;
+      const [items, totalCount] = await Promise.all([
+        this.prisma.collectible.findMany({
+          where,
+          orderBy: [{ [key]: order }, { id: order }] as Prisma.CollectibleOrderByWithRelationInput[],
+          skip: (currentPage - 1) * pageSize,
+          take: pageSize,
+          include
+        }),
+        this.prisma.collectible.count({ where })
+      ]);
+      const images = await this.resolveImages(items.map((collectible) => collectible.id));
+      return { items: items.map((collectible) => this.toDto(collectible, images.get(collectible.id)!)), totalCount };
+    }
+    /* 图片大小排序：byteSize = 该收藏全部可用图片资产字节之和，Prisma 不支持按
+       关系聚合值 orderBy —— 先取全部命中 id，聚合各收藏字节和后在内存里排序分页，
+       再只为当前页那一屏取完整行与签名 URL（和筛选项一样，排序必须全量口径）。 */
+    if (query.sort === 'byteSize') {
+      const rows = await this.prisma.collectible.findMany({ where, select: { id: true } });
+      const sums = await this.prisma.imageAsset.groupBy({
+        by: ['collectibleId'],
+        where: { collectibleId: { in: rows.map((row) => row.id) }, status: AssetStatus.AVAILABLE },
+        _sum: { byteSize: true }
+      });
+      const sizeById = new Map(sums.map((sum) => [sum.collectibleId, Number(sum._sum.byteSize ?? 0)]));
+      const sortedIds = rows
+        .map((row) => row.id)
+        .sort((a, b) => {
+          const delta = (sizeById.get(a) ?? 0) - (sizeById.get(b) ?? 0);
+          return order === 'asc' ? delta : -delta;
+        });
+      const pageIds = sortedIds.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+      const [pageRows, totalCount] = await Promise.all([
+        this.prisma.collectible.findMany({ where: { id: { in: pageIds } }, include }),
+        rows.length
+      ]);
+      const rowById = new Map(pageRows.map((row) => [row.id, row]));
+      const items = pageIds.flatMap((id) => {
+        const row = rowById.get(id);
+        return row ? [row] : [];
+      });
+      const images = await this.resolveImages(pageIds);
+      return { items: items.map((collectible) => this.toDto(collectible, images.get(collectible.id)!)), totalCount };
+    }
     const [items, totalCount] = await Promise.all([
       this.prisma.collectible.findMany({
         where,
         orderBy: [{ addedAt: 'desc' }, { id: 'desc' }],
         skip: (currentPage - 1) * pageSize,
         take: pageSize,
-        include: { shelf: { select: { name: true } }, tags: { include: { tag: true } } }
+        include
       }),
       this.prisma.collectible.count({ where })
     ]);
