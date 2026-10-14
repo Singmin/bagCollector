@@ -58,7 +58,7 @@ describe('CollectiblesService.list', () => {
     expect(assets.urlsByKind).not.toHaveBeenCalled();
     expect(prisma.collectible.findMany).toHaveBeenCalledWith(expect.objectContaining({
       include: expect.objectContaining({
-        imageAssets: expect.objectContaining({ where: expect.objectContaining({ side: 'FRONT' }) }),
+        imageAssets: expect.objectContaining({ where: expect.objectContaining({ side: { in: ['FRONT', 'BACK'] } }) }),
         imageSides: true
       })
     }));
