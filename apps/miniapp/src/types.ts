@@ -32,6 +32,8 @@ export interface CollectibleSummary {
   visibility?: 'PRIVATE' | 'PUBLIC';
   processingStatus: ProcessingStatus;
   thumbnailUrl?: string;
+  /** 摘要级 B 面缩略图：有值即表示存在已发布的 B 面，详情卡直接按 A/B 布局打开 */
+  backThumbnailUrl?: string;
   addedAt: string;
   updatedAt: string;
   /** 发现页 feed 条目的主人昵称（官方精选时为品牌名）；自己的收藏没有该字段 */

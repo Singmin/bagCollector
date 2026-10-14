@@ -88,6 +88,8 @@ export class AdminService {
     to?: string;
     page?: number;
     pageSize?: number;
+    /* 服务端排序：审计日志只有时间一列可排，按 createdAt 升降序 */
+    order?: 'asc' | 'desc';
   }): Promise<AuditLogPageDto> {
     const pageSize = Math.min(Math.max(query.pageSize ?? 30, 1), 500);
     const currentPage = Math.max(query.page ?? 1, 1);
@@ -106,10 +108,11 @@ export class AdminService {
         : {})
     } satisfies Prisma.AuditLogWhereInput;
 
+    const order = query.order === 'asc' ? 'asc' : 'desc';
     const [items, totalCount] = await Promise.all([
       this.prisma.auditLog.findMany({
         where,
-        orderBy: { createdAt: 'desc' },
+        orderBy: [{ createdAt: order }, { id: order }],
         skip: (currentPage - 1) * pageSize,
         take: pageSize,
         include: { admin: { select: { username: true } } }

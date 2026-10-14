@@ -323,8 +323,15 @@ export function useLibraryDetail(options: DetailOptions) {
     const token = Number(value.currentTarget?.dataset?.motionToken);
     if (Number.isFinite(token)) cardMotion.finishClosing(token);
   }
-  function previewDetailArtwork() {
-    if (detailBusy.value || !detailArtwork.value || detailSurface.value?.allowTap?.() === false) return;
+  const previewSide = ref<'FRONT' | 'BACK'>('FRONT');
+  function previewDetailArtwork(side: 'FRONT' | 'BACK' = 'FRONT') {
+    if (detailBusy.value || detailSurface.value?.allowTap?.() === false) return;
+    const sideUrl = side === 'BACK'
+      ? (detailData.value?.sides?.BACK?.displayImageUrl ?? detailItem.value?.backThumbnailUrl)
+      : detailData.value?.sides?.FRONT?.displayImageUrl;
+    const url = sideUrl || detailArtwork.value;
+    if (!url) return;
+    previewSide.value = side;
     previewShow.value = true;
   }
   async function startEdit() {
@@ -359,7 +366,7 @@ export function useLibraryDetail(options: DetailOptions) {
   });
   return { detailItem, detailData, detailArtwork, detailLoading, detailSurface, detailSurfaceBounds,
     detailMotion, detailBusy, detailBackVisible, detailFlipping, detailTurning, detailTranslateStyle, detailRotateStyle,
-    detailNo, detailTags, detailNote, detailFacts, detailAtEnd, editing, previewShow, preparing, isWishDetail,
+    detailNo, detailTags, detailNote, detailFacts, detailAtEnd, editing, previewShow, previewSide, preparing, isWishDetail,
     open, prepare, resize, finishPreparation, closeDetail, toggleDetailFace, onDetailMotionEnd, onDetailScroll, measureDetailSurface,
     previewDetailArtwork, startEdit, acceptUpdated, suspend };
 }

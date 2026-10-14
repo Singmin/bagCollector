@@ -26,7 +26,9 @@ export class SubmissionsAdminController {
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('page') rawPage?: string,
-    @Query('pageSize') rawPageSize?: string
+    @Query('pageSize') rawPageSize?: string,
+    @Query('sort') sort?: string,
+    @Query('order') order?: string
   ) {
     const statusValue =
       status && (submissionStatuses as readonly string[]).includes(status)
@@ -34,6 +36,9 @@ export class SubmissionsAdminController {
         : undefined;
     const processValue =
       process === 'READY' || process === 'PROCESSING' || process === 'FAILED' ? process : undefined;
+    const sortValue =
+      sort === 'name' || sort === 'addedAt' || sort === 'byteSize' ? sort : undefined;
+    const orderValue = order === 'asc' ? 'asc' : order === 'desc' ? 'desc' : undefined;
     return this.submissions.list({
       status: statusValue,
       process: processValue,
@@ -41,7 +46,9 @@ export class SubmissionsAdminController {
       from,
       to,
       page: rawPage ? Number(rawPage) : undefined,
-      pageSize: rawPageSize ? Number(rawPageSize) : undefined
+      pageSize: rawPageSize ? Number(rawPageSize) : undefined,
+      sort: sortValue,
+      order: orderValue
     });
   }
 

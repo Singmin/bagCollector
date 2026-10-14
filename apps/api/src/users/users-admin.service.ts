@@ -61,6 +61,9 @@ export class UsersAdminService {
     search?: string;
     page?: number;
     pageSize?: number;
+    /* 服务端排序：collectibleCount / shelfCount 走关系计数，storageUsedBytes / lastLoginAt 走主表列 */
+    sort?: 'collectibleCount' | 'shelfCount' | 'storageUsedBytes' | 'lastLoginAt';
+    order?: 'asc' | 'desc';
   }): Promise<AdminUserPageDto> {
     const pageSize = Math.min(Math.max(query.pageSize ?? 20, 1), 200);
     const page = Math.max(query.page ?? 1, 1);
@@ -76,11 +79,22 @@ export class UsersAdminService {
           }
         : {})
     } satisfies Prisma.UserWhereInput;
+    const order = query.order === 'asc' ? 'asc' : 'desc';
+    const orderBy =
+      query.sort === 'collectibleCount'
+        ? [{ collectibles: { _count: order } }, { id: order }]
+        : query.sort === 'shelfCount'
+          ? [{ shelves: { _count: order } }, { id: order }]
+          : query.sort === 'storageUsedBytes'
+            ? [{ storageUsedBytes: order }, { id: order }]
+            : query.sort === 'lastLoginAt'
+              ? [{ lastLoginAt: order }, { id: order }]
+              : [{ createdAt: 'desc' }, { id: 'desc' }];
 
     const [items, totalCount] = await Promise.all([
       this.prisma.user.findMany({
         where,
-        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        orderBy: orderBy as Prisma.UserOrderByWithRelationInput[],
         skip: (page - 1) * pageSize,
         take: pageSize,
         include: USER_INCLUDE

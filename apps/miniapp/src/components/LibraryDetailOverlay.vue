@@ -4,6 +4,7 @@ export default { options: { virtualHost: true } };
 
 <script setup lang="ts">
 import { computed, getCurrentInstance, nextTick, onMounted, onScopeDispose, ref, watch } from 'vue';
+import type { ImageSideDto } from '../services/image-editor';
 import type { Collectible, CollectibleSummary, Shelf } from '../types';
 import type { LibraryCardOpen } from '../services/library-card-events';
 import { dataService } from '../services/data';
@@ -24,10 +25,26 @@ const detail = useLibraryDetail({ instance: getCurrentInstance()?.proxy, number:
   closed: () => emit('closed'), loaded: item => emit('detailLoaded', item) });
 const { detailItem, detailData, detailArtwork, detailLoading, detailSurface,
   detailMotion, detailBusy, detailBackVisible, detailFlipping, detailTurning, detailTranslateStyle, detailRotateStyle,
-  detailNo, detailTags, detailNote, detailFacts, detailAtEnd, editing, previewShow, preparing, isWishDetail,
+  detailNo, detailTags, detailNote, detailFacts, detailAtEnd, editing, previewShow, previewSide, preparing, isWishDetail,
   toggleDetailFace, onDetailMotionEnd, onDetailScroll, previewDetailArtwork, startEdit } = detail;
 const resolveCardBackground = createCardBackgroundResolver();
 const detailBrand = computed(() => isWishDetail.value ? (detailItem.value?.ownerName ?? '官方精选') : detailItem.value?.shelfName);
+// A/B 面：摘要里的 backThumbnailUrl 让卡片在打开瞬间就按并排布局渲染（不跳变），
+// 详情到了后 B 面升级为高清 displayImageUrl；没有 B 面则维持单图展示。
+const detailFrontImage = computed(() => detailData.value?.sides?.FRONT?.displayImageUrl || detailArtwork.value || '');
+const detailBackImage = computed(() => detailData.value?.sides?.BACK?.displayImageUrl || detailItem.value?.backThumbnailUrl || '');
+const hasBackImage = computed(() => !!detailBackImage.value);
+// 大图预览的两面数据：详情没到之前用摘要缩略图补位，保证 B 面也能预览。
+const previewSides = computed(() => {
+  const sides: { FRONT?: ImageSideDto; BACK?: ImageSideDto } = { ...detailData.value?.sides };
+  if (!sides.FRONT?.displayImageUrl && detailArtwork.value) {
+    sides.FRONT = { side: 'FRONT', sourceVersion: 1, processingVersion: 1, publishedVersion: 1, processingStatus: 'READY', displayImageUrl: detailArtwork.value };
+  }
+  if (!sides.BACK?.displayImageUrl && detailItem.value?.backThumbnailUrl) {
+    sides.BACK = { side: 'BACK', sourceVersion: 1, processingVersion: 1, publishedVersion: 1, processingStatus: 'READY', displayImageUrl: detailItem.value.backThumbnailUrl };
+  }
+  return sides;
+});
 const cardBackground = computed(() => detailItem.value
   ? resolveCardBackground(detailItem.value.id, detailBrand.value ?? '', detailItem.value.name)
   : null);
@@ -144,7 +161,20 @@ defineExpose({ close: closeDetail, suspend, prepare: detail.prepare, resize: det
           @tap.stop="toggleDetailFace"
         >
 
-          <view class="detail-artwork" @tap.stop="previewDetailArtwork">
+          <view v-if="hasBackImage" class="detail-sides" data-surface-control="true">
+            <view class="detail-sides__pane" data-surface-control="true" @tap.stop="previewDetailArtwork('FRONT')">
+              <view class="detail-sides__figure" data-surface-control="true">
+                <image :src="detailFrontImage" mode="aspectFit" />
+              </view>
+            </view>
+            <view class="detail-sides__divider" />
+            <view class="detail-sides__pane" data-surface-control="true" @tap.stop="previewDetailArtwork('BACK')">
+              <view class="detail-sides__figure" data-surface-control="true">
+                <image :src="detailBackImage" mode="aspectFit" />
+              </view>
+            </view>
+          </view>
+          <view v-else class="detail-artwork" @tap.stop="previewDetailArtwork('FRONT')">
             <image v-if="detailArtwork || preloadArtwork" :src="detailArtwork || preloadArtwork" mode="aspectFit" @load="onArtworkLoad" />
             <view v-else class="detail-artwork__placeholder" />
           </view>
@@ -184,7 +214,7 @@ defineExpose({ close: closeDetail, suspend, prepare: detail.prepare, resize: det
     </view>
 
 
-    <BagImagePreview :show="previewShow" :sides="detailData?.sides" :fallback="detailData?.displayImageUrl ?? detailArtwork" @close="previewShow = false" />
+    <BagImagePreview :show="previewShow" :sides="previewSides" :fallback="detailData?.displayImageUrl ?? detailArtwork" :start-side="previewSide" @close="previewShow = false" />
 
     <mark-sheet :show="markShow" :item="markItem" :wished="true" @close="markShow = false" @saved="onMarkSaved" />
     <LibraryEditSheet v-if="editing && detailData" :item="detailData" :artwork="detailArtwork" :number="number" :shelves="shelves" :known-tag-counts="knownTagCounts" @saved="onSaved" @shelf-created="emit('shelfCreated', $event)" @cancel="closeDetail" @preview="previewDetailArtwork" />
@@ -294,12 +324,19 @@ defineExpose({ close: closeDetail, suspend, prepare: detail.prepare, resize: det
 .detail-noise { position: absolute; top: 0; left: 0; width: 100%; height: 100%; opacity: .045; pointer-events: none; }
 .detail-beam-glow { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: radial-gradient(96% 74% at 100% 0%, rgba(236,236,178,.26) 0%, rgba(236,236,178,.13) 29%, rgba(236,236,178,0) 58%); }
 .detail-beam { position: absolute; top: 27rpx; right: 16rpx; left: 34%; height: 3rpx; border-radius: 4rpx; background: linear-gradient(90deg, rgba(255,236,190,0) 0%, rgba(255,246,220,.9) 58%, rgba(255,236,190,0) 100%); opacity: .26; }
-.detail-scroll { position: relative; z-index: 3; width: 100%; height: 874rpx; max-height: calc(100vh - 320rpx); box-sizing: border-box; padding: 40rpx 44rpx 51rpx; -webkit-mask-image: linear-gradient(180deg, #000 0, #000 calc(100% - 55rpx), transparent 100%); mask-image: linear-gradient(180deg, #000 0, #000 calc(100% - 55rpx), transparent 100%); }
-.detail-scroll.is-at-end { -webkit-mask-image: linear-gradient(180deg, #000 0, #000 calc(100% - 26rpx), transparent 100%); mask-image: linear-gradient(180deg, #000 0, #000 calc(100% - 26rpx), transparent 100%); }
+/* 高度与按钮区(87+20)及上下边距(20/20)配平，恰好填满 1023rpx 卡片，按钮贴底不留空 */
+.detail-scroll { position: relative; z-index: 3; width: 100%; height: 892rpx; max-height: calc(100vh - 320rpx); box-sizing: border-box; padding: 40rpx 44rpx 20rpx; -webkit-mask-image: linear-gradient(180deg, #000 0, #000 calc(100% - 20rpx), transparent 100%); mask-image: linear-gradient(180deg, #000 0, #000 calc(100% - 20rpx), transparent 100%); }
+.detail-scroll.is-at-end { -webkit-mask-image: linear-gradient(180deg, #000 0, #000 calc(100% - 20rpx), transparent 100%); mask-image: linear-gradient(180deg, #000 0, #000 calc(100% - 20rpx), transparent 100%); }
 .detail-scroll::-webkit-scrollbar, .detail-scroll ::-webkit-scrollbar { width: 0; height: 0; display: none; }
 .detail-artwork { display: flex; align-items: center; justify-content: center; height: 306rpx; margin: 0 0 33rpx; padding: 18rpx; box-sizing: border-box; overflow: hidden; border-radius: 36rpx; }
 .detail-artwork image { width: 100%; height: 269rpx; filter: drop-shadow(0 7rpx 18rpx rgba(0,0,0,.18)); }
 .detail-artwork__placeholder { width: 234rpx; height: 269rpx; border-radius: 28rpx; background: rgba(20,20,20,.045); }
+/* ── A/B 面并排展示（仅当存在 B 面图时）：左 A 面右 B 面，中间竖分隔线 ── */
+.detail-sides { display: flex; align-items: stretch; margin: 0 0 18rpx; }
+.detail-sides__pane { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center; }
+.detail-sides__divider { flex: 0 0 1rpx; align-self: stretch; margin: 10rpx 0; background: rgba(20,20,20,.1); }
+.detail-sides__figure { display: flex; align-items: center; justify-content: center; width: 100%; height: 306rpx; }
+.detail-sides__figure image { width: 100%; height: 100%; filter: drop-shadow(0 7rpx 18rpx rgba(0,0,0,.18)); }
 .detail-eyebrow { display: block; margin-bottom: 7rpx; color: #77736d; font-size: var(--wc-font-footnote); font-weight: 700; line-height: 1.2; letter-spacing: 3rpx; }
 .detail-name { display: block; color: #1d1a15; font-family: Georgia, "Iowan Old Style", "Songti SC", serif; font-size: var(--wc-font-headline); font-weight: 600; line-height: 1.2; }
 .detail-brand { display: block; margin-top: 11rpx; color: #6f6a62; font-size: var(--wc-font-description); line-height: 1.4; }
@@ -316,7 +353,7 @@ defineExpose({ close: closeDetail, suspend, prepare: detail.prepare, resize: det
 .detail-quick__btn { width: 60rpx; height: 60rpx; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: rgba(255,255,255,.88); transition: transform .18s ease; }
 .detail-quick__btn.is-pressed { transform: scale(.88); }
 .detail-quick__icon { width: 32rpx; height: 32rpx; }
-.detail-actions { position: relative; z-index: 4; display: flex; gap: 18rpx; margin: 22rpx 44rpx 36rpx; }
+.detail-actions { position: relative; z-index: 4; display: flex; gap: 18rpx; margin: 20rpx 44rpx 20rpx; }
 .detail-edit, .detail-done, .detail-save { display: flex; align-items: center; justify-content: center; min-height: 87rpx; margin: 0; padding: 0; border-radius: 44rpx; font-size: var(--wc-font-description); font-weight: 700; line-height: 1.2; }
 .detail-edit { flex: 0 0 175rpx; border: 2rpx solid rgba(20,20,20,.12); background: transparent; color: #141414; }
 .detail-done, .detail-save { flex: 1 1 auto; border: 0; background: #141414; color: #ffffff; }

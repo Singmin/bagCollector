@@ -14,7 +14,7 @@ const VISIBLE_BAG: Prisma.OfficialBagWhereInput = {
 
 type BagWithBrand = Prisma.OfficialBagGetPayload<{ include: { brand: true } }>;
 
-type ImageUrlResolver = (bagId: string, kind: AssetKind) => string | undefined;
+type ImageUrlResolver = (bagId: string, kind: AssetKind, side?: 'FRONT' | 'BACK') => string | undefined;
 
 @Injectable()
 export class FeedService {
@@ -23,23 +23,27 @@ export class FeedService {
     private readonly cos: CosService
   ) {}
 
-  /** 批量取袋子最新可用图片的签名 URL，避免逐袋子查图（N+1）。 */
+  /** 批量取袋子最新可用图片的签名 URL，避免逐袋子查图（N+1）。
+   *  正反面都取：反面缩略图让小程序详情卡在打开瞬间就按 A/B 布局渲染。 */
   private async imageUrls(bagIds: string[]): Promise<ImageUrlResolver> {
     if (!bagIds.length) return () => undefined;
     const images = await this.prisma.officialBagImage.findMany({
       where: {
         officialBagId: { in: bagIds },
         kind: { in: [AssetKind.THUMBNAIL, AssetKind.DISPLAY] },
-        side: 'FRONT', status: AssetStatus.AVAILABLE
+        side: { in: ['FRONT', 'BACK'] as const }, status: AssetStatus.AVAILABLE
       },
       orderBy: { version: 'desc' }
     });
-    const states = await this.prisma.officialBagImageSide.findMany({ where: { officialBagId: { in: bagIds }, side: 'FRONT' } });
-    const published = new Map(states.map(state => [state.officialBagId, state.publishedVersion]));
+    const states = await this.prisma.officialBagImageSide.findMany({ where: { officialBagId: { in: bagIds } } });
+    const published = new Map(
+      states.filter(state => state.publishedVersion !== null)
+        .map(state => [`${state.officialBagId}:${state.side}` as const, state.publishedVersion])
+    );
     const latest = new Map<string, string>();
     for (const image of images) {
-      if (image.version !== published.get(image.officialBagId)) continue;
-      const key = `${image.officialBagId}:${image.kind}`;
+      if (image.version !== published.get(`${image.officialBagId}:${image.side}`)) continue;
+      const key = `${image.officialBagId}:${image.side}:${image.kind}`;
       if (!latest.has(key)) latest.set(key, image.objectKey);
     }
     const urls = new Map<string, string>();
@@ -48,7 +52,7 @@ export class FeedService {
         urls.set(key, await this.cos.signedUrl(objectKey));
       })
     );
-    return (bagId, kind) => urls.get(`${bagId}:${kind}`);
+    return (bagId, kind, side = 'FRONT') => urls.get(`${bagId}:${side}:${kind}`);
   }
 
   /**
@@ -59,6 +63,7 @@ export class FeedService {
   private toFeedItem(bag: BagWithBrand, urlFor: ImageUrlResolver, myCollectibleId?: string): CollectibleDto {
     const thumbnail = urlFor(bag.id, AssetKind.THUMBNAIL);
     const display = urlFor(bag.id, AssetKind.DISPLAY);
+    const backThumbnail = urlFor(bag.id, AssetKind.THUMBNAIL, 'BACK');
     return {
       id: bag.id, imageEditable: false, sourceOfficialBagId: bag.id, imageRevision: bag.updatedAt.toISOString(),
       name: bag.name,
@@ -70,6 +75,7 @@ export class FeedService {
       ownerName: bag.brand?.name ?? '官方精选',
       ...(thumbnail ? { thumbnailUrl: thumbnail } : {}),
       ...(display ? { displayImageUrl: display } : {}),
+      ...(backThumbnail ? { backThumbnailUrl: backThumbnail } : {}),
       /* 当前用户已认领该袋子 → 带回认领生成的收藏 id：
          小程序据此恢复「标记已有」已标记态（撤回标记时按这个 id 删除收藏） */
       ...(myCollectibleId ? { myCollectibleId } : {}),
