@@ -1,6 +1,7 @@
 import { AssetKind, AssetStatus, ImageSide, JobStatus, ProcessingStatus, PrismaClient } from '@prisma/client';
 import sharp from 'sharp';
 import type { ImageCrop } from '@bagcollect/contracts';
+import { addWhiteStroke, DEFAULT_STROKE_PARAMS, strokeParamsSchema, type StrokeParams } from '@bagcollect/stroke';
 import { upsertAssetRecord } from './asset-record.js';
 import { config } from './config.js';
 import { computeCropRect } from './geometry.js';
@@ -103,16 +104,44 @@ export async function trimTransparent(source: Buffer): Promise<Buffer> {
   }
 }
 
+/* 描边参数缓存：描边是每个抠图结果的必经路径，参数又是运营低频调整的配置，
+   加 30s 短 TTL 缓存，避免每次描边都多一次 DB 往返，同时「后台改完很快生效」。 */
+let strokeParamsCache: { value: StrokeParams; at: number } | null = null;
+const STROKE_CACHE_TTL_MS = 30_000;
+
+/** 读取白描边参数（存 AppSetting，后台「描边预览」页可改）。库里没有或脏数据时回退默认。
+ *  导出给官方袋子链路复用：官方库可选抠图，描边口径与用户链路保持一致。 */
+export async function getStrokeParams(): Promise<StrokeParams> {
+  const now = Date.now();
+  if (strokeParamsCache && now - strokeParamsCache.at < STROKE_CACHE_TTL_MS) return strokeParamsCache.value;
+  const row = await prisma.appSetting.findUnique({ where: { key: 'stroke.settings' } });
+  let params = DEFAULT_STROKE_PARAMS;
+  try {
+    params = strokeParamsSchema.parse({ ...DEFAULT_STROKE_PARAMS, ...(row ? JSON.parse(row.value) : {}) });
+  } catch {
+    params = { ...DEFAULT_STROKE_PARAMS };
+  }
+  strokeParamsCache = { value: params, at: now };
+  return params;
+}
+
 async function writeRenditions(data: ProcessingJobData, source: Buffer, baseKey: string, options: { trim: boolean }) {
   /* 只有抠图结果（带透明边）才 trim 白/透明边；普通裁剪图是实拍照片，trim 会啃掉画面边缘 */
   const trimmed = options.trim ? await trimTransparent(source) : source;
+  /* 白描边（贴纸效果）只作用于抠图结果；普通裁剪图是实拍照片，不该加描边。
+     在 resize 前统一加一次，等比缩放后 display/thumbnail 的描边与主体比例保持一致。
+     参数来自 AppSetting（后台「描边预览」页），ratio=0 时关闭描边。 */
+  const strokeParams = options.trim ? await getStrokeParams() : null;
+  const stroked = strokeParams && strokeParams.ratio > 0
+    ? await addWhiteStroke(trimmed, strokeParams)
+    : trimmed;
   // 展示图与缩略图互不依赖，并行编码，避免白白多等一轮 CPU。
   const [display, thumbnail] = await Promise.all([
-    sharp(trimmed, { limitInputPixels: config.MAX_IMAGE_PIXELS })
+    sharp(stroked, { limitInputPixels: config.MAX_IMAGE_PIXELS })
       .resize({ width: 2048, height: 2048, fit: 'inside', withoutEnlargement: true })
       .png({ compressionLevel: 6 })
       .toBuffer({ resolveWithObject: true }),
-    sharp(trimmed, { limitInputPixels: config.MAX_IMAGE_PIXELS })
+    sharp(stroked, { limitInputPixels: config.MAX_IMAGE_PIXELS })
       .resize({ width: 512, height: 512, fit: 'inside', withoutEnlargement: true })
       .webp({ quality: 82, alphaQuality: 90 })
       .toBuffer({ resolveWithObject: true })

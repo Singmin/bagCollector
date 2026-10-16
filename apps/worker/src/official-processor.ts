@@ -1,8 +1,9 @@
 import { AssetKind, AssetStatus, ImageSide, OfficialProcessStatus, PrismaClient, ProcessingStatus } from '@prisma/client';
 import sharp from 'sharp';
+import { addWhiteStroke } from '@bagcollect/stroke';
 import { ensureBagEmbedding } from './bag-embeddings.js';
 import { config } from './config.js';
-import { removeBackground, standardImage, trimTransparent } from './processor.js';
+import { getStrokeParams, removeBackground, standardImage, trimTransparent } from './processor.js';
 import { getObject, putObject, deleteObjects } from './object-store.js';
 
 export interface OfficialProcessJobData {
@@ -82,7 +83,13 @@ async function writeOfficialRenditions(
   baseKey: string,
   transparent: boolean
 ) {
-  const material = transparent ? await trimTransparent(source) : source;
+  /* 白描边（贴纸效果）只作用于透明口径（抠图结果 / 保留透明度的标准图），与用户链路口径一致；
+     白底 JPEG 是实拍素材，不加描边。参数来自 AppSetting（后台「描边预览」页），ratio=0 时关闭。 */
+  const trimmed = transparent ? await trimTransparent(source) : source;
+  const strokeParams = transparent ? await getStrokeParams() : null;
+  const material = strokeParams && strokeParams.ratio > 0
+    ? await addWhiteStroke(trimmed, strokeParams)
+    : trimmed;
   const [display, thumbnail] = await Promise.all([
     sharp(material, { limitInputPixels: config.MAX_IMAGE_PIXELS })
       .resize({ width: 2048, height: 2048, fit: 'inside', withoutEnlargement: true })

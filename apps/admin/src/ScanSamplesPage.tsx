@@ -32,7 +32,7 @@ export function ScanSamplesPage() {
   const [refs, setRefs] = useState<Reference[]>([]); const [replace, setReplace] = useState<string>();
   const [bagId, setBagId] = useState<string>(); const [bags, setBags] = useState<CorrectionBag[]>([]);
   const selectedBag = bags.find(bag => bag.id === bagId);
-  const searchTimer = useRef<number>();
+  const searchTimer = useRef<number | undefined>(undefined);
   const selectedImageUrl = selectedBag?.displayImageUrl ?? selectedBag?.thumbnailUrl;
   const load = useCallback(async () => {
     try {

@@ -42,6 +42,16 @@ const schema = z
     CI_MATTING_SIZE_MODE: z.enum(['strict', 'rescale']).default('rescale'),
 
     // ---------------------------------------------------------------------
+    // 抠图结果的白描边（贴纸效果）—— 已迁移到数据库配置
+    //
+    // 描边参数（粗细比例 / 波浪频率 / 起伏幅度 / 柔化 / 降采样）现在存 AppSetting
+    // （key=stroke.settings），由管理后台「描边预览」页调控，worker 出图时读取
+    // （见 processor.ts getStrokeParams）。本环境变量已不再生效，保留仅为兼容旧
+    // 部署脚本，请勿再依赖它；描边是否开启由后台的 ratio 是否 > 0 决定。
+    // ---------------------------------------------------------------------
+    DISPLAY_STROKE_RATIO: z.coerce.number().min(0).max(0.2).default(0.025),
+
+    // ---------------------------------------------------------------------
     // 卡死任务对账：processStatus 长时间停在 PROCESSING/NORMALIZING/MATTING
     // 说明任务没有被消费（worker 宕机、任务丢失或 stalled 后 attempts 已耗尽），
     // 定时把这类记录翻成 FAILED，让管理后台/用户能看到失败原因并手动重试，
