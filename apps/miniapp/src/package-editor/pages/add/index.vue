@@ -510,7 +510,7 @@ onShow(() => {
         :class="{ 'scan-toggle-on': scanMode }"
         @tap="toggleScanMode"
       >
-        {{ scanMode ? '扫描匹配：开' : '扫描匹配：关' }}
+        {{ scanMode ? 'AI匹配：开' : 'AI匹配：关' }}
       </view>
       <view v-if="uploading" class="upload-mask">
         <view class="upload-spinner" />

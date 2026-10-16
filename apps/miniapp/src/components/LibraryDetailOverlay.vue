@@ -14,6 +14,7 @@ import { createCardBackgroundResolver } from '../services/library-card-backgroun
 import BagImagePreview from './BagImagePreview.vue';
 import LibraryCardSurface from './LibraryCardSurface.vue';
 import LibraryEditSheet from './LibraryEditSheet.vue';
+import { generateSharePoster, shareImageToFriend } from '../services/share-poster';
 
 const props = defineProps<{ request: LibraryCardOpen | null; number: string; shelves: Shelf[]; knownTagCounts: Array<[string, number]>; preloadArtwork?: string }>();
 const emit = defineEmits<{
@@ -40,6 +41,13 @@ watch(() => detailItem.value?.id, () => { sidesReady.value = false; });
 const detailFrontImage = computed(() => (sidesReady.value && detailData.value?.sides?.FRONT?.displayImageUrl) || detailArtwork.value || '');
 const detailBackImage = computed(() => (sidesReady.value && detailData.value?.sides?.BACK?.displayImageUrl) || detailItem.value?.backThumbnailUrl || '');
 const hasBackImage = computed(() => !!detailBackImage.value);
+// 分享海报用的袋子图：优先透明抠图，其次正面高清图，退回首图/缩略图。
+const shareImageUrl = computed(() =>
+  detailData.value?.cutoutImageUrl
+  || detailFrontImage.value
+  || detailArtwork.value
+  || detailItem.value?.thumbnailUrl
+  || '');
 // 动画期间预取两面高清图：src 挂上即开始下载，升级时命中组件级缓存直接解码显示。
 const warmSideImages = computed(() => {
   if (sidesReady.value) return [];
@@ -68,6 +76,31 @@ function onArtworkLoad() { if (!detailItem.value) detail.prepare(true); }
 function onPreparationEnd(event: Event) {
   const value = event as unknown as { detail?: { animationName?: string }; animationName?: string };
   if ((value.detail?.animationName ?? value.animationName ?? '').startsWith('library-card-prepare-flip')) detail.finishPreparation();
+}
+const shareBusy = ref(false);
+async function shareBag() {
+  if (shareBusy.value || !detailItem.value) return;
+  const item = detailItem.value;
+  const imageUrl = shareImageUrl.value;
+  if (!imageUrl) { uni.showToast({ title: '还没有可分享的袋子图片', icon: 'none' }); return; }
+  shareBusy.value = true;
+  uni.showLoading({ title: '正在生成分享图…', mask: true });
+  try {
+    const path = await generateSharePoster({
+      name: item.name,
+      brand: detailBrand.value ?? '',
+      addedAt: item.addedAt,
+      imageUrl,
+      isWish: isWishDetail.value,
+    });
+    uni.hideLoading();
+    shareImageToFriend(path);
+  } catch (error) {
+    uni.hideLoading();
+    uni.showToast({ title: error instanceof Error ? error.message : '生成分享图失败', icon: 'none' });
+  } finally {
+    shareBusy.value = false;
+  }
 }
 const markShow = ref(false);
 const markItem = ref<Collectible | null>(null);
@@ -159,6 +192,9 @@ defineExpose({ close: closeDetail, suspend, prepare: detail.prepare, resize: det
           </view>
           <view class="detail-quick__btn" data-surface-control="true" hover-class="is-pressed" :hover-stay-time="80" @tap.stop="markFromDetail">
             <image class="detail-quick__icon" data-surface-control="true" :src="isOwnedDetail ? '/static/figma/target-marked.svg' : '/static/figma/target.svg'" mode="aspectFit" />
+          </view>
+          <view class="detail-quick__btn" data-surface-control="true" hover-class="is-pressed" :hover-stay-time="80" @tap.stop="shareBag">
+            <image class="detail-quick__icon" data-surface-control="true" src="/static/figma/share.svg" mode="aspectFit" />
           </view>
         </view>
         <view class="detail-glass">
