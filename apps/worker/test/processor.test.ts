@@ -8,6 +8,8 @@ const mocks = vi.hoisted(() => {
     // cropToAsset 用 findFirst（可空）查标准图：认领的官方袋子没有自己的标准图时回退官方库
     imageAsset: { findFirst: vi.fn(), findFirstOrThrow: vi.fn() },
     officialBagImage: { findFirst: vi.fn() },
+    // getStrokeParams 读 AppSetting 里的描边参数，测试里默认无自定义配置
+    appSetting: { findUnique: vi.fn() },
     $transaction: vi.fn(),
     $disconnect: vi.fn()
   };
@@ -99,6 +101,7 @@ beforeEach(async () => {
   mocks.prisma.imageAsset.findFirstOrThrow.mockResolvedValue({ objectKey: 'standard.jpg' });
   mocks.prisma.imageAsset.findFirst.mockResolvedValue({ objectKey: 'standard.jpg' });
   mocks.prisma.officialBagImage.findFirst.mockResolvedValue(null);
+  mocks.prisma.appSetting.findUnique.mockResolvedValue(null);
   mocks.prisma.$transaction.mockImplementation(async (operations: Promise<unknown>[]) => Promise.all(operations));
   mocks.getObject.mockResolvedValue(await jpeg());
   mocks.getSignedObjectUrl.mockImplementation(
