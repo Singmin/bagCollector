@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { App, Alert, Button, Card, Col, InputNumber, Row, Select, Slider, Space, Switch, Typography, Upload } from 'antd';
+import { App, Alert, Button, Card, Col, Row, Select, Slider, Space, Switch, Typography, Upload } from 'antd';
 import { ExperimentOutlined, SaveOutlined, UploadOutlined } from '@ant-design/icons';
 import type { UploadFile } from 'antd';
 import { api } from './api';
