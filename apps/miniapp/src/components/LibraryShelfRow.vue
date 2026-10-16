@@ -109,7 +109,7 @@ function cancelShelfTouch() { userScrolling = false; }
           @touchend="snap" @touchcancel="cancelShelfTouch"
         >
           <view class="shelf-items">
-            <button v-for="entry in group.entries" :key="entry.item.id" :id="cardNodeId('shelf', entry.item.id)" class="shelf-item" :class="{ 'is-card-source': activeId === entry.item.id }" @tap="cards.open(entry)" @longpress="cards.longPress(entry.item)" @touchstart="cards.touchStart($event, entry)" @touchmove="cards.touchMove" @touchend="cards.touchEnd" @touchcancel="cards.touchCancel">
+            <button v-for="entry in group.entries" :key="entry.item.id" :id="cardNodeId('shelf', entry.item.id)" class="shelf-item" :class="{ 'is-card-source': activeId === entry.item.id }" @tap="cards.open(entry)" @longpress.stop="cards.longPress(entry.item)" @touchstart="cards.touchStart($event, entry)" @touchmove="cards.touchMove" @touchend="cards.touchEnd" @touchcancel="cards.touchCancel">
               <image
                 v-if="entry.imageUrl"
                 class="shelf-image"

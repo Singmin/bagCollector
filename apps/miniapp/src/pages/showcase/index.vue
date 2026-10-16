@@ -886,8 +886,13 @@ async function onRefresherRefresh() {
 .flip-face__art { position: relative; z-index: 3; flex: 0 0 auto; width: 100%; height: 400rpx; }
 .flip-face__art image { width: 100%; height: 400rpx; filter: drop-shadow(0 7rpx 18rpx rgba(0,0,0,.18)); }
 .art-placeholder { position: absolute; left: 50%; top: 50%; width: 258rpx; height: 340rpx; margin: -170rpx 0 0 -129rpx; border-radius: 28rpx; background: rgba(255,255,255,.46); }
-/* ── 主展位 AB 面轮播：铺满图区，横滑切面；右侧竖排两个圆点，实心红 = 当前面 ── */
-.hero-swiper { position: absolute; z-index: 8; top: 0; left: 0; right: 0; bottom: 0; }
+/* ── 主展位 AB 面轮播：铺满图区，横滑切面；右侧竖排两个圆点，实心红 = 当前面 ──
+   ⚠ swiper 是原生组件，默认高度 150px，不会像普通 view 那样从绝对定位的
+   top/bottom 反推高度 —— 只写 top/bottom:0 会停在默认高度，把 400rpx 高的图裁掉下半截
+   （现象正是「只有双面袋子图少一半」，单图分支不用 swiper 所以不受影响）。
+   必须给 swiper / swiper-item 显式高度，与 .flip-face__art 的 400rpx 保持一致。 */
+.hero-swiper { position: absolute; z-index: 8; top: 0; left: 0; width: 100%; height: 400rpx; }
+.hero-swiper swiper-item { width: 100%; height: 400rpx; }
 .hero-dots { position: absolute; z-index: 9; right: 4rpx; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 14rpx; }
 .hero-dots__dot { width: 12rpx; height: 12rpx; border-radius: 50%; background: rgba(20,20,20,.16); transition: background .18s ease, transform .18s ease; }
 .hero-dots__dot.is-on { background: #c50405; transform: scale(1.2); }

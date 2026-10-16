@@ -239,6 +239,7 @@ export function useLibraryCollection(dependencies: Dependencies = {}) {
     pruneImages();
   }
   async function confirmRemove(item: CollectibleSummary) {
+    if (!item || !item.name || !item.id) return false;
     const confirmed = await new Promise<boolean>(resolve => uni.showModal({ title: '删除收藏',
       content: `确定删除「${item.name}」？删除后不可恢复`, confirmText: '删除', confirmColor: '#c50405',
       success: result => resolve(Boolean(result.confirm)), fail: () => resolve(false) }));

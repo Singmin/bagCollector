@@ -1,4 +1,4 @@
-import { computed, nextTick, onScopeDispose, ref, type ComponentPublicInstance } from 'vue';
+import { computed, nextTick, onScopeDispose, ref, watch, type ComponentPublicInstance } from 'vue';
 import type { Collectible, CollectibleSummary } from '../types';
 import { dataService } from './data';
 import { formattedDate, daysAgoText } from './format';
@@ -134,7 +134,31 @@ export function useLibraryDetail(options: DetailOptions) {
   }, clearDetail);
   const detailTurning = computed(() => detailMotion.value.phase === 'open' && !!detailMotion.value.animation);
   const detailBusy = computed(() => detailMotion.value.phase !== 'open' || detailTurning.value);
-  const detailBackVisible = computed(() => Math.cos(detailMotion.value.angle * Math.PI / 180) < 0);
+  // 翻面切面：普通播放全在 WXSS，动画期间 frame.angle 停在起点 —— 靠 turnMidFlipped
+  // 在动画中点（卡片≈90° 侧立）把显示面交给目标面。原先这套时机押在
+  // @keyframes 内 var(--card-front/back-*) + steps(1,end) 上，真机渲染器对该组合
+  // 支持不可靠：转过 90° 后正面以镜像形式露出，动画结束内联 opacity 接管时
+  // 再跳变一次 —— 这就是翻面「割裂」的来源。CSS 侧另有 backface-visibility 兜底。
+  const turnMidFlipped = ref(false);
+  let turnMidTimer: ReturnType<typeof setTimeout> | undefined;
+  const backAtAngle = (angle: number) => Math.cos(angle * Math.PI / 180) < 0;
+  const detailBackVisible = computed(() => {
+    const frame = detailMotion.value;
+    const animation = frame.phase === 'open' ? frame.animation : undefined;
+    if (animation) return turnMidFlipped.value ? backAtAngle(animation.to.angle) : backAtAngle(animation.from.angle);
+    return backAtAngle(frame.angle);
+  });
+  watch(detailMotion, (frame) => {
+    clearTimeout(turnMidTimer);
+    turnMidTimer = undefined;
+    const animation = frame.phase === 'open' ? frame.animation : undefined;
+    if (!animation) { turnMidFlipped.value = false; return; }
+    turnMidFlipped.value = false;
+    turnMidTimer = setTimeout(() => {
+      turnMidTimer = undefined;
+      turnMidFlipped.value = true;
+    }, animation.duration / 2);
+  });
   const detailFlipping = computed(() => detailMotion.value.phase === 'opening' && detailMotion.value.animation?.to.angle === 360);
   function detailTransform(pose: Pick<CardMotionFrame, 'x' | 'y' | 'scaleX' | 'scaleY'>) {
     return `translate3d(${pose.x}px, ${pose.y}px, 0) scale(${pose.scaleX}, ${pose.scaleY})`;
@@ -156,17 +180,12 @@ export function useLibraryDetail(options: DetailOptions) {
     const frame = detailMotion.value;
     const from = frame.animation?.from.angle ?? frame.angle;
     const to = frame.animation?.to.angle ?? frame.angle;
-    const backAt = (angle: number) => Math.cos(angle * Math.PI / 180) < 0;
     return {
       transform: `rotateY(${frame.angle}deg)`,
       '--card-flip-duration': `${frame.animation?.duration ?? 0}ms`,
       '--card-turn-from': `rotateY(${from}deg)`,
       '--card-turn-mid': `rotateY(${(from + to) / 2}deg)`,
-      '--card-turn-to': `rotateY(${to}deg)`,
-      '--card-front-from': backAt(from) ? '0' : '1',
-      '--card-front-to': backAt(to) ? '0' : '1',
-      '--card-back-from': backAt(from) ? '1' : '0',
-      '--card-back-to': backAt(to) ? '1' : '0'
+      '--card-turn-to': `rotateY(${to}deg)`
     };
   });
   function measureDetailSurface() {
@@ -197,8 +216,7 @@ export function useLibraryDetail(options: DetailOptions) {
       { label: wish ? '上架日期' : '收藏日期', value: formattedDate(item.addedAt, '-') },
       { label: wish ? '上架天数' : '入库时长', value: daysAgoText(item.addedAt) },
 
-      { label: '数量', value: !wish ? `×${item.quantity ?? 1}` : '' },
-      { label: '谁能看到', value: !wish ? (item.visibility === 'PRIVATE' ? '私密收藏' : '公开展示') : '' }
+      { label: '数量', value: !wish ? `×${item.quantity ?? 1}` : '' }
     ].filter((row) => row.value);
   });
 
@@ -312,7 +330,7 @@ export function useLibraryDetail(options: DetailOptions) {
     if (hadDetail) { maskPageChrome(false, 0); options.closed(); }
   }
   function toggleDetailFace() {
-    if (detailBusy.value || editing.value || previewShow.value || !detailItem.value || detailSurface.value?.allowTap?.() === false) return;
+    if (detailBusy.value || editing.value || previewShow.value || !detailItem.value) return;
     cardMotion.flip();
   }
   function onDetailMotionEnd(event: Event) {
@@ -325,7 +343,7 @@ export function useLibraryDetail(options: DetailOptions) {
   }
   const previewSide = ref<'FRONT' | 'BACK'>('FRONT');
   function previewDetailArtwork(side: 'FRONT' | 'BACK' = 'FRONT') {
-    if (detailBusy.value || detailSurface.value?.allowTap?.() === false) return;
+    if (detailBusy.value) return;
     const sideUrl = side === 'BACK'
       ? (detailData.value?.sides?.BACK?.displayImageUrl ?? detailItem.value?.backThumbnailUrl)
       : detailData.value?.sides?.FRONT?.displayImageUrl;
@@ -360,6 +378,7 @@ export function useLibraryDetail(options: DetailOptions) {
   onScopeDispose(() => {
     alive = false; pageActive = false; detailToken += 1;
     cancelPreparation();
+    clearTimeout(turnMidTimer);
     detailSurface.value?.suspend?.();
     cardMotion.destroy(); clearTimeout(detailMeasureTimer);
     if (detailItem.value) maskPageChrome(false, 0);

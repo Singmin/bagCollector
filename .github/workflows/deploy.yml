@@ -192,4 +192,4 @@ jobs:
           name: deployment-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
           path: .runtime/deploy-diagnostics/
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 3
