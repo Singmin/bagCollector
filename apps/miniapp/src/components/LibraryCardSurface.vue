@@ -18,24 +18,13 @@ const props = defineProps<{
   paused: boolean;
 }>();
 
-interface TouchPoint { clientX?: number; clientY?: number; x?: number; y?: number }
-interface SurfaceTouchEvent {
-  touches?: TouchPoint[];
-  target?: { dataset?: { surfaceControl?: boolean | string } };
-}
-
 const pose = ref<SurfacePose>({ x: 0, y: 0 });
 const idleEnabled = ref(false);
 const idleRunning = ref(false);
 const frozen = ref(false);
 const showGlare = ref(false);
 let enabled = false;
-let touching = false;
-let multiGesture = false;
 let scrolling = false;
-let gestureBlocked = false;
-let blockedUntil = 0;
-let touchOrigin: { x: number; y: number } | null = null;
 const deviceTracker = createDeviceSurfaceTracker();
 let latestDevice: DevicePose | null = null;
 let deviceTarget: SurfacePose = { x: 0, y: 0 };
@@ -136,22 +125,9 @@ function armIdle() {
   }, SURFACE_IDLE_DELAY);
 }
 
-function blockGesture() {
-  gestureBlocked = true;
-  blockedUntil = Date.now() + 500;
-}
-
-function touchPoint(event: Event) {
-  const touch = (event as unknown as SurfaceTouchEvent).touches?.[0];
-  if (!touch) return null;
-  const point = { x: touch.clientX ?? touch.x ?? NaN, y: touch.clientY ?? touch.y ?? NaN };
-  return Number.isFinite(point.x) && Number.isFinite(point.y) ? point : null;
-}
-
 function notifyScroll() {
   if (!enabled || frozen.value) return;
   scrolling = true;
-  blockGesture();
   pauseIdle();
   idleEnabled.value = false;
   setTarget({ x: 0, y: 0 });
@@ -167,58 +143,6 @@ function notifyScroll() {
     setTarget(deviceTarget);
     armIdle();
   }, SURFACE_SCROLL_DELAY);
-}
-
-function onTouchStart(event: Event) {
-  const e = event as unknown as SurfaceTouchEvent;
-  if (!enabled || frozen.value) return;
-  // Track gestures only to prevent a drag or pinch from flipping the card.
-  // Touch positions never update the card's tilt or its idle animation.
-  if (e.target?.dataset?.surfaceControl === true || e.target?.dataset?.surfaceControl === 'true') return;
-  touchOrigin = touchPoint(event);
-  multiGesture = false;
-  gestureBlocked = false;
-  blockedUntil = 0;
-  touching = true;
-  if (e.touches?.length !== 1) {
-    multiGesture = true;
-    blockGesture();
-    return;
-  }
-}
-
-function onTouchMove(event: Event) {
-  const e = event as unknown as SurfaceTouchEvent;
-  if (!enabled || frozen.value || !touching) return;
-  if (multiGesture || e.touches?.length !== 1) {
-    multiGesture = true;
-    blockGesture();
-    return;
-  }
-  const point = touchPoint(event);
-  if (!point || !touchOrigin) return;
-  const dx = point.x - touchOrigin.x;
-  const dy = point.y - touchOrigin.y;
-  if (Math.hypot(dx, dy) > 8) blockGesture();
-}
-
-function onTouchEnd(event: Event) {
-  const e = event as unknown as SurfaceTouchEvent;
-  if (!enabled || frozen.value || !touching) return;
-  if (e.touches?.length) {
-    blockGesture();
-    return;
-  }
-  touching = false;
-  touchOrigin = null;
-  if (gestureBlocked) blockedUntil = Date.now() + 500;
-}
-
-function onTouchCancel() {
-  if (!enabled || frozen.value) return;
-  blockGesture();
-  touching = false;
-  touchOrigin = null;
 }
 
 function onDeviceChange(value: unknown) {
@@ -252,7 +176,7 @@ function onDeviceChange(value: unknown) {
     deviceDataTimer = undefined;
     console.info(`[LibraryCardSurface] 收到方向数据 | session=${sensorToken} | inputUnit=${deviceAngleUnit} | alpha=${normalized.alpha} | beta=${normalized.beta} | gamma=${normalized.gamma}`, {
       session: sensorToken, raw: value, radians: { ...normalized },
-      touching, scrolling, frozen: frozen.value
+      scrolling, frozen: frozen.value
     });
   }
   latestDevice = normalized;
@@ -328,7 +252,7 @@ function startDevice() {
       if (revision !== deviceRevision || !deviceListening || deviceSampleLogged) return;
       console.warn('[LibraryCardSurface] 等待有效方向数据超时（2秒）', {
         session: sensorToken, receivedInvalidData: invalidDeviceSampleLogged,
-        touching, scrolling, frozen: frozen.value
+        scrolling, frozen: frozen.value
       });
     }, 2000);
     uni.startDeviceMotionListening({
@@ -370,8 +294,7 @@ function suspend() {
   enabled = false;
   stopDevice();
   clearTimers();
-  touching = scrolling = multiGesture = false;
-  touchOrigin = null;
+  scrolling = false;
   idleRunning.value = idleEnabled.value = false;
   showGlare.value = false;
   frozen.value = false;
@@ -385,7 +308,7 @@ function freeze() {
   enabled = false;
   stopDevice('收回卡片');
   clearTimers();
-  touching = scrolling = false;
+  scrolling = false;
   idleRunning.value = false;
   // Keep the native idle layer at its current frame throughout the retreat.
   frozen.value = true;
@@ -395,8 +318,6 @@ function freeze() {
 function activate() {
   suspend();
   enabled = true;
-  gestureBlocked = false;
-  blockedUntil = 0;
   showGlare.value = true;
   startDevice();
   armIdle();
@@ -408,14 +329,11 @@ watch(() => [props.phase, props.paused] as const, ([phase, paused]) => {
   else suspend();
 }, { immediate: true, flush: 'sync' });
 onBeforeUnmount(suspend);
-defineExpose<LibraryCardSurfaceHandle>({
-  allowTap: () => !gestureBlocked && Date.now() >= blockedUntil,
-  notifyScroll, freeze, suspend
-});
+defineExpose<LibraryCardSurfaceHandle>({ notifyScroll, freeze, suspend });
 </script>
 
 <template>
-  <view class="card-surface" @touchstart="onTouchStart" @touchmove="onTouchMove" @touchend="onTouchEnd" @touchcancel="onTouchCancel">
+  <view class="card-surface">
     <view class="card-surface__tilt" :style="tiltStyle">
       <view class="card-surface__idle" :class="{ 'has-idle': idleEnabled }" :style="idleStyle">
         <slot />

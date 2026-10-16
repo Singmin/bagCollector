@@ -13,6 +13,7 @@
   "dependencies": {
     "@bagcollect/bag-vision": "workspace:*",
     "@bagcollect/contracts": "workspace:*",
+    "@bagcollect/stroke": "workspace:*",
     "@fastify/helmet": "^13.0.2",
     "@fastify/multipart": "^9.2.1",
     "@fastify/static": "10.1.3",

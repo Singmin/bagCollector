@@ -51,6 +51,8 @@ const headerTop = ref(0);
 const exploreTop = ref(0);
 const exploreRight = ref(10);
 const exploreSize = ref(28);
+/* 日历入口：紧贴搜索钮左侧（right = 搜索 right + 尺寸 + 间隙），尺寸与垂直定位同搜索钮 */
+const calendarRight = computed(() => exploreRight.value + exploreSize.value + 10);
 // #ifdef MP-WEIXIN
 try {
   const capsule = uni.getMenuButtonBoundingClientRect();
@@ -155,6 +157,7 @@ function shortDate(value: string) { return formattedDate(value).slice(5).replace
 function isHero(item: CollectibleSummary) { return heroItem.value?.id === item.id; }
 function openLibrary() { uni.switchTab({ url: '/pages/library/index' }); }
 function goExplore() { uni.navigateTo({ url: '/pages/explore/index' }); }
+function goCalendar() { uni.navigateTo({ url: '/pages/calendar/index' }); }
 let refreshPromise: Promise<void> | undefined;
 
 function assertRenderable(nextItems: CollectibleSummary[]) {
@@ -523,6 +526,23 @@ async function onRefresherRefresh() {
       </view>
     </view>
 
+    <!-- 日历入口：贴搜索钮左侧（同尺寸、同垂直定位），任何状态都在 -->
+    <button
+      class="gallery-entry"
+      aria-label="打开收藏日历"
+      hover-class="gallery-entry--pressed"
+      :hover-stay-time="80"
+      :style="{ top: `${exploreTop}px`, right: `${calendarRight}px`, width: `${exploreSize}px`, height: `${exploreSize}px` }"
+      @tap="goCalendar"
+    >
+      <image
+        class="gallery-entry__icon"
+        :style="{ width: `${Math.round(exploreSize * 0.55)}px`, height: `${Math.round(exploreSize * 0.55)}px` }"
+        src="/static/figma/calendar.svg"
+        mode="aspectFit"
+      />
+    </button>
+
     <!-- 官方图鉴入口：贴微信胶囊左侧，任何状态（空数据/加载失败）都在 -->
     <button
       class="gallery-entry"
@@ -886,8 +906,13 @@ async function onRefresherRefresh() {
 .flip-face__art { position: relative; z-index: 3; flex: 0 0 auto; width: 100%; height: 400rpx; }
 .flip-face__art image { width: 100%; height: 400rpx; filter: drop-shadow(0 7rpx 18rpx rgba(0,0,0,.18)); }
 .art-placeholder { position: absolute; left: 50%; top: 50%; width: 258rpx; height: 340rpx; margin: -170rpx 0 0 -129rpx; border-radius: 28rpx; background: rgba(255,255,255,.46); }
-/* ── 主展位 AB 面轮播：铺满图区，横滑切面；右侧竖排两个圆点，实心红 = 当前面 ── */
-.hero-swiper { position: absolute; z-index: 8; top: 0; left: 0; right: 0; bottom: 0; }
+/* ── 主展位 AB 面轮播：铺满图区，横滑切面；右侧竖排两个圆点，实心红 = 当前面 ──
+   ⚠ swiper 是原生组件，默认高度 150px，不会像普通 view 那样从绝对定位的
+   top/bottom 反推高度 —— 只写 top/bottom:0 会停在默认高度，把 400rpx 高的图裁掉下半截
+   （现象正是「只有双面袋子图少一半」，单图分支不用 swiper 所以不受影响）。
+   必须给 swiper / swiper-item 显式高度，与 .flip-face__art 的 400rpx 保持一致。 */
+.hero-swiper { position: absolute; z-index: 8; top: 0; left: 0; width: 100%; height: 400rpx; }
+.hero-swiper swiper-item { width: 100%; height: 400rpx; }
 .hero-dots { position: absolute; z-index: 9; right: 4rpx; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 14rpx; }
 .hero-dots__dot { width: 12rpx; height: 12rpx; border-radius: 50%; background: rgba(20,20,20,.16); transition: background .18s ease, transform .18s ease; }
 .hero-dots__dot.is-on { background: #c50405; transform: scale(1.2); }

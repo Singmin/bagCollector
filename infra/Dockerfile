@@ -18,6 +18,7 @@ COPY apps/admin/package.json apps/admin/package.json
 COPY apps/miniapp/package.json apps/miniapp/package.json
 COPY packages/bag-vision/package.json packages/bag-vision/package.json
 COPY packages/contracts/package.json packages/contracts/package.json
+COPY packages/stroke/package.json packages/stroke/package.json
 RUN pnpm install --frozen-lockfile
 
 # 后端只安装自身 workspace 依赖，不安装 Admin / 小程序的前端依赖。
@@ -28,6 +29,7 @@ COPY apps/api/package.json apps/api/package.json
 COPY apps/worker/package.json apps/worker/package.json
 COPY packages/bag-vision/package.json packages/bag-vision/package.json
 COPY packages/contracts/package.json packages/contracts/package.json
+COPY packages/stroke/package.json packages/stroke/package.json
 RUN pnpm install --frozen-lockfile
 
 FROM backend-deps AS build
@@ -61,6 +63,7 @@ COPY apps/api/package.json apps/api/package.json
 COPY apps/worker/package.json apps/worker/package.json
 COPY packages/bag-vision/package.json packages/bag-vision/package.json
 COPY packages/contracts/package.json packages/contracts/package.json
+COPY packages/stroke/package.json packages/stroke/package.json
 RUN pnpm install --frozen-lockfile --prod \
       --filter @bagcollect/api... --filter @bagcollect/worker...
 # Prisma client 必须在「这次安装」里重新生成，不能从 build stage 复制：
@@ -108,6 +111,7 @@ COPY --from=build /app/packages/contracts ./packages/contracts
 # 视觉特征包：api（算查询向量）与 worker（产出官方向量）运行时都要它的 dist，
 # 而且 node_modules 里 @bagcollect/bag-vision 的符号链接指向这个目录。
 COPY --from=build /app/packages/bag-vision ./packages/bag-vision
+COPY --from=build /app/packages/stroke ./packages/stroke
 # prisma schema 两个角色共用（worker 侧的 @prisma/client 也依赖它存在）。
 COPY --from=build /app/apps/api/prisma ./apps/api/prisma
 # 只取运行时需要的产物。整个 apps/api 不能从 build 复制 —— 里面的

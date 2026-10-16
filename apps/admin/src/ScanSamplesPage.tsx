@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, App, Button, Card, Image, Input, InputNumber, Modal, Select, Space, Switch, Table, Tag, Typography } from 'antd';
 import { api } from './api';
 
@@ -32,6 +32,7 @@ export function ScanSamplesPage() {
   const [refs, setRefs] = useState<Reference[]>([]); const [replace, setReplace] = useState<string>();
   const [bagId, setBagId] = useState<string>(); const [bags, setBags] = useState<CorrectionBag[]>([]);
   const selectedBag = bags.find(bag => bag.id === bagId);
+  const searchTimer = useRef<number | undefined>(undefined);
   const selectedImageUrl = selectedBag?.displayImageUrl ?? selectedBag?.thumbnailUrl;
   const load = useCallback(async () => {
     try {
@@ -50,14 +51,16 @@ export function ScanSamplesPage() {
     setReplace(undefined); setBagId(undefined); setBags([]); setRefs([]);
     try {
       if (sample.officialBagId && action === 'RESTORE') setRefs(await api<Reference[]>(`/official-bags/${sample.officialBagId}/references`));
+      if (action === 'CORRECT') void search('');
       setReview({ sample, action });
     } catch (e) { message.error(String(e)); }
   }
   async function search(search: string) {
     try {
       const result = await api<{ items: CorrectionBag[] }>(`/official-bags?search=${encodeURIComponent(search)}&pageSize=100`);
-      setBags(result.items.filter(b => b.status === 'PUBLISHED' && b.processStatus === 'READY'));
-      setBagId(undefined);
+      const filtered = result.items.filter(b => b.status === 'PUBLISHED' && b.processStatus === 'READY');
+      setBags(filtered);
+      setBagId(prev => (prev && filtered.some(b => b.id === prev) ? prev : undefined));
     } catch (e) { message.error(String(e)); }
   }
   return <Space direction="vertical" size="middle" style={{ width: '100%' }}>
@@ -97,8 +100,13 @@ export function ScanSamplesPage() {
         void perform(review.sample, review.action, { ...(bagId ? { bagId } : {}), ...(replace ? { replaceReferenceId: replace } : {}) });
       }}>
       {review?.action === 'CORRECT' ? <>
-        <Input.Search placeholder="搜索款式或品牌" onSearch={v => void search(v)} />
+        <Input.Search placeholder="搜索款式或品牌，输入即搜" allowClear onSearch={v => void search(v)} onChange={e => {
+          const v = e.target.value;
+          window.clearTimeout(searchTimer.current);
+          searchTimer.current = window.setTimeout(() => void search(v), 300);
+        }} />
         <Select style={{ width: '100%', marginTop: 12 }} placeholder="选择已发布且图片就绪的款式" value={bagId} onChange={setBagId}
+          showSearch optionFilterProp="label"
           virtual={false} listHeight={320}
           options={bags.map(b => ({ value: b.id, label: b.name, bag: b }))}
           optionRender={option => {

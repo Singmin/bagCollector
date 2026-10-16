@@ -14,6 +14,7 @@ import { createCardBackgroundResolver } from '../services/library-card-backgroun
 import BagImagePreview from './BagImagePreview.vue';
 import LibraryCardSurface from './LibraryCardSurface.vue';
 import LibraryEditSheet from './LibraryEditSheet.vue';
+import { generateSharePoster, shareImageToFriend } from '../services/share-poster';
 
 const props = defineProps<{ request: LibraryCardOpen | null; number: string; shelves: Shelf[]; knownTagCounts: Array<[string, number]>; preloadArtwork?: string }>();
 const emit = defineEmits<{
@@ -31,9 +32,29 @@ const resolveCardBackground = createCardBackgroundResolver();
 const detailBrand = computed(() => isWishDetail.value ? (detailItem.value?.ownerName ?? '官方精选') : detailItem.value?.shelfName);
 // A/B 面：摘要里的 backThumbnailUrl 让卡片在打开瞬间就按并排布局渲染（不跳变），
 // 详情到了后 B 面升级为高清 displayImageUrl；没有 B 面则维持单图展示。
-const detailFrontImage = computed(() => detailData.value?.sides?.FRONT?.displayImageUrl || detailArtwork.value || '');
-const detailBackImage = computed(() => detailData.value?.sides?.BACK?.displayImageUrl || detailItem.value?.backThumbnailUrl || '');
+// 高清大图（1MB+）的下载解码会和开卡动画抢主线程导致掉帧：
+// 动画期间先用列表已缓存的缩略图占位（sidesReady=false），
+// 同时用隐藏节点预取高清图，动画结束后一次性升级，翻面时不再回退。
+const sidesReady = ref(false);
+watch(detailBusy, busy => { if (!busy && detailItem.value) sidesReady.value = true; });
+watch(() => detailItem.value?.id, () => { sidesReady.value = false; });
+const detailFrontImage = computed(() => (sidesReady.value && detailData.value?.sides?.FRONT?.displayImageUrl) || detailArtwork.value || '');
+const detailBackImage = computed(() => (sidesReady.value && detailData.value?.sides?.BACK?.displayImageUrl) || detailItem.value?.backThumbnailUrl || '');
 const hasBackImage = computed(() => !!detailBackImage.value);
+// 分享海报用的袋子图：优先透明抠图，其次正面高清图，退回首图/缩略图。
+const shareImageUrl = computed(() =>
+  detailData.value?.cutoutImageUrl
+  || detailFrontImage.value
+  || detailArtwork.value
+  || detailItem.value?.thumbnailUrl
+  || '');
+// 动画期间预取两面高清图：src 挂上即开始下载，升级时命中组件级缓存直接解码显示。
+const warmSideImages = computed(() => {
+  if (sidesReady.value) return [];
+  const sides = detailData.value?.sides;
+  return [sides?.FRONT?.displayImageUrl, sides?.BACK?.displayImageUrl]
+    .filter((url): url is string => !!url && url !== detailArtwork.value);
+});
 // 大图预览的两面数据：详情没到之前用摘要缩略图补位，保证 B 面也能预览。
 const previewSides = computed(() => {
   const sides: { FRONT?: ImageSideDto; BACK?: ImageSideDto } = { ...detailData.value?.sides };
@@ -55,6 +76,31 @@ function onArtworkLoad() { if (!detailItem.value) detail.prepare(true); }
 function onPreparationEnd(event: Event) {
   const value = event as unknown as { detail?: { animationName?: string }; animationName?: string };
   if ((value.detail?.animationName ?? value.animationName ?? '').startsWith('library-card-prepare-flip')) detail.finishPreparation();
+}
+const shareBusy = ref(false);
+async function shareBag() {
+  if (shareBusy.value || !detailItem.value) return;
+  const item = detailItem.value;
+  const imageUrl = shareImageUrl.value;
+  if (!imageUrl) { uni.showToast({ title: '还没有可分享的袋子图片', icon: 'none' }); return; }
+  shareBusy.value = true;
+  uni.showLoading({ title: '正在生成分享图…', mask: true });
+  try {
+    const path = await generateSharePoster({
+      name: item.name,
+      brand: detailBrand.value ?? '',
+      addedAt: item.addedAt,
+      imageUrl,
+      isWish: isWishDetail.value,
+    });
+    uni.hideLoading();
+    shareImageToFriend(path);
+  } catch (error) {
+    uni.hideLoading();
+    uni.showToast({ title: error instanceof Error ? error.message : '生成分享图失败', icon: 'none' });
+  } finally {
+    shareBusy.value = false;
+  }
 }
 const markShow = ref(false);
 const markItem = ref<Collectible | null>(null);
@@ -121,6 +167,11 @@ defineExpose({ close: closeDetail, suspend, prepare: detail.prepare, resize: det
 <view class="detail-layer" :class="{ 'is-hidden': !detailItem, 'is-preparing': preparing, 'is-closing': detailMotion.phase === 'closing' }">
       <view class="detail-backdrop" @tap="closeDetail" @touchmove.stop.prevent="blockScroll" />
 
+      <!-- 隐藏预取：动画期间提前下载 A/B 高清图，升级 src 时直接命中缓存 -->
+      <view v-if="warmSideImages.length" class="detail-warm" aria-hidden="true">
+        <image v-for="url in warmSideImages" :key="url" :src="url" />
+      </view>
+
       <view v-show="!editing" id="library-detail-motion" class="detail-motion-frame">
         <view class="detail-translater" :class="{ 'is-opening': detailMotion.animation && detailMotion.phase === 'opening', 'is-closing': detailMotion.animation && detailMotion.phase === 'closing' }" :style="detailTranslateStyle" :data-motion-token="detailMotion.animation?.token" @animationend="onDetailMotionEnd">
           <LibraryCardSurface ref="detailSurface" :phase="detailMotion.phase" :paused="preparing || detailTurning || editing || previewShow || markShow">
@@ -141,6 +192,9 @@ defineExpose({ close: closeDetail, suspend, prepare: detail.prepare, resize: det
           </view>
           <view class="detail-quick__btn" data-surface-control="true" hover-class="is-pressed" :hover-stay-time="80" @tap.stop="markFromDetail">
             <image class="detail-quick__icon" data-surface-control="true" :src="isOwnedDetail ? '/static/figma/target-marked.svg' : '/static/figma/target.svg'" mode="aspectFit" />
+          </view>
+          <view class="detail-quick__btn" data-surface-control="true" hover-class="is-pressed" :hover-stay-time="80" @tap.stop="shareBag">
+            <image class="detail-quick__icon" data-surface-control="true" src="/static/figma/share.svg" mode="aspectFit" />
           </view>
         </view>
         <view class="detail-glass">
@@ -224,6 +278,9 @@ defineExpose({ close: closeDetail, suspend, prepare: detail.prepare, resize: det
 @keyframes library-detail-dismiss { from { opacity: 1; } to { opacity: 0; } }
 .detail-layer { position: fixed; z-index: 950; top: 0; left: 0; right: 0; bottom: 0; }
 .detail-layer.is-hidden { visibility: hidden; pointer-events: none; }
+/* 高清图预取节点：不参与布局与交互，仅触发下载 */
+.detail-warm { position: absolute; z-index: 0; top: 0; left: 0; width: 2rpx; height: 2rpx; overflow: hidden; opacity: .01; pointer-events: none; }
+.detail-warm image { width: 2rpx; height: 2rpx; }
 .detail-layer.is-hidden .detail-backdrop { animation: none; }
 /* A sub-pixel-alpha pass prepares the real card layers without showing a sheet. */
 .detail-layer.is-hidden.is-preparing { visibility: visible; opacity: .001; pointer-events: none; }
@@ -257,22 +314,17 @@ defineExpose({ close: closeDetail, suspend, prepare: detail.prepare, resize: det
 .detail-translater.is-closing { animation: library-card-retreat var(--card-motion-duration) cubic-bezier(.333333,0,.666667,.333333) both, library-card-hide var(--card-motion-duration) linear both; }
 .detail-rotator.is-flipping { animation: library-card-flip var(--card-flip-duration) linear both; }
 .detail-rotator.is-turning { animation: library-card-turn var(--card-flip-duration) linear both; }
-.is-turning > .detail-card { animation: library-card-turn-front var(--card-flip-duration) steps(1, end) both; }
-.is-turning > .detail-card-back { animation: library-card-turn-back var(--card-flip-duration) steps(1, end) both; }
+/* 翻面的正反面切换不再走 keyframes：原先靠 @keyframes 内 var(--card-front/back-*) + steps(1,end)
+   在 90° 穿越点硬切，真机渲染器对「keyframes 内引用内联注入的 var()」支持不可靠 ——
+   切面失灵后转过 90° 的正面以镜像形式露出（割裂帧），动画结束内联 opacity 接管时再跳变一次。
+   现在显隐由 JS 在动画中点翻转内联 opacity（use-library-detail.ts 的 detailBackVisible），
+   两面的 backface-visibility 兜底把背向观察者的面直接裁掉，镜像帧物理上不可能出现。 */
 .is-back-visible > .detail-card { pointer-events: none; }
 .detail-rotator:not(.is-back-visible) > .detail-card-back { pointer-events: none; }
 @keyframes library-card-turn {
   0% { transform: var(--card-turn-from); animation-timing-function: cubic-bezier(.333333,0,.666667,0); }
   50% { transform: var(--card-turn-mid); animation-timing-function: cubic-bezier(.333333,1,.666667,1); }
   100% { transform: var(--card-turn-to); }
-}
-@keyframes library-card-turn-front {
-  0% { opacity: var(--card-front-from); }
-  50%, 100% { opacity: var(--card-front-to); }
-}
-@keyframes library-card-turn-back {
-  0% { opacity: var(--card-back-from); }
-  50%, 100% { opacity: var(--card-back-to); }
 }
 /* Swap faces at the flip's 90/270-degree crossings in the view layer. */
 .is-flipping > .detail-card { animation: library-card-front var(--card-flip-duration) steps(1, end) both; }
@@ -308,8 +360,12 @@ defineExpose({ close: closeDetail, suspend, prepare: detail.prepare, resize: det
   39.685% { opacity: 1; }
   60.315%, 100% { opacity: 0; }
 }
-.detail-card { position: absolute; z-index: 2; top: 0; right: 0; bottom: 0; left: 0; width: 100%; height: 100%; box-sizing: border-box; overflow: hidden; border: 2rpx solid rgba(255,255,255,.38); border-radius: 55rpx; background: linear-gradient(160deg, #ffffff 0%, #fafbfd 56%, #f2f4f8 100%); box-shadow: inset 0 2rpx 0 rgba(255,255,255,.95), inset 0 -2rpx 0 rgba(255,255,255,.34), inset 0 0 0 2rpx rgba(255,255,255,.72), inset 0 0 22rpx rgba(255,255,255,.55), 0 0 26rpx rgba(255,255,255,.28), 0 0 80rpx rgba(255,255,255,.14), 0 29rpx 65rpx rgba(52,66,92,.16), 0 5rpx 18rpx rgba(52,66,92,.07), 0 55rpx 145rpx rgba(0,0,0,.26); }
-.detail-card-back { position: absolute; z-index: 1; top: 0; right: 0; bottom: 0; left: 0; box-sizing: border-box; overflow: hidden; border: 2rpx solid rgba(255,255,255,.4); border-radius: 55rpx; background: linear-gradient(160deg, #fbfbfd, #eef0f4); box-shadow: inset 0 0 0 14rpx rgba(255,255,255,.4), inset 0 0 22rpx rgba(255,255,255,.5), 0 0 26rpx rgba(255,255,255,.26), 0 0 80rpx rgba(255,255,255,.13), 0 29rpx 65rpx rgba(52,66,92,.16); transform: rotateY(180deg); }
+/* 两面都裁掉背向观察者的那一侧（3D 链经 rotator/translater/surface 各层 preserve-3d 保持通畅）：
+   这是翻面切面的兜底 —— 即使 opacity 切换时机有偏差，镜像内容也不会露出。
+   打开动画（is-flipping 的 steps 切面，数值写死、真机可靠）与 backface 的隐藏区间方向一致，互不冲突。
+   opacity 短淡切让 JS 中点切换在卡片侧立(~90°)时柔和过渡，而非瞬间跳变。 */
+.detail-card { position: absolute; z-index: 2; top: 0; right: 0; bottom: 0; left: 0; width: 100%; height: 100%; box-sizing: border-box; overflow: hidden; border: 2rpx solid rgba(255,255,255,.38); border-radius: 55rpx; background: linear-gradient(160deg, #ffffff 0%, #fafbfd 56%, #f2f4f8 100%); box-shadow: inset 0 2rpx 0 rgba(255,255,255,.95), inset 0 -2rpx 0 rgba(255,255,255,.34), inset 0 0 0 2rpx rgba(255,255,255,.72), inset 0 0 22rpx rgba(255,255,255,.55), 0 0 26rpx rgba(255,255,255,.28), 0 0 80rpx rgba(255,255,255,.14), 0 29rpx 65rpx rgba(52,66,92,.16), 0 5rpx 18rpx rgba(52,66,92,.07), 0 55rpx 145rpx rgba(0,0,0,.26); backface-visibility: hidden; -webkit-backface-visibility: hidden; transition: opacity .08s linear; }
+.detail-card-back { position: absolute; z-index: 1; top: 0; right: 0; bottom: 0; left: 0; box-sizing: border-box; overflow: hidden; border: 2rpx solid rgba(255,255,255,.4); border-radius: 55rpx; background: linear-gradient(160deg, #fbfbfd, #eef0f4); box-shadow: inset 0 0 0 14rpx rgba(255,255,255,.4), inset 0 0 22rpx rgba(255,255,255,.5), 0 0 26rpx rgba(255,255,255,.26), 0 0 80rpx rgba(255,255,255,.13), 0 29rpx 65rpx rgba(52,66,92,.16); transform: rotateY(180deg); backface-visibility: hidden; -webkit-backface-visibility: hidden; transition: opacity .08s linear; }
 .detail-card-back__background { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
 .detail-card-back__copy { position: absolute; z-index: 1; top: 62%; right: 44rpx; bottom: 18%; left: 44rpx; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 28rpx; }
 .detail-card-back__name { color: #5592e6; font-family: Georgia, "Iowan Old Style", "Songti SC", serif; font-size: var(--wc-font-headline); font-weight: 600; line-height: 1.4; text-align: center; }

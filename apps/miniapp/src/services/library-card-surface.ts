@@ -4,7 +4,6 @@ export interface SurfacePose { x: number; y: number }
 export interface DevicePose { alpha: number; beta: number; gamma: number }
 export type DevicePoseUnit = 'radians' | 'degrees';
 export interface LibraryCardSurfaceHandle {
-  allowTap(): boolean;
   notifyScroll(): void;
   freeze(): void;
   suspend(): void;

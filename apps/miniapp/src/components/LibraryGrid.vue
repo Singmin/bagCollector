@@ -66,7 +66,7 @@ function gridTouchEnd() { startDistance = 0; cards.touchEnd(); }
             :class="{ 'is-card-source': activeId === entry.item.id, 'grid-item--wish': mode === 'wish' }"
             :style="{ width: `${gridW}rpx`, height: `${gridCardH}rpx`, borderRadius: `${gridRadius}rpx` }"
             @tap="cards.open(entry)"
-            @longpress="cards.longPress(entry.item)"
+            @longpress.stop="cards.longPress(entry.item)"
             @touchstart="cards.touchStart($event, entry)"
             @touchmove="cards.touchMove"
             @touchend="cards.touchEnd"

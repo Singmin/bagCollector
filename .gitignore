@@ -59,3 +59,9 @@ vision-images/
 /image-objects/
 
 **/__pycache__/
+
+*.tmp
+
+# Local scratch files & generated deliverables
+/tmp/
+/output/

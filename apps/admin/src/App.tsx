@@ -36,6 +36,7 @@ import * as XLSX from 'xlsx';
 import {
   AuditOutlined,
   DashboardOutlined,
+  ExperimentOutlined,
   FileImageOutlined,
   HistoryOutlined,
   LogoutOutlined,
@@ -54,6 +55,7 @@ import { ChangelogPage } from './ChangelogPage';
 import { ScanSettingsPage } from './ScanSettingsPage';
 import { ScanSamplesPage } from './ScanSamplesPage';
 import { ReferenceImages } from './ReferenceImages';
+import { StrokePreviewPage } from './StrokePreviewPage';
 
 interface Overview {
   users: number;
@@ -256,7 +258,7 @@ const userStatusColors: Record<AdminUser['status'], string> = {
 /** 列表上的处理进度分档。三档展开成具体状态的事在服务端做，见 submissions-admin.service。 */
 type ProcessFilter = 'ALL' | 'READY' | 'PROCESSING' | 'FAILED';
 
-type PageKey = 'overview' | 'bags' | 'brands' | 'submissions' | 'users' | 'audit' | 'match' | 'samples' | 'changelog';
+type PageKey = 'overview' | 'bags' | 'brands' | 'submissions' | 'users' | 'audit' | 'match' | 'samples' | 'changelog' | 'stroke';
 
 /** 拍照扫描袋子的判定阈值（存库、后台可改、保存即生效）。 */
 
@@ -679,6 +681,7 @@ export function App() {
     { key: 'audit', icon: <AuditOutlined />, label: '审计日志' },
     { key: 'match', icon: <SettingOutlined />, label: '匹配设置' },
     { key: 'samples', icon: <FileImageOutlined />, label: '扫描样本' },
+    { key: 'stroke', icon: <ExperimentOutlined />, label: '描边预览' },
     { key: 'changelog', icon: <HistoryOutlined />, label: '版本改动' }
   ];
 
@@ -691,6 +694,7 @@ export function App() {
     audit: '审计日志',
     match: '匹配设置',
     samples: '扫描样本',
+    stroke: '描边预览',
     changelog: '版本改动'
   };
 
@@ -794,6 +798,8 @@ export function App() {
             <ScanSettingsPage key={changelogRefreshKey} />
           ) : page === 'samples' ? (
             <ScanSamplesPage key={changelogRefreshKey} />
+          ) : page === 'stroke' ? (
+            <StrokePreviewPage />
           ) : page === 'brands' ? (
             <>
               <Card style={{ marginBottom: 16 }}>

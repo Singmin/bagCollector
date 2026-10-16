@@ -88,7 +88,7 @@ jobs:
           name: deployment-delta-acceptance-${{ github.sha }}
           path: .runtime/deploy-diagnostics/
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 3
   image-store-compat:
     runs-on: ubuntu-latest
     steps:
@@ -316,7 +316,7 @@ jobs:
             !**/images.tar.gz
           if-no-files-found: error
           compression-level: 0
-          retention-days: 7
+          retention-days: 1
           overwrite: true
       - name: Save incremental image regression reports
         if: always()
@@ -325,4 +325,4 @@ jobs:
           name: image-delta-regressions-${{ github.sha }}
           path: .runtime/deploy-diagnostics/
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 3

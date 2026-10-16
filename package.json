@@ -8,7 +8,7 @@
   },
   "scripts": {
     "build": "pnpm --filter @bagcollect/contracts build && pnpm --filter @bagcollect/bag-vision build && pnpm --filter @bagcollect/api build && pnpm --filter @bagcollect/worker build && pnpm --filter @bagcollect/admin build && pnpm --filter @bagcollect/miniapp build:mp-weixin",
-    "build:backend": "pnpm --filter @bagcollect/contracts build && pnpm --filter @bagcollect/bag-vision build && pnpm --filter @bagcollect/api build && pnpm --filter @bagcollect/worker build",
+    "build:backend": "pnpm --filter @bagcollect/contracts build && pnpm --filter @bagcollect/bag-vision build && pnpm --filter @bagcollect/stroke build && pnpm --filter @bagcollect/api build && pnpm --filter @bagcollect/worker build",
     "build:server": "pnpm build:backend && pnpm --filter @bagcollect/admin build",
     "check:miniapp": "node scripts/check-miniapp.mjs",
     "dev:api": "pnpm --filter @bagcollect/api dev",
