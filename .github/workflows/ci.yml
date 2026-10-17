@@ -1,7 +1,6 @@
 name: CI
 
-# PR 上直接触发；main 分支由 deploy.yml 通过 workflow_call 复用同一个 job，
-# 避免「CI 通过」与「部署」并发跑、部署跑在没验过的代码上。
+# PR 和分支校验使用与生产相同的本地 action；所有镜像留在当前 Runner 磁盘。
 on:
   pull_request:
   push:
@@ -16,97 +15,9 @@ permissions:
   contents: read
 
 jobs:
-  deployment-delta-inputs:
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/codex/deploy-delta-scheduler') || (github.event_name == 'pull_request' && github.head_ref == 'codex/deploy-delta-scheduler')
-    runs-on: ubuntu-latest
-    outputs:
-      replay: ${{ steps.inputs.outputs.replay }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
-      - id: inputs
-        env:
-          BASE: ${{ github.event.before || github.event.pull_request.base.sha }}
-        run: |
-          replay=true
-          if [ -n "$BASE" ] && [ "$BASE" != 0000000000000000000000000000000000000000 ]; then
-            git cat-file -e "$BASE" || git fetch --depth=1 origin "$BASE"
-            if git diff --quiet "$BASE" HEAD -- infra/Dockerfile infra/prune-runtime-deps.mjs infra/normalize-production-manifest.mjs infra/split-prisma-client.mjs scripts/test-deployment-delta.sh scripts/assert-deployment-delta.py scripts/image-delta-report.py pnpm-lock.yaml package.json pnpm-workspace.yaml apps/api apps/worker packages; then
-              replay=false
-            fi
-          fi
-          echo "replay=$replay" >> "$GITHUB_OUTPUT"
-  deployment-delta-acceptance:
-    needs: deployment-delta-inputs
-    if: needs.deployment-delta-inputs.outputs.replay == 'true'
+  verify:
     runs-on: ubuntu-latest
     timeout-minutes: 90
-    permissions:
-      contents: read
-      actions: read
-    services:
-      postgres:
-        image: postgres:17-alpine
-        env:
-          POSTGRES_DB: bagcollect_test
-          POSTGRES_USER: bagcollect
-          POSTGRES_PASSWORD: bagcollect
-        ports: ['5432:5432']
-        options: >-
-          --health-cmd "pg_isready -U bagcollect -d bagcollect_test"
-          --health-interval 5s --health-timeout 3s --health-retries 20
-      redis:
-        image: redis:7.4-alpine
-        ports: ['6379:6379']
-    env:
-      DATABASE_URL: postgresql://bagcollect:bagcollect@localhost:5432/bagcollect_test
-      REDIS_URL: redis://localhost:6379
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: docker/setup-buildx-action@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: verified-images-b70eb2a8cefc3197007d2993a63251900f4ef553
-          run-id: 38248574623
-          github-token: ${{ github.token }}
-          path: .runtime/baseline/before
-      - uses: actions/download-artifact@v4
-        with:
-          name: verified-images-83638ff4a76301d4d0fab3ece473a8b6d73c2508
-          run-id: 38386881617
-          github-token: ${{ github.token }}
-          path: .runtime/baseline/after
-      - name: Replay real release delta and verify schema, scripts and cold builds
-        run: bash scripts/test-deployment-delta.sh
-      - name: Save layer and incremental transfer acceptance reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: deployment-delta-acceptance-${{ github.sha }}
-          path: .runtime/deploy-diagnostics/
-          if-no-files-found: ignore
-          retention-days: 3
-  image-store-compat:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Test incremental archive integrity and cache reuse
-        run: |
-          python3 scripts/test-image-bundle.py
-          python3 scripts/test-release-retention.py
-          python3 scripts/test-transfer-queue.py
-          python3 scripts/test-verified-run.py
-          node scripts/test-production-layers.mjs
-          bash scripts/test-deploy-rollback.sh
-      - name: Test interrupted release transfer and checkpoint integrity
-        run: bash scripts/test-release-transfer.sh
-      - name: Verify image identity across Docker storage backends
-        run: bash scripts/test-image-store-compat.sh
-  code-checks:
-    runs-on: ubuntu-latest
     services:
       postgres:
         image: postgres:17-alpine
@@ -129,200 +40,17 @@ jobs:
       BUILD_VERSION: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with: { version: 10.18.3 }
-      - uses: actions/setup-node@v4
+      - name: Test source and verify images on this runner
+        uses: ./.github/actions/verify-release
         with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm db:generate
-      - run: pnpm db:deploy
-      - name: Set Admin build time
-        run: echo "BUILD_TIME=$(date -u '+%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_ENV"
-      - run: pnpm verify
-      - run: pnpm test:integration
-      - run: pnpm test:scan
-      - run: pnpm test:learning
-      - run: pnpm test:image-sides
-        env:
-          IMAGE_SIDES_TEST_REDIS_URL: redis://localhost:6379
-      - name: Test production image import guards
-        run: |
-          mkdir -p .runtime
-          node scripts/test-deploy-images.mjs
-      - name: Prepare verified Admin artifact
-        run: |
-          test -s apps/admin/dist/index.html
-          mkdir -p admin-artifact/assets
-          cp -R apps/admin/dist/. admin-artifact/assets/
-          printf '%s\n' "$GITHUB_SHA" > admin-artifact/source-sha
-      - name: Upload verified Admin build
-        uses: actions/upload-artifact@v4
-        with:
-          name: verified-admin-${{ github.sha }}
-          path: admin-artifact/
-          compression-level: 0
-          retention-days: 1
-  image-build:
-    name: image-build-${{ matrix.component }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - component: api
-            dockerfile: infra/Dockerfile
-            target: api
-            scope: bagcollect-api-amd64-v2
-          - component: vision
-            dockerfile: apps/vision/Dockerfile
-            target: ''
-            scope: bagcollect-vision-amd64-v2
-    steps:
-      - uses: actions/checkout@v4
-      - run: mkdir -p .runtime
-      - uses: docker/setup-buildx-action@v4
-      - name: Build image in parallel with source validation
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: ${{ matrix.dockerfile }}
-          target: ${{ matrix.target }}
-          build-args: SOURCE_DATE_EPOCH=1704067200
-          no-cache: ${{ inputs.force_cold_build == true }}
-          outputs: type=docker,dest=.runtime/${{ matrix.component }}.docker.tar,rewrite-timestamp=true
-          platforms: linux/amd64
-          provenance: false
-          tags: bagcollect-${{ matrix.component }}:${{ github.sha }}
-          cache-from: type=gha,scope=${{ matrix.scope }},version=2
-          cache-to: type=gha,scope=${{ matrix.scope }},version=2,mode=max
-      - name: Upload image build output
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-image-${{ matrix.component }}-${{ github.sha }}
-          path: .runtime/${{ matrix.component }}.docker.tar
-          compression-level: 1
-          retention-days: 1
-  verify:
-    needs: [code-checks, image-build]
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:17-alpine
-        env:
-          POSTGRES_DB: bagcollect_test
-          POSTGRES_USER: bagcollect
-          POSTGRES_PASSWORD: bagcollect
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U bagcollect -d bagcollect_test"
-          --health-interval 5s --health-timeout 3s --health-retries 20
-      redis:
-        image: redis:7.4-alpine
-        ports: ["6379:6379"]
-    env:
-      DATABASE_URL: postgresql://bagcollect:bagcollect@localhost:5432/bagcollect_test
-      REDIS_URL: redis://localhost:6379
-      JWT_SECRET: ci-only-secret-with-at-least-thirty-two-characters
-      WECHAT_AUTH_MOCK: "true"
-      BUILD_VERSION: ${{ github.sha }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - uses: actions/download-artifact@v4
-        with:
-          name: verified-admin-${{ github.sha }}
-          path: admin-artifact
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: build-image-*-${{ github.sha }}
-          merge-multiple: true
-          path: .runtime
-      - uses: docker/setup-buildx-action@v4
-      - name: Load parallel image build outputs
-        run: |
-          test "$(cat admin-artifact/source-sha)" = "$GITHUB_SHA"
-          docker image load --input .runtime/api.docker.tar
-          docker image load --input .runtime/vision.docker.tar
-      - name: Build cached admin image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: infra/Dockerfile
-          target: admin
-          build-args: SOURCE_DATE_EPOCH=1704067200
-          no-cache: ${{ inputs.force_cold_build == true }}
-          outputs: type=docker,dest=.runtime/admin.docker.tar,rewrite-timestamp=true
-          platforms: linux/amd64
-          provenance: false
-          tags: bagcollect-admin:${{ github.sha }}
-          cache-from: type=gha,scope=bagcollect-admin-amd64-v2,version=2
-          cache-to: type=gha,scope=bagcollect-admin-amd64-v2,version=2,mode=max
-      - name: Load verified build output for admin runtime checks
-        run: docker image load --input .runtime/admin.docker.tar
-      - name: Check runtime image contents
-        run: |
-          docker run --rm "bagcollect-api:$GITHUB_SHA" sh -c 'test -s apps/api/dist/main.js && test -s apps/worker/dist/main.js && test -s apps/worker/dist/scan-main.js && cd apps/api && node -e "require(\"@prisma/client\")"'
-          docker run --rm "bagcollect-api:$GITHUB_SHA" sh -c 'cd apps/worker && node --input-type=module -e "import sharp from \"sharp\"; await sharp({create:{width:8,height:8,channels:3,background:\"red\"}}).png().toBuffer(); console.log(\"sharp PNG encode OK\")"'
-          docker run --rm "bagcollect-admin:$GITHUB_SHA" nginx -t
-          docker run --rm "bagcollect-vision:$GITHUB_SHA" python -c 'import onnxruntime, fastapi, numpy, PIL'
-      - name: Export verified images
-        run: |
-          bash infra/export-images.sh production-images "bagcollect-api:$GITHUB_SHA" "bagcollect-admin:$GITHUB_SHA"
-          bash infra/export-images.sh vision-images "bagcollect-vision:$GITHUB_SHA"
-      - name: Verify ordinary API and Admin changes reuse large layers
-        if: github.event_name == 'pull_request' || inputs.force_cold_build == true
-        run: bash scripts/test-business-image-delta.sh
-      - name: Verify image archive import
-        run: |
-          docker image rm "bagcollect-api:$GITHUB_SHA" "bagcollect-admin:$GITHUB_SHA" "bagcollect-vision:$GITHUB_SHA"
-          for bundle in production-images vision-images; do
-            python3 infra/image-bundle.py verify --bundle "$bundle" --objects image-objects --sha "$GITHUB_SHA" --architecture amd64
-            python3 infra/image-bundle.py rebuild --bundle "$bundle" --objects image-objects --output ".runtime/$bundle.tar" --uncompressed
-            docker image load --input ".runtime/$bundle.tar"
-            while read -r expected image; do
-              test "$(sh infra/image-fingerprint.sh "$image")" = "$expected"
-            done < "$bundle/images.fingerprints"
-          done
-      - name: Check imported API readiness
-        run: |
-          docker run --rm --network host -e DATABASE_URL "bagcollect-api:$GITHUB_SHA" \
-            node apps/api/node_modules/prisma/build/index.js migrate deploy --schema apps/api/prisma/schema.prisma
-          docker run -d --name bagcollect-image-api --network host \
-            -e DATABASE_URL -e REDIS_URL -e JWT_SECRET -e WECHAT_AUTH_MOCK \
-            -e NODE_ENV=test -e STORAGE_DRIVER=local \
-            "bagcollect-api:$GITHUB_SHA"
-          trap 'docker logs bagcollect-image-api; docker rm -f bagcollect-image-api' EXIT
-          for attempt in $(seq 1 30); do
-            if curl --fail --silent http://127.0.0.1:3001/api/health/ready; then
-              exit 0
-            fi
-            test "$(docker inspect --format '{{.State.Running}}' bagcollect-image-api)" = true
-            sleep 2
-          done
-          echo 'Imported API image did not become ready' >&2
-          exit 1
-      - name: Upload verified incremental image objects
-        uses: actions/upload-artifact@v4
-        with:
-          name: verified-images-${{ github.sha }}
-          path: |
-            production-images/
-            vision-images/
-            image-objects/
-            !**/images.tar.gz
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-          overwrite: true
-      - name: Save incremental image regression reports
+          force_cold_build: ${{ inputs.force_cold_build == true }}
+      - name: Write diagnostics to run summary
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: image-delta-regressions-${{ github.sha }}
-          path: .runtime/deploy-diagnostics/
-          if-no-files-found: ignore
-          retention-days: 3
+        shell: bash
+        run: |
+          for report in .runtime/deploy-diagnostics/*.json; do
+            [ -f "$report" ] || continue
+            printf '\n### %s\n```json\n' "$(basename "$report")" >> "$GITHUB_STEP_SUMMARY"
+            cat "$report" >> "$GITHUB_STEP_SUMMARY"
+            printf '\n```\n' >> "$GITHUB_STEP_SUMMARY"
+          done

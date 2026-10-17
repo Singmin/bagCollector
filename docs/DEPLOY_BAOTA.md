@@ -17,8 +17,8 @@ GitHub 仓库 (main)
    │  push / 手动触发
    ▼
 GitHub Actions
-  ├─ verify   复用 ci.yml：完整测试 → 缓存构建 → 镜像启动检查 → 导出 v2 清单和对象
-  └─ deploy   固定 commit 的 infra + 同 SHA 的清单 → rsync 仅传缺失对象
+  └─ deploy   同一个 Runner：完整测试 → 缓存构建 → 镜像启动检查 → 导出 v2 清单和对象
+                  固定 commit 的 infra + 同 SHA 的清单 → rsync 仅传缺失对象
                   ├─ load-and-deploy.sh --prepare-only
                   │     校验 SHA/架构/内容 → 重建归档 → docker load
                   └─ load-and-deploy.sh --apply
@@ -40,7 +40,9 @@ GitHub Actions
 
 **关于「数据库也是容器」**：`postgres` 与 `redis` 由同一个 compose 文件统一下发，跑在你宝塔那台机器的 Docker 里。它们和 api/worker/admin 是同一个 docker daemon，因此在宝塔面板的 **Docker 管理器里能看到、能进终端、能看日志**（容器名前缀是 `infra-`，即 compose 文件所在的目录名）。之所以不让你在面板里手搓容器，是因为手搓出来的容器不在 compose 的管理范围内，下次部署对不上，且新机器要重来一遍。以 compose 文件为准，你要改数据库参数就改 `.env.deploy`。
 
-**生产镜像在 GitHub Runner 构建**：旧方案把源码传到服务器后执行 Docker 构建，前端或后端编译期间可能占满生产资源。本流程将 API/Worker、Admin 和可选视觉服务镜像都在 CI 完成，导出为压缩 Docker archive，经 SCP 传输后导入，绕开向国内镜像仓库推送的链路。视觉镜像只在服务器启用 `VISION_ENABLED=1` 时传输。传输耗时取决于镜像大小及网络速度，不能仅凭 CI 通过判定部署提速。TCR 仍由独立的小程序上传流水线使用。
+**生产镜像在 GitHub Runner 构建**：本流程将 API/Worker、Admin 和视觉服务镜像都在 CI 完成，在同一个 Job 内验证并导出 v2 清单及压缩对象，再经 rsync 增量传到服务器导入。镜像不经过 Actions Artifact 存储，避免上传配额满时阻塞发布；Actions 运行分钟数仍受账号额度限制。视觉镜像只在服务器启用 `VISION_ENABLED=1` 时传输。生产服务器不编译应用。TCR 仍由独立的小程序上传流水线使用。
+
+PR 的 `ci.yml` 和生产 `deploy.yml` 共用 `.github/actions/verify-release`，执行相同的源码、迁移、运行时、镜像导入和增量交付校验。构建在当前 Runner 内顺序执行，失败立即停止；不再通过不同 Job 上传、下载镜像。诊断 JSON 写入运行页面的 Summary。重跑会重新验证和构建，可继续复用构建缓存及服务器已有对象，不复用旧运行的 Artifact。
 
 **端口一个都不对公网开放**：三个应用和两个数据库全部只绑 `127.0.0.1`，公网流量只能经宝塔 Nginx 进来。这样即使云安全组配漏了，服务也不会裸奔。
 
@@ -155,7 +157,7 @@ CI 为 API、Admin、Vision 分别使用 GitHub Actions 构建缓存，基础镜
 
 `--prepare-only` 只校验、重建和导入镜像，成功后写入 `.prepared`；失败不会迁移数据库或切换容器。`--apply` 要求同 SHA 的准备标记和镜像指纹，通过后才更新稳定 compose/deploy 定义并调用 deploy.sh，执行原有备份、迁移、健康检查及回滚。服务器 flock 锁会拒绝重叠部署任务。
 
-`main` 推送仍自动验证、准备、上线。手动触发 deploy.yml 默认 `prepare_only=true`；其他分支只允许准备，正式上线必须在 main。需要手动使用兼容入口 `build-and-deploy.sh` 时也须明确传入 `--prepare-only` 或 `--apply`；旧归档回滚必须显式使用 `--apply --legacy-bundle`，仍检查归档、架构和镜像指纹。
+`main` 推送自动验证、准备、上线。手动触发 deploy.yml 须选择 `main`，默认 `prepare_only=true`，只准备和验证；取消该选项才正式上线。其他分支的手动发布会跳过。需要手动使用兼容入口 `build-and-deploy.sh` 时也须明确传入 `--prepare-only` 或 `--apply`；旧归档回滚必须显式使用 `--apply --legacy-bundle`，仍检查归档、架构和镜像指纹。
 
 成功上线后保留当前及前两个成功版本，每个 SHA 保留一份归档；运行中或停止的容器引用的镜像也会保护。未完成的新版本检查点保留七天。只删除本项目标记的过期发布目录、未引用内容对象和项目镜像，不执行全局 Docker prune。旧完整归档保留用于初始化及回滚。
 
@@ -249,10 +251,10 @@ ssh-keygen -t ed25519 -C "github-actions-deploy" -f ~/.ssh/bagcollect_deploy -N 
 
 前置都就绪后，触发流水线即可：
 
-- **推荐**：GitHub → Actions → **Build and deploy** → Run workflow（选 `main`）。
+- GitHub → Actions → **Build and deploy** → Run workflow（选 `main`）；准备验证保留 `prepare_only`，正式上线取消该选项。
 - 或者往 `main` 推一个 commit。
 
-它会自动完成「完整验证 → Runner 构建及验证镜像 → 导出并上传 → 服务器校验及导入 → 部署」。CI 还会删除镜像标签、重新导入压缩 archive 并比对镜像内容指纹，验证交付产物可用。首次数据库为空时跳过备份；artifact 保留 7 天，过期后需重新运行完整流程。
+它会完成「完整验证 → Runner 构建及验证镜像 → 直接增量传输 → 服务器校验及导入」，符合上述上线条件时再部署。CI 会删除镜像标签、用压缩对象重建并重新导入 archive、比对镜像内容指纹，验证交付产物可用。首次数据库为空时跳过备份。无需等待 Artifact 存储额度重置，也无需修改已有服务器 Secrets；新工作流须先提交并推到 `main`。旧失败运行的 Re-run 仍使用旧版本工作流，应打开新提交产生的运行。
 
 部署成功后创建管理员账号：
 
