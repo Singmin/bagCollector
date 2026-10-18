@@ -122,7 +122,9 @@ describe('worker matting processor', () => {
       AssetKind.CROPPED,
       AssetKind.CUTOUT,
       AssetKind.DISPLAY,
-      AssetKind.THUMBNAIL
+      AssetKind.THUMBNAIL,
+      AssetKind.DISPLAY_PLAIN,
+      AssetKind.THUMBNAIL_PLAIN
     ]);
     expect(mocks.prisma.collectible.update).toHaveBeenCalledWith({
       where: { id: jobData.collectibleId },
@@ -193,7 +195,9 @@ describe('worker matting processor', () => {
       AssetKind.CROPPED,
       AssetKind.CUTOUT,
       AssetKind.DISPLAY,
-      AssetKind.THUMBNAIL
+      AssetKind.THUMBNAIL,
+      AssetKind.DISPLAY_PLAIN,
+      AssetKind.THUMBNAIL_PLAIN
     ]);
   });
 
