@@ -26,6 +26,10 @@ import { addWhiteStroke, DEFAULT_STROKE_PARAMS, strokeParamsSchema } from '@bagc
 import { writeFileSync } from 'node:fs';
 
 const EXECUTE = process.argv.includes('--execute');
+// 只回填指定范围：--scope=official 只处理官方袋子，--scope=user 只处理用户；不传则全部。
+const SCOPE = process.argv.includes('--scope=official') ? 'official'
+  : process.argv.includes('--scope=user') ? 'user'
+    : null;
 const CONCURRENCY = Number(process.env.STROKE_BACKFILL_CONCURRENCY ?? 4);
 const MAX_IMAGE_PIXELS = Number(process.env.MAX_IMAGE_PIXELS ?? 60_000_000);
 const URL_MANIFEST = process.env.URL_MANIFEST ?? '/tmp/stroke-backfill-urls.txt';
@@ -202,7 +206,8 @@ async function main() {
     die('stroke.settings 的 ratio=0（描边关闭）。请先在后台「描边预览」页把 ratio 调到 > 0 再跑。');
   }
 
-  const targets = await loadTargets();
+  const loaded = await loadTargets();
+  const targets = SCOPE ? loaded.filter((t) => t.scope === SCOPE) : loaded;
   const byScope = { user: 0, official: 0 };
   for (const t of targets) byScope[t.scope]++;
 
