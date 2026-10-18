@@ -132,20 +132,25 @@ async function writeRenditions(data: ProcessingJobData, source: Buffer, baseKey:
      在 resize 前统一加一次，等比缩放后 display/thumbnail 的描边与主体比例保持一致。
      参数来自 AppSetting（后台「描边预览」页），ratio=0 时关闭描边。 */
   const strokeParams = options.trim ? await getStrokeParams() : null;
-  const stroked = strokeParams && strokeParams.ratio > 0
-    ? await addWhiteStroke(trimmed, strokeParams)
-    : trimmed;
+  const hasStroke = Boolean(strokeParams && strokeParams.ratio > 0);
+  const stroked = hasStroke ? await addWhiteStroke(trimmed, strokeParams!) : trimmed;
+  /* 无白边版（DISPLAY_PLAIN/THUMBNAIL_PLAIN）：只在「实际加了白边」时派生。
+     素材就是 trim 后未描边的同一张透明图 —— 白边是最后才画上去的，源图仍在手边，
+     直接复用即可，无需重新 trim。 */
+  const plain = hasStroke ? trimmed : null;
   // 展示图与缩略图互不依赖，并行编码，避免白白多等一轮 CPU。
-  const [display, thumbnail] = await Promise.all([
-    sharp(stroked, { limitInputPixels: config.MAX_IMAGE_PIXELS })
+  const encode = (material: Buffer) => Promise.all([
+    sharp(material, { limitInputPixels: config.MAX_IMAGE_PIXELS })
       .resize({ width: 2048, height: 2048, fit: 'inside', withoutEnlargement: true })
       .png({ compressionLevel: 6 })
       .toBuffer({ resolveWithObject: true }),
-    sharp(stroked, { limitInputPixels: config.MAX_IMAGE_PIXELS })
+    sharp(material, { limitInputPixels: config.MAX_IMAGE_PIXELS })
       .resize({ width: 512, height: 512, fit: 'inside', withoutEnlargement: true })
       .webp({ quality: 82, alphaQuality: 90 })
       .toBuffer({ resolveWithObject: true })
   ]);
+  const [display, thumbnail] = await encode(stroked);
+  const plainPair = plain ? await encode(plain) : null;
   if (!display.info.width || !display.info.height) throw new Error('无法读取展示图尺寸');
   if (!thumbnail.info.width || !thumbnail.info.height) throw new Error('无法读取缩略图尺寸');
   /* 串行写库：资产落库走 Serializable 事务并对同一 User/Collectible 行 FOR UPDATE，
@@ -168,6 +173,36 @@ async function writeRenditions(data: ProcessingJobData, source: Buffer, baseKey:
     width: thumbnail.info.width,
     height: thumbnail.info.height
   });
+  if (plainPair) {
+    /* 无白边版是「可选增强产物」：主图（DISPLAY/THUMBNAIL）已成功落库后，无白边版写库失败
+       （最常见是用户存储配额不足 —— upsertAssetRecord 有硬配额检查）绝不能反过来让整张图失败。
+       这里降级处理：吞掉异常，前端拿不到 plain 字段会自动回退到有白边版。 */
+    try {
+      const [plainDisplay, plainThumbnail] = plainPair;
+      if (!plainDisplay.info.width || !plainDisplay.info.height) throw new Error('无法读取无白边展示图尺寸');
+      if (!plainThumbnail.info.width || !plainThumbnail.info.height) throw new Error('无法读取无白边缩略图尺寸');
+      await upsertAsset({
+        ...data,
+        kind: AssetKind.DISPLAY_PLAIN,
+        key: `${baseKey}/display-plain/v${data.version}.png`,
+        contentType: 'image/png',
+        body: plainDisplay.data,
+        width: plainDisplay.info.width,
+        height: plainDisplay.info.height
+      });
+      await upsertAsset({
+        ...data,
+        kind: AssetKind.THUMBNAIL_PLAIN,
+        key: `${baseKey}/thumbnail-plain/v${data.version}.webp`,
+        contentType: 'image/webp',
+        body: plainThumbnail.data,
+        width: plainThumbnail.info.width,
+        height: plainThumbnail.info.height
+      });
+    } catch (error) {
+      console.warn(`[writeRenditions] 无白边版写入失败，降级为仅有白边版：collectible=${data.collectibleId} side=${data.side ?? 'FRONT'} v${data.version}`, error instanceof Error ? error.message : error);
+    }
+  }
 }
 
 /** 标准化产物：统一 ≤4096px，透明输入可保留 alpha（PNG），其余为白底 JPEG。 */

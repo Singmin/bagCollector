@@ -2,14 +2,18 @@
 import { onLaunch, onShow } from '@dcloudio/uni-app';
 import { ensureLogin } from './services/http';
 import { retryScanFeedback } from './services/scan-feedback';
+import { loadStrokePreference } from './services/stroke-preference';
 
 onShow(() => { void retryScanFeedback(); });
 
 onLaunch(() => {
-  void ensureLogin().catch((error) => {
-    console.error('initial login failed', error);
-    uni.showToast({ title: '登录失败，请检查网络', icon: 'none' });
-  });
+  /* 登录成功后拉取白边偏好：否则用户重新打开小程序、未进设置页时会一直按默认（有白边）展示 */
+  void ensureLogin()
+    .then(() => loadStrokePreference())
+    .catch((error) => {
+      console.error('initial login failed', error);
+      uni.showToast({ title: '登录失败，请检查网络', icon: 'none' });
+    });
   /* 开启右上角菜单的「转发给朋友 / 分享到朋友圈」；页面侧由各页的 onShareAppMessage / onShareTimeline 提供内容 */
   uni.showShareMenu({ withShareTicket: false, menus: ['shareAppMessage', 'shareTimeline'] });
 });

@@ -157,3 +157,78 @@ URL 永不变化（key 自带 `v{n}` 版本号）可长期命中缓存，下载�
   接口签名，与对外的 public URL 无关，桶公有读不影响其可用性。
 - **回滚**：`ASSET_URL_MODE` 改回 `proxy` 重部署即可，代理链路原样保留。
 
+## 十、白边开关与「无白边版」（2026-10-18）
+
+给透明抠图加的白描边（贴纸效果，见 `docs/CHANGES-2026-10-17.md`）做成**用户可切换**：
+设置页一个开关，开 = 有白边，关 = 无白边。开关存服务端（换设备一致）。
+
+### 核心机制：白边只在最后一层画上去
+
+```
+ORIGINAL → STANDARD → CROPPED → CUTOUT(透明 PNG，无白边) → [加白边] → DISPLAY / THUMBNAIL
+                                                              ↑
+                                                    白边只在这一步画上去
+```
+
+- `CUTOUT`（抠图结果）本身**没有白边**，是干净的透明 PNG，一直保留。
+- 白边是在从 `CUTOUT` 派生展示图/缩略图时才 `addWhiteStroke` 上去的，所以源图没被污染、随时能补无白边版。
+
+### 两套资产
+
+| 资产 | 含义 |
+|---|---|
+| `DISPLAY` / `THUMBNAIL` | 有白边版（原字段，向后兼容） |
+| `DISPLAY_PLAIN` / `THUMBNAIL_PLAIN` | 无白边版，尺寸/裁剪与有白边版**完全一致**，只是跳过 `addWhiteStroke` |
+
+`AssetKind` 枚举新增 `DISPLAY_PLAIN`、`THUMBNAIL_PLAIN`（`20261018010000_white_stroke_toggle` 迁移）。
+
+### 什么时候有两套、什么时候只有一套
+
+**不是所有图都有两套 URL。只有「实际加了白边」的透明口径才派生无白边版：**
+
+- **抠过图的照片**（用户 `/matte`、官方开了抠图）→ 有白边 + 无白边两套 ✅
+- **保留透明度的标准 PNG**（官方直接上传透明素材）→ 有白边 + 无白边两套 ✅
+- **白底实拍 JPEG**（只裁剪、没抠图）→ 本来就不加白边，只有一套（开关切了图不变）✅
+
+worker 在 `writeRenditions()` / `writeOfficialRenditions()` 里判断 `hasStroke`（描边参数 `ratio>0` 且透明口径），
+为 true 才额外编码一份无白边版；为 false 则不产，省存储。
+
+### 用户偏好存哪
+
+- `User.whiteStrokeEnabled Boolean @default(false)`（默认关 = 默认不显示白边）。
+- `GET /account` 返回该字段；`PUT /account`（body `{ whiteStrokeEnabled: boolean }`）更新。
+- 用 `PUT` 不用 `PATCH`：微信小程序 `wx.request` 的 method 白名单不含 `PATCH`。
+
+### 默认关 = 默认展示无白边版
+
+开关默认**关**（`@default(false)`，且小程序端偏好未加载/加载失败时也回退 `false`）。
+此时 `applyStrokePreference()` 会把 `*Plain` 字段覆盖到主字段：
+
+- 抠图/透明图：展示无白边版（`DISPLAY_PLAIN` / `THUMBNAIL_PLAIN`）；
+- 白底实拍图：没有 `*Plain` 字段，覆盖逻辑不生效，仍展示原图（本来就没白边）。
+
+用户主动打开开关后，`applyStrokePreference()` 原样返回数据，展示有白边版（`DISPLAY` / `THUMBNAIL`）。
+
+### API 返回两套 URL（前端按偏好覆盖）
+
+后端**同时返回两套**，字段名：
+
+- 有白边：`thumbnailUrl` / `displayImageUrl` / `backThumbnailUrl`
+- 无白边：`thumbnailUrlPlain` / `displayImageUrlPlain` / `backThumbnailUrlPlain`
+
+小程序 `services/stroke-preference.ts` 的 `applyStrokePreference()` 在**数据层**按开关把无白边值
+覆盖到主字段（`displayImageUrl` 等），下游所有展示页面读的还是原字段、**零改动**。
+切换开关后偏好版本号 `strokeRevision()` +1，纳入图片缓存 key，让旧缓存失效、重新下载无白边版。
+
+### 无白边版写入失败的降级（重要）
+
+无白边版是「可选增强产物」：主图 `DISPLAY`/`THUMBNAIL` 写成功后，无白边版写库失败
+（最常见是用户存储配额不足——`upsertAssetRecord` 有硬配额检查）**不会让整张图失败**，
+worker 吞掉异常、只打日志，前端拿不到 plain 字段自动回退到有白边版。
+
+### 存量回填
+
+上线前已存在的透明资产还没有无白边版，跑 `scripts/backfill-stroke-plain.mjs`
+（与 `backfill-stroke.mjs` 的区别：后者是**覆盖**有白边版、前者是**新增**无白边版）：
+默认 dry-run，`--execute` 才写，幂等可重跑，输出 CDN 刷新清单。
+

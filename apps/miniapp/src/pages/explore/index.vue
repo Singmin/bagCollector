@@ -4,6 +4,7 @@ import { onLoad, onShow } from '@dcloudio/uni-app';
 import type { Brand, OfficialBag } from '../../types';
 import BagImagePreview from '../../components/BagImagePreview.vue';
 import { dataService } from '../../services/data';
+import { strokeRevision } from '../../services/stroke-preference';
 
 /* ── 官方图鉴页（从首页入口进入）：按品牌分类浏览官方袋子 + 搜索；
       卡片右上角用角标区分「已有」与「心愿」，顶行给出只数 / 品牌 / 已有 / 心愿概览 ──
@@ -351,7 +352,14 @@ async function claimBag() {
 onLoad(() => {
   void load();
 });
+let lastStrokeRevision = strokeRevision();
 onShow(() => {
+  /* 白边开关在设置页切过后，图片 URL 会变：偏好版本号变化则强制重拉列表，让无白边版立即生效 */
+  if (initialized.value && strokeRevision() !== lastStrokeRevision) {
+    lastStrokeRevision = strokeRevision();
+    void load();
+    return;
+  }
   /* 从心愿袋/其他页返回时刷新心愿状态（袋子列表本身变化不大，只在首次拉） */
   if (initialized.value) {
     void dataService.wishlist().then((wish) => { wishlistIds.value = new Set(wish.map((item) => item.id)); }).catch(() => {});

@@ -5,6 +5,7 @@ import type { Collectible, CollectibleSummary, Shelf } from '../../types';
 import { dataService } from '../../services/data';
 import { daysAgoText, formattedDate } from '../../services/format';
 import { resolveCollectibleThumbnail } from '../../services/images';
+import { strokeRevision } from '../../services/stroke-preference';
 import { syncTabBar, setTabBarHidden } from '../../services/tab-bar';
 import BagTabBar from '../../components/BagTabBar.vue';
 
@@ -174,7 +175,7 @@ function assertRenderable(nextItems: CollectibleSummary[]) {
    已入队的用 key 记住，来回滚动不重复下；失败的不记 key，下次进窗口可重试。 */
 const requestedThumbnails = new Set<string>();
 function hydrateThumbnail(item: Collectible) {
-  const key = `${item.id}:${item.updatedAt}`;
+  const key = `${item.id}:${item.updatedAt}:${strokeRevision()}`;
   if (requestedThumbnails.has(key)) return;
   requestedThumbnails.add(key);
   void resolveCollectibleThumbnail(item).then((url) => {

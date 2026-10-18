@@ -32,8 +32,12 @@ export interface CollectibleSummary {
   visibility?: 'PRIVATE' | 'PUBLIC';
   processingStatus: ProcessingStatus;
   thumbnailUrl?: string;
+  /** 无白边版缩略图：仅「加了白边」的透明口径返回；缺失时前端回退 thumbnailUrl。 */
+  thumbnailUrlPlain?: string;
   /** 摘要级 B 面缩略图：有值即表示存在已发布的 B 面，详情卡直接按 A/B 布局打开 */
   backThumbnailUrl?: string;
+  /** 摘要级 B 面无白边缩略图：与 backThumbnailUrl 对应，缺失回退 backThumbnailUrl。 */
+  backThumbnailUrlPlain?: string;
   addedAt: string;
   updatedAt: string;
   /** 发现页 feed 条目的主人昵称（官方精选时为品牌名）；自己的收藏没有该字段 */
@@ -49,6 +53,8 @@ export interface Collectible extends CollectibleSummary {
   tags: string[];
   processingError?: string;
   displayImageUrl?: string;
+  /** 无白边版展示图：仅「加了白边」的透明口径返回；缺失时前端回退 displayImageUrl。 */
+  displayImageUrlPlain?: string;
   standardImageUrl?: string;
   /** 抠图结果（透明 PNG）：有值表示已经抠过图，编辑页据此隐藏「自动抠图」按钮 */
   cutoutImageUrl?: string;
@@ -109,6 +115,9 @@ export interface OfficialBag {
   claimedCount: number;
   thumbnailUrl?: string;
   displayImageUrl?: string;
+  /** 无白边版缩略图/展示图：仅「加了白边」的透明口径返回；缺失时前端回退有白边版。 */
+  thumbnailUrlPlain?: string;
+  displayImageUrlPlain?: string;
   /** 当前用户是否已拥有该袋子 */
   claimed?: boolean;
   publishedAt?: string;

@@ -9,9 +9,10 @@ import type { LibraryShelfGroup } from '../services/use-library-collection';
 import { SHELF_IMAGE_HEIGHT } from '../services/use-library-collection';
 import { cardNodeId, useLibraryCardEvents, type LibraryCardOpen } from '../services/library-card-events';
 
-const props = defineProps<{ group: LibraryShelfGroup; index: number; activeId?: string; viewportRevision: number }>();
+const props = defineProps<{ group: LibraryShelfGroup; index: number; activeId?: string; viewportRevision: number; sorting?: boolean; dragging?: boolean }>();
 const emit = defineEmits<{
   open: [request: LibraryCardOpen]; longpress: [item: CollectibleSummary]; imageError: [item: CollectibleSummary];
+  sortStart: [shelfId: string]; sortMove: [shelfId: string, clientY: number]; sortEnd: [];
 }>();
 const instance = getCurrentInstance();
 const cards = useLibraryCardEvents(instance?.proxy, () => 'shelf', request => emit('open', request), item => emit('longpress', item));
@@ -67,11 +68,36 @@ watch(() => [props.group.entries.length, props.viewportRevision], measure);
 onScopeDispose(() => { alive = false; });
 function touchShelf() { userScrolling = true; }
 function cancelShelfTouch() { userScrolling = false; }
+const dragOffsetY = ref(0);
+let dragOriginY: number | null = null;
+watch(() => props.dragging, (dragging) => { if (!dragging) { dragOffsetY.value = 0; dragOriginY = null; } });
+function onHeadingLongPress() {
+  if (props.sorting) return;
+  emit('sortStart', props.group.id);
+}
+function onSortTouchMove(event: Event) {
+  if (!props.dragging) return;
+  const point = (event as unknown as { touches?: { clientY?: number }[] }).touches?.[0];
+  if (!point || point.clientY == null) return;
+  if (dragOriginY == null) dragOriginY = point.clientY;
+  dragOffsetY.value = point.clientY - dragOriginY;
+  emit('sortMove', props.group.id, point.clientY);
+}
+function onSortTouchEnd() {
+  if (!props.dragging) return;
+  dragOffsetY.value = 0;
+  dragOriginY = null;
+  emit('sortEnd');
+}
 </script>
 
 <template>
-<view class="shelf-group">
-        <view class="shelf-heading">
+<view
+      class="shelf-group"
+      :class="{ 'is-sorting': sorting, 'is-dragging': dragging }"
+      :style="dragging ? { transform: `translateY(${dragOffsetY}px)`, zIndex: 20 } : { animationDelay: `${(index % 6) * 50}ms` }"
+    >
+        <view class="shelf-heading" @longpress="onHeadingLongPress" @touchmove.stop="onSortTouchMove" @touchend="onSortTouchEnd" @touchcancel="onSortTouchEnd">
           <text class="shelf-name">{{ group.name }}</text>
           <view class="shelf-hint">
             <text class="shelf-hint__count">共{{ group.entries.length }}件</text>
@@ -99,7 +125,7 @@ function cancelShelfTouch() { userScrolling = false; }
         <scroll-view
           :id="`shelf-scroll-${group.id}`"
           class="shelf-scroll"
-          scroll-x
+          :scroll-x="!sorting"
           enhanced
           :show-scrollbar="false"
           scroll-with-animation
@@ -158,4 +184,13 @@ function cancelShelfTouch() { userScrolling = false; }
 .qty-badge { position: absolute; z-index: 2; top: 0; right: 0; padding: 2rpx 10rpx; border-radius: 0 0 0 16rpx; background: rgba(255,255,255,.92); color: rgba(197,4,5,.62); font-size: 18rpx; font-weight: 700; line-height: 1.5; }
 .qty-badge--shelf { top: -14rpx; right: 4rpx; border-radius: 16rpx; }
 .shelf-item.is-card-source { visibility: hidden; }
+.shelf-group.is-sorting .shelf-scroll { pointer-events: none; }
+.shelf-group.is-sorting .shelf-heading { pointer-events: auto; }
+.shelf-group.is-dragging { z-index: 20; }
+.shelf-group.is-dragging .acrylic-shelf { border-color: rgba(197,4,5,.4); box-shadow: 0 22rpx 42rpx rgba(43,35,29,.24), inset 0 2rpx 0 rgba(255,255,255,.6); }
+@keyframes shelf-wiggle {
+  0%, 100% { transform: rotate(-0.7deg); }
+  50% { transform: rotate(0.7deg); }
+}
+.shelf-group.is-sorting:not(.is-dragging) { animation: shelf-wiggle .32s ease-in-out infinite; }
 </style>

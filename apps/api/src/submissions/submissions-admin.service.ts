@@ -317,17 +317,24 @@ export class SubmissionsAdminService {
     const copiedKeys: string[] = [];
     try {
       for (const { state, assets } of selections) {
-        const kinds: AssetKind[] = [AssetKind.STANDARD, AssetKind.DISPLAY, AssetKind.THUMBNAIL];
-        if (assets.CUTOUT) kinds.push(AssetKind.CUTOUT);
-        for (const kind of kinds) {
-          const asset = assets[kind];
-          if (!asset) throw new ApiError('CONFLICT', '这一面缺少完整图片产物', HttpStatus.CONFLICT);
+        const copyAsset = async (asset: { objectKey: string; contentType: string; byteSize: bigint; width: number | null; height: number | null }, kind: AssetKind) => {
           const body = await this.cos.getObject(asset.objectKey);
           const extension = EXTENSION[asset.contentType] ?? 'bin';
           const key = `official/${bag.id}/${state.side.toLowerCase()}/${kind.toLowerCase()}/v1.${extension}`;
           await this.cos.putObject(key, body, asset.contentType); copiedKeys.push(key);
           await this.prisma.officialBagImage.create({ data: { officialBagId: bag.id, side: state.side, kind, status: AssetStatus.AVAILABLE,
             objectKey: key, contentType: asset.contentType, declaredByteSize: asset.byteSize, byteSize: asset.byteSize, width: asset.width, height: asset.height, version: 1 } });
+        };
+        /* STANDARD/DISPLAY/THUMBNAIL 是必需产物；CUTOUT（抠图）与无白边版（DISPLAY_PLAIN/THUMBNAIL_PLAIN）
+           只在「加了白边」的透明口径下存在，有就一并复制，保证纳入官方库后白边开关仍能切无白边。 */
+        for (const kind of [AssetKind.STANDARD, AssetKind.DISPLAY, AssetKind.THUMBNAIL] as const) {
+          const asset = assets[kind];
+          if (!asset) throw new ApiError('CONFLICT', '这一面缺少完整图片产物', HttpStatus.CONFLICT);
+          await copyAsset(asset, kind);
+        }
+        for (const kind of [AssetKind.CUTOUT, AssetKind.DISPLAY_PLAIN, AssetKind.THUMBNAIL_PLAIN] as const) {
+          const asset = assets[kind];
+          if (asset) await copyAsset(asset, kind);
         }
         await this.prisma.officialBagImageSide.create({ data: { officialBagId: bag.id, side: state.side, sourceVersion: 1, processingVersion: 1, publishedVersion: 1, publishedSourceVersion: 1, processingStatus: OfficialProcessStatus.READY, matting: !!assets.CUTOUT } });
       }

@@ -15,7 +15,8 @@ const collection = useLibraryCollection({ onLoaded: fillViewportIfNeeded });
 const { loading, initialized, loadError, loadingMore, nextCursor, shelves, items, totalCount,
   segment, displayMode, wishlistItems, searchText, keyword, hasSearch, knownTagCounts, groups, visibleWishlist,
   gridItems, wishGridItems, emptyChips, load, loadMore, applySearch, onSearchInput, searchFor,
-  clearSearch, switchSegment, upsertShelf, applyUpdated, collectibleNo, onImageError } = collection;
+  clearSearch, switchSegment, upsertShelf, applyUpdated, collectibleNo, onImageError, sortingMode,
+  draggingShelfId, enterSortMode, moveShelf, commitSortOrder, cancelSort } = collection;
 const activeCard = ref<LibraryCardOpen | null>(null);
 const detailOverlay = ref<InstanceType<typeof LibraryDetailOverlay> | null>(null);
 const gridColumns = ref(4);
@@ -71,11 +72,81 @@ function fillViewportIfNeeded() {
   });
 }
 watch(() => [segment.value, displayMode.value], fillViewportIfNeeded);
-function toggleMode() { displayMode.value = displayMode.value === 'shelf' ? 'grid' : 'shelf'; }
+const shelfRects = ref<{ id: string; center: number }[]>([]);
+let lastDragY = 0;
+let measureScrollTop = 0;
+let sortWindowHeight = 0;
+let autoScrollTimer: ReturnType<typeof setInterval> | undefined;
+// 仅在拖拽自动滚动时更新的受控值；平时不回写，避免 scroll-top 与手势滚动竞争造成卡顿回弹。
+const libraryScrollTop = ref(0);
+let realScrollTop = 0;
+function onLibraryScroll(event: { detail: { scrollTop: number } }) { realScrollTop = event.detail.scrollTop; }
+function stopAutoScroll() {
+  if (!autoScrollTimer) return;
+  clearInterval(autoScrollTimer);
+  autoScrollTimer = undefined;
+}
+function startAutoScroll(direction: 1 | -1) {
+  if (autoScrollTimer) return;
+  libraryScrollTop.value = realScrollTop;
+  autoScrollTimer = setInterval(() => {
+    libraryScrollTop.value = Math.max(0, libraryScrollTop.value + direction * 12);
+  }, 32);
+}
+function measureShelfRects() {
+  nextTick(() => {
+    if (!sortingMode.value) return;
+    measureScrollTop = realScrollTop;
+    sortWindowHeight = uni.getSystemInfoSync().windowHeight;
+    libraryScrollTop.value = realScrollTop;
+    uni.createSelectorQuery().in(instance?.proxy).selectAll('.shelf-group').boundingClientRect(rows => {
+      if (!sortingMode.value) return;
+      const rects = rows as unknown as { top?: number; height?: number }[];
+      if (!rects?.length) return;
+      shelfRects.value = groups.value.map((group, index) => {
+        const rect = rects[index];
+        return { id: group.id, center: (rect?.top ?? 0) + (rect?.height ?? 0) / 2 };
+      });
+    }).exec();
+  });
+}
+function resolveTargetIndex(clientY: number, draggingId: string) {
+  const shift = libraryScrollTop.value - measureScrollTop;
+  return shelfRects.value.filter(rect => rect.id !== draggingId && rect.center - shift < clientY).length;
+}
+function onSortStart(shelfId: string) {
+  enterSortMode(shelfId);
+  if (sortingMode.value) measureShelfRects();
+}
+function onSortMove(_shelfId: string, clientY: number) {
+  lastDragY = clientY;
+  if (!sortWindowHeight) sortWindowHeight = uni.getSystemInfoSync().windowHeight;
+  const edge = 130;
+  if (clientY > sortWindowHeight - edge) startAutoScroll(1);
+  else if (clientY < edge + 70) startAutoScroll(-1);
+  else stopAutoScroll();
+}
+function onSortEnd() {
+  stopAutoScroll();
+  const draggingId = draggingShelfId.value;
+  if (draggingId) moveShelf(draggingId, resolveTargetIndex(lastDragY, draggingId));
+  void commitSortOrder();
+}
+function toggleMode() {
+  stopAutoScroll();
+  if (sortingMode.value) cancelSort();
+  displayMode.value = displayMode.value === 'shelf' ? 'grid' : 'shelf';
+}
 function goAdd() { uni.navigateTo({ url: '/package-editor/pages/add/index' }); }
 function goDiscover() { uni.switchTab({ url: '/pages/showcase/index' }); }
 function openSettings() { settingsShow.value = true; setTabBarHidden(true); }
-function closeSettings() { settingsShow.value = false; syncTabBar(1, !!activeCard.value); }
+function closeSettings() {
+  settingsShow.value = false;
+  syncTabBar(1, !!activeCard.value);
+  /* 设置半窗里切过白边开关会 markCollectionDataStale → revision 变化：
+     关半窗时主动刷一次，让无白边版立即生效（半窗是页内浮层，不触发 onShow） */
+  if (collection.needsRefresh()) void load(true);
+}
 function swallowTabBarTap() {}
 async function onRefresherRefresh() {
   refresherTriggered.value = true;
@@ -88,7 +159,14 @@ onShow(() => {
   nextTick(() => { if (pageVisible) detailOverlay.value?.prepare(); });
   if (collection.needsRefresh()) void load();
 });
-onHide(() => { pageVisible = false; collection.cancelSearchTimer(); detailOverlay.value?.suspend(); closeSettings(); });
+onHide(() => {
+  pageVisible = false;
+  stopAutoScroll();
+  collection.cancelSearchTimer();
+  detailOverlay.value?.suspend();
+  closeSettings();
+  if (sortingMode.value) void commitSortOrder();
+});
 onScopeDispose(() => { pageVisible = false; });
 onResize(() => { viewportRevision.value += 1; detailOverlay.value?.resize(); });
 onShareAppMessage(() => ({ title: '袋袋集 · 我的纸袋收藏架', path: '/pages/library/index' }));
@@ -127,9 +205,12 @@ onShareTimeline(() => ({ title: '袋袋集 · 我的纸袋收藏架', query: '' 
       scroll-y
       enhanced
       :show-scrollbar="false"
-      :refresher-enabled="true"
+      :scroll-top="libraryScrollTop"
+      scroll-with-animation
+      :refresher-enabled="!sortingMode"
       :refresher-triggered="refresherTriggered"
       refresher-default-style="black"
+      @scroll="onLibraryScroll"
       @refresherrefresh="onRefresherRefresh"
       @scrolltolower="onScrollToLower"
     >
@@ -195,7 +276,7 @@ onShareTimeline(() => ({ title: '袋袋集 · 我的纸袋收藏架', query: '' 
     </view>
 
     <view v-else-if="displayMode === 'shelf'" class="shelf-list">
-      <LibraryShelfRow v-for="(group, index) in groups" :key="group.id" :group="group" :index="index" :active-id="activeCard?.item.id" :viewport-revision="viewportRevision" @open="openDetail" @longpress="removeMine" @image-error="onImageError" />
+      <LibraryShelfRow v-for="(group, index) in groups" :key="group.id" :group="group" :index="index" :active-id="activeCard?.item.id" :viewport-revision="viewportRevision" :sorting="sortingMode" :dragging="draggingShelfId === group.id" @open="openDetail" @longpress="removeMine" @image-error="onImageError" @sort-start="onSortStart" @sort-move="onSortMove" @sort-end="onSortEnd" />
     </view>
     <LibraryGrid v-else v-model:columns="gridColumns" :entries="gridItems" mode="mine" :active-id="activeCard?.item.id" :total="items.length" @open="openDetail" @longpress="removeMine" @image-error="onImageError" />
 

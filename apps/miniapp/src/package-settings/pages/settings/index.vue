@@ -2,11 +2,28 @@
 import { ref } from 'vue';
 import { onShow } from '@dcloudio/uni-app';
 import { api, logout } from '../../../services/http';
+import { loadStrokePreference, saveStrokePreference } from '../../../services/stroke-preference';
+import { markCollectionDataStale } from '../../../services/collection-state';
 
 interface AccountStats { collectibleCount: number; shelfCount: number; storageUsedBytes: number; storageQuotaBytes: number }
 const stats = ref<AccountStats | null>(null); const used = ref(''); const quota = ref(''); const loadError = ref('');
+const whiteStroke = ref(false); const savingStroke = ref(false);
 function bytes(value: number) { if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`; if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MB`; return `${(value / 1024 ** 3).toFixed(2)} GB`; }
-async function load() { stats.value = null; loadError.value = ''; try { stats.value = await api<AccountStats>('/account'); used.value = bytes(stats.value.storageUsedBytes); quota.value = bytes(stats.value.storageQuotaBytes); } catch (error) { loadError.value = error instanceof Error ? error.message : '统计加载失败'; } }
+async function load() { stats.value = null; loadError.value = ''; try { stats.value = await api<AccountStats>('/account'); used.value = bytes(stats.value.storageUsedBytes); quota.value = bytes(stats.value.storageQuotaBytes); whiteStroke.value = await loadStrokePreference(); } catch (error) { loadError.value = error instanceof Error ? error.message : '统计加载失败'; } }
+function toggleWhiteStroke(event: any) {
+  const next = !!event.detail.value;
+  if (savingStroke.value) return;
+  savingStroke.value = true;
+  void saveStrokePreference(next)
+    .then(() => {
+      whiteStroke.value = next;
+      markCollectionDataStale();
+    })
+    .catch((error) => {
+      uni.showToast({ title: error instanceof Error ? error.message : '保存失败', icon: 'none' });
+    })
+    .finally(() => { savingStroke.value = false; });
+}
 function privacy() { uni.showModal({ title: '隐私说明', content: 'BagCollect 使用微信身份建立私人账户。你主动选择的照片会上传到私有对象存储，并用于裁剪、自动抠图和跨设备同步。不会公开展示，也不会获取手机号、昵称或通讯录。', showCancel: false }); }
 async function signOut() { try { await logout(); uni.reLaunch({ url: '/pages/showcase/index' }); } catch (error) { uni.showToast({ title: error instanceof Error ? error.message : '退出登录失败', icon: 'none' }); } }
 function removeAccount() { uni.showModal({ title: '永久注销账号？', content: '所有展示架、收藏信息和云端图片都将被删除，且无法恢复。', confirmText: '永久删除', confirmColor: '#9d3d36', success: async (result) => { if (!result.confirm) return; try { await api('/account', { method: 'DELETE' }); await logout(); uni.showModal({ title: '账号已注销', content: '你的数据删除任务已提交。', showCancel: false, success: () => uni.reLaunch({ url: '/pages/showcase/index' }) }); } catch (error) { uni.showToast({ title: error instanceof Error ? error.message : '注销失败', icon: 'none' }); } } }); }
@@ -41,6 +58,10 @@ onShow(() => void load());
           <text>展示架管理</text><strong class="row-more">{{ stats.shelfCount }} 个 ›</strong>
         </view>
         <view class="r"><text>云端存储</text><strong>{{ used }} / {{ quota }}</strong></view>
+        <view class="r">
+          <text>抠图白边</text>
+          <switch :checked="whiteStroke" :disabled="savingStroke" color="#141414" @change="toggleWhiteStroke" />
+        </view>
         <view class="r" hover-class="is-hover" @tap="privacy">
           <text>隐私与数据使用</text><text class="row-more">›</text>
         </view>

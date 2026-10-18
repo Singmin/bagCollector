@@ -1,5 +1,5 @@
-import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Post, UseGuards } from '@nestjs/common';
-import { logoutSchema, refreshSchema, wechatLoginSchema } from '@bagcollect/contracts';
+import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Post, Put, UseGuards } from '@nestjs/common';
+import { logoutSchema, refreshSchema, updateAccountSchema, wechatLoginSchema } from '@bagcollect/contracts';
 import { CurrentUser, type AuthUser } from '../common/current-user.js';
 import { parseBody } from '../common/zod.js';
 import { AuthGuard } from './auth.guard.js';
@@ -38,5 +38,11 @@ export class AuthController {
   @UseGuards(AuthGuard)
   account(@CurrentUser() user: AuthUser) {
     return this.auth.account(user.userId);
+  }
+
+  @Put('account')
+  @UseGuards(AuthGuard)
+  updateAccount(@CurrentUser() user: AuthUser, @Body() body: unknown) {
+    return this.auth.updateAccount(user.userId, parseBody(updateAccountSchema, body));
   }
 }

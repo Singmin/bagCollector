@@ -53,6 +53,7 @@ export class CollectiblesService {
       ...(official ? { sourceOfficialBagId: collectible.sourceOfficialBagId } : {}),
       ...(front?.processingError ? { processingError: front.processingError } : {}),
       ...(front ? { thumbnailUrl: front.thumbnailUrl, displayImageUrl: front.displayImageUrl,
+        thumbnailUrlPlain: front.thumbnailUrlPlain, displayImageUrlPlain: front.displayImageUrlPlain,
         standardImageUrl: front.standardImageUrl, cutoutImageUrl: front.cutoutImageUrl, crop: front.crop } : {}),
       addedAt: collectible.addedAt.toISOString(), updatedAt: collectible.updatedAt.toISOString()
     };
@@ -63,18 +64,24 @@ export class CollectiblesService {
     const states = source?.imageSides ?? [];
     const front = states.find((state: any) => state.side === 'FRONT');
     const candidates = source?.images ?? source?.imageAssets ?? [];
-    const thumbnail = front
-      ? selectSideAssets<{ side: ImageSide; kind: string; version: number; objectKey: string }>(candidates, front).THUMBNAIL
-      : candidates[0];
+    const frontAssets = front
+      ? selectSideAssets<{ side: ImageSide; kind: string; version: number; objectKey: string }>(candidates, front)
+      : undefined;
+    const thumbnail = frontAssets?.THUMBNAIL ?? candidates[0];
     const thumbnailUrl = thumbnail ? await this.assets.signedUrlForObjectKey(thumbnail.objectKey) : undefined;
+    const thumbnailPlain = frontAssets?.THUMBNAIL_PLAIN;
+    const thumbnailUrlPlain = thumbnailPlain ? await this.assets.signedUrlForObjectKey(thumbnailPlain.objectKey) : undefined;
     /* B 面缩略图：与详情接口同口径（sourceVersion>0 或已发布才算有该面），
        让小程序详情卡在打开瞬间就能按 A/B 布局渲染，不等详情返回再跳变 */
     const back = states.find((state: any) => state.side === 'BACK');
     const backVisible = !!back && (back.sourceVersion > 0 || back.publishedVersion !== null);
-    const backThumbnail = backVisible
-      ? selectSideAssets<{ side: ImageSide; kind: string; version: number; objectKey: string }>(candidates, back).THUMBNAIL
+    const backAssets = backVisible
+      ? selectSideAssets<{ side: ImageSide; kind: string; version: number; objectKey: string }>(candidates, back)
       : undefined;
+    const backThumbnail = backAssets?.THUMBNAIL;
     const backThumbnailUrl = backThumbnail ? await this.assets.signedUrlForObjectKey(backThumbnail.objectKey) : undefined;
+    const backThumbnailPlain = backAssets?.THUMBNAIL_PLAIN;
+    const backThumbnailUrlPlain = backThumbnailPlain ? await this.assets.signedUrlForObjectKey(backThumbnailPlain.objectKey) : undefined;
     return {
       id: collectible.id, name: collectible.name, shelfId: collectible.shelfId,
       shelfName: collectible.shelf.name, quantity: collectible.quantity ?? 1,
@@ -83,7 +90,9 @@ export class CollectiblesService {
       ...(collectible.sourceOfficialBagId ? { sourceOfficialBagId: collectible.sourceOfficialBagId } : {}),
       imageRevision: imageRevision(collectible.sourceOfficialBagId ?? collectible.id, states),
       ...(thumbnailUrl ? { thumbnailUrl } : {}),
+      ...(thumbnailUrlPlain ? { thumbnailUrlPlain } : {}),
       ...(backThumbnailUrl ? { backThumbnailUrl } : {}),
+      ...(backThumbnailUrlPlain ? { backThumbnailUrlPlain } : {}),
       addedAt: collectible.addedAt.toISOString(), updatedAt: collectible.updatedAt.toISOString()
     };
   }
@@ -98,8 +107,8 @@ export class CollectiblesService {
   private listInclude() {
     return {
       shelf: true, imageSides: true,
-      imageAssets: { where: { kind: AssetKind.THUMBNAIL, side: { in: [ImageSide.FRONT, ImageSide.BACK] }, status: AssetStatus.AVAILABLE } },
-      sourceOfficialBag: { include: { imageSides: true, images: { where: { kind: AssetKind.THUMBNAIL, side: { in: [ImageSide.FRONT, ImageSide.BACK] }, status: AssetStatus.AVAILABLE } } } }
+      imageAssets: { where: { kind: { in: [AssetKind.THUMBNAIL, AssetKind.THUMBNAIL_PLAIN] }, side: { in: [ImageSide.FRONT, ImageSide.BACK] }, status: AssetStatus.AVAILABLE } },
+      sourceOfficialBag: { include: { imageSides: true, images: { where: { kind: { in: [AssetKind.THUMBNAIL, AssetKind.THUMBNAIL_PLAIN] }, side: { in: [ImageSide.FRONT, ImageSide.BACK] }, status: AssetStatus.AVAILABLE } } } }
     } satisfies Prisma.CollectibleInclude;
   }
 

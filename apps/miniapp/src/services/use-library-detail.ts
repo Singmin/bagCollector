@@ -5,6 +5,7 @@ import { formattedDate, daysAgoText } from './format';
 import { maskPageChrome } from './overlay';
 import { createLibraryCardMotion, type CardMotionFrame, type CardRect } from './library-card-motion';
 import { validSurfaceBounds, type LibraryCardSurfaceHandle } from './library-card-surface';
+import { strokeRevision } from './stroke-preference';
 import type { LibraryCardOpen } from './library-card-events';
 
 interface DetailOptions {
@@ -13,7 +14,7 @@ interface DetailOptions {
   closed: () => void;
   loaded: (detail: Collectible) => void;
 }
-const cacheKey = (item: CollectibleSummary) => `${item.id}:${item.imageRevision ?? ''}:${item.updatedAt}`;
+const cacheKey = (item: CollectibleSummary) => `${item.id}:${item.imageRevision ?? ''}:${item.updatedAt}:${strokeRevision()}`;
 
 export function useLibraryDetail(options: DetailOptions) {
   const pageInstance = { proxy: options.instance };

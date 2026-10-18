@@ -156,7 +156,16 @@ export class AuthService {
       shelfCount: user._count.shelves,
       storageUsedBytes: Number(user.storageUsedBytes),
       storageQuotaBytes: Number(user.storageQuotaBytes),
+      whiteStrokeEnabled: user.whiteStrokeEnabled,
       createdAt: user.createdAt.toISOString()
     };
+  }
+
+  async updateAccount(userId: string, input: { whiteStrokeEnabled: boolean }) {
+    const user = await this.prisma.user.update({
+      where: { id: userId },
+      data: { whiteStrokeEnabled: input.whiteStrokeEnabled }
+    });
+    return { whiteStrokeEnabled: user.whiteStrokeEnabled };
   }
 }

@@ -46,6 +46,10 @@ enum AssetKind {
   CUTOUT
   DISPLAY
   THUMBNAIL
+  /* 无白边版展示图/缩略图：与 DISPLAY/THUMBNAIL 同尺寸、同裁剪，只是不加白描边。
+     由 worker 在「实际加了白边」时并行派生，供用户白边开关关闭时展示。 */
+  DISPLAY_PLAIN
+  THUMBNAIL_PLAIN
 }
 
 enum AssetStatus {
@@ -119,6 +123,9 @@ model User {
   storageQuotaBytes BigInt
   collectibleQuota  Int
   dailyMattingQuota Int
+  // 白边开关：true = 展示有白边的抠图；false = 展示无白边版（默认关，即默认不显示白边）。
+  // 存服务端而非本地 storage，保证换设备后偏好一致。
+  whiteStrokeEnabled Boolean       @default(false)
   lastLoginAt       DateTime        @default(now())
   createdAt         DateTime        @default(now())
   updatedAt         DateTime        @updatedAt

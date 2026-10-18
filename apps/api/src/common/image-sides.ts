@@ -31,7 +31,7 @@ export async function imageData(prisma: PrismaService, cos: CosService, id: stri
       ...('mattedSourceVersion' in state ? { matted: state.mattedSourceVersion === state.sourceVersion } : {}),
       ...('matting' in state ? { matting: state.matting } : {})
     };
-    await Promise.all(Object.entries({ thumbnailUrl: 'THUMBNAIL', displayImageUrl: 'DISPLAY', standardImageUrl: 'STANDARD', cutoutImageUrl: 'CUTOUT' }).map(async ([field, kind]) => {
+    await Promise.all(Object.entries({ thumbnailUrl: 'THUMBNAIL', displayImageUrl: 'DISPLAY', standardImageUrl: 'STANDARD', cutoutImageUrl: 'CUTOUT', thumbnailUrlPlain: 'THUMBNAIL_PLAIN', displayImageUrlPlain: 'DISPLAY_PLAIN' }).map(async ([field, kind]) => {
       const asset = selected[kind];
       if (asset) Object.assign(dto, { [field]: await cos.signedUrl(asset.objectKey) });
     }));

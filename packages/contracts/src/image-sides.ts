@@ -13,6 +13,9 @@ export interface ImageSideDto {
   processingError?: string;
   thumbnailUrl?: string;
   displayImageUrl?: string;
+  /** 无白边版缩略图/展示图：仅「加了白边」的透明口径会额外派生；白底实拍图没有该字段，前端回退到有白边版。 */
+  thumbnailUrlPlain?: string;
+  displayImageUrlPlain?: string;
   standardImageUrl?: string;
   cutoutImageUrl?: string;
   crop?: ImageCrop;

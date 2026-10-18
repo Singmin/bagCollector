@@ -3,17 +3,18 @@ import type { Collectible, CollectibleSummary, Shelf } from '../types';
 import { dataService } from './data';
 import { collectionRevision, shouldRefreshCollection } from './collection-state';
 import { resolveCollectibleThumbnail } from './images';
+import { strokeRevision } from './stroke-preference';
 import type { LibraryDisplayItem } from './library-card-events';
 
 export const GRID_STEP = 120;
 export const SHELF_IMAGE_HEIGHT = 240;
 export interface LibraryShelfGroup extends Shelf { entries: LibraryDisplayItem[] }
 interface Dependencies {
-  data?: Pick<typeof dataService, 'collectibles' | 'shelves' | 'wishlist' | 'removeCollectible' | 'removeWishlist'>;
+  data?: Pick<typeof dataService, 'collectibles' | 'shelves' | 'wishlist' | 'removeCollectible' | 'removeWishlist' | 'reorderShelves'>;
   thumbnail?: typeof resolveCollectibleThumbnail;
   onLoaded?: () => void;
 }
-const imageVersion = (item: CollectibleSummary) => item.imageRevision ?? item.updatedAt;
+const imageVersion = (item: CollectibleSummary) => `${item.imageRevision ?? item.updatedAt}:${strokeRevision()}`;
 
 export function useLibraryCollection(dependencies: Dependencies = {}) {
   const data = dependencies.data ?? dataService;
@@ -29,6 +30,9 @@ export function useLibraryCollection(dependencies: Dependencies = {}) {
   const totalCount = ref(0);
   const segment = ref<'mine' | 'wish'>('mine');
   const displayMode = ref<'shelf' | 'grid'>('shelf');
+  const sortingMode = ref(false);
+  const draggingShelfId = ref<string | null>(null);
+  let sortSnapshot: Shelf[] = [];
   const wishlistItems = ref<Collectible[]>([]);
   const searchText = ref('');
   const keyword = ref('');
@@ -184,6 +188,7 @@ export function useLibraryCollection(dependencies: Dependencies = {}) {
     } finally { if (isCurrent()) loadingMore.value = false; }
   }
   function applySearch(value: string) {
+    if (sortingMode.value) cancelSort();
     clearTimeout(searchTimer);
     const next = value.trim();
     if (next === keyword.value) return;
@@ -201,6 +206,7 @@ export function useLibraryCollection(dependencies: Dependencies = {}) {
   function clearSearch() { searchText.value = ''; applySearch(''); }
   function switchSegment(next: 'mine' | 'wish') {
     if (segment.value === next) return;
+    if (sortingMode.value) cancelSort();
     const wasSearching = !!keyword.value;
     segment.value = next; clearSearch();
     if (next === 'mine' && !wasSearching && needsRefresh()) void load(true);
@@ -212,6 +218,44 @@ export function useLibraryCollection(dependencies: Dependencies = {}) {
   function upsertShelf(shelf: Shelf) {
     const existing = shelves.value.findIndex(current => current.id === shelf.id);
     if (existing < 0) shelves.value = [...shelves.value, shelf]; else shelves.value[existing] = shelf;
+  }
+  function enterSortMode(shelfId: string) {
+    if (sortingMode.value || segment.value !== 'mine' || displayMode.value !== 'shelf') return;
+    sortSnapshot = shelves.value;
+    sortingMode.value = true;
+    draggingShelfId.value = shelfId;
+  }
+  function moveShelf(shelfId: string, toIndex: number) {
+    const from = shelves.value.findIndex(shelf => shelf.id === shelfId);
+    if (from < 0) return;
+    const target = Math.max(0, Math.min(shelves.value.length - 1, toIndex));
+    if (from === target) return;
+    const next = [...shelves.value];
+    const [moved] = next.splice(from, 1);
+    next.splice(target, 0, moved);
+    shelves.value = next;
+  }
+  async function commitSortOrder() {
+    if (!sortingMode.value) return;
+    const ids = shelves.value.map(shelf => shelf.id);
+    const snapshot = sortSnapshot;
+    sortingMode.value = false;
+    draggingShelfId.value = null;
+    try {
+      const next = await data.reorderShelves(ids);
+      if (!alive) return;
+      shelves.value = next;
+    } catch (error) {
+      if (!alive) return;
+      shelves.value = snapshot;
+      uni.showToast({ title: error instanceof Error ? error.message : '排序保存失败', icon: 'none' });
+    }
+  }
+  function cancelSort() {
+    if (!sortingMode.value) return;
+    sortingMode.value = false;
+    draggingShelfId.value = null;
+    shelves.value = sortSnapshot;
   }
   function invalidatePending() {
     generation += 1; pending = undefined; loadedAt = 0;
@@ -266,5 +310,6 @@ export function useLibraryCollection(dependencies: Dependencies = {}) {
     segment, displayMode, wishlistItems, searchText, keyword, hasSearch, knownTagCounts, groups, visibleWishlist,
     gridItems, wishGridItems, gridOverflow, emptyChips, load, loadMore, needsRefresh, applySearch, onSearchInput,
     searchFor, clearSearch, switchSegment, appendGridRender, upsertShelf, applyUpdated, rememberTags, removeLocal,
-    confirmRemove, removeWish, removeWishLocal, collectibleNo, onImageError, cancelSearchTimer };
+    confirmRemove, removeWish, removeWishLocal, collectibleNo, onImageError, cancelSearchTimer, sortingMode,
+    draggingShelfId, enterSortMode, moveShelf, commitSortOrder, cancelSort };
 }

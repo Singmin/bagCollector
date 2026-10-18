@@ -30,7 +30,7 @@ export class FeedService {
     const images = await this.prisma.officialBagImage.findMany({
       where: {
         officialBagId: { in: bagIds },
-        kind: { in: [AssetKind.THUMBNAIL, AssetKind.DISPLAY] },
+        kind: { in: [AssetKind.THUMBNAIL, AssetKind.DISPLAY, AssetKind.THUMBNAIL_PLAIN, AssetKind.DISPLAY_PLAIN] },
         side: { in: ['FRONT', 'BACK'] as const }, status: AssetStatus.AVAILABLE
       },
       orderBy: { version: 'desc' }
@@ -63,7 +63,10 @@ export class FeedService {
   private toFeedItem(bag: BagWithBrand, urlFor: ImageUrlResolver, myCollectibleId?: string): CollectibleDto {
     const thumbnail = urlFor(bag.id, AssetKind.THUMBNAIL);
     const display = urlFor(bag.id, AssetKind.DISPLAY);
+    const thumbnailPlain = urlFor(bag.id, AssetKind.THUMBNAIL_PLAIN);
+    const displayPlain = urlFor(bag.id, AssetKind.DISPLAY_PLAIN);
     const backThumbnail = urlFor(bag.id, AssetKind.THUMBNAIL, 'BACK');
+    const backThumbnailPlain = urlFor(bag.id, AssetKind.THUMBNAIL_PLAIN, 'BACK');
     return {
       id: bag.id, imageEditable: false, sourceOfficialBagId: bag.id, imageRevision: bag.updatedAt.toISOString(),
       name: bag.name,
@@ -75,7 +78,10 @@ export class FeedService {
       ownerName: bag.brand?.name ?? '官方精选',
       ...(thumbnail ? { thumbnailUrl: thumbnail } : {}),
       ...(display ? { displayImageUrl: display } : {}),
+      ...(thumbnailPlain ? { thumbnailUrlPlain: thumbnailPlain } : {}),
+      ...(displayPlain ? { displayImageUrlPlain: displayPlain } : {}),
       ...(backThumbnail ? { backThumbnailUrl: backThumbnail } : {}),
+      ...(backThumbnailPlain ? { backThumbnailUrlPlain: backThumbnailPlain } : {}),
       /* 当前用户已认领该袋子 → 带回认领生成的收藏 id：
          小程序据此恢复「标记已有」已标记态（撤回标记时按这个 id 删除收藏） */
       ...(myCollectibleId ? { myCollectibleId } : {}),

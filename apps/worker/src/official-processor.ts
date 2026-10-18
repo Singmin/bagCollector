@@ -87,22 +87,25 @@ async function writeOfficialRenditions(
      白底 JPEG 是实拍素材，不加描边。参数来自 AppSetting（后台「描边预览」页），ratio=0 时关闭。 */
   const trimmed = transparent ? await trimTransparent(source) : source;
   const strokeParams = transparent ? await getStrokeParams() : null;
-  const material = strokeParams && strokeParams.ratio > 0
-    ? await addWhiteStroke(trimmed, strokeParams)
-    : trimmed;
-  const [display, thumbnail] = await Promise.all([
-    sharp(material, { limitInputPixels: config.MAX_IMAGE_PIXELS })
+  const hasStroke = Boolean(strokeParams && strokeParams.ratio > 0);
+  const material = hasStroke ? await addWhiteStroke(trimmed, strokeParams!) : trimmed;
+  /* 无白边版：只在「实际加了白边」时派生，素材就是 trim 后未描边的同一张透明图。 */
+  const plain = hasStroke ? trimmed : null;
+  const encode = (input: Buffer) => Promise.all([
+    sharp(input, { limitInputPixels: config.MAX_IMAGE_PIXELS })
       .resize({ width: 2048, height: 2048, fit: 'inside', withoutEnlargement: true })
       .png({ compressionLevel: 6 })
       .toBuffer({ resolveWithObject: true }),
-    sharp(material, { limitInputPixels: config.MAX_IMAGE_PIXELS })
+    sharp(input, { limitInputPixels: config.MAX_IMAGE_PIXELS })
       .resize({ width: 512, height: 512, fit: 'inside', withoutEnlargement: true })
       .webp({ quality: 82, ...(transparent ? { alphaQuality: 90 } : {}) })
       .toBuffer({ resolveWithObject: true })
   ]);
+  const [display, thumbnail] = await encode(material);
+  const plainPair = plain ? await encode(plain) : null;
   if (!display.info.width || !display.info.height) throw new Error('无法读取展示图尺寸');
   if (!thumbnail.info.width || !thumbnail.info.height) throw new Error('无法读取缩略图尺寸');
-  await Promise.all([
+  const writes = [
     upsertOfficialAsset({
       officialBagId: data.officialBagId, side: data.side ?? ImageSide.FRONT, sourceVersion: data.sourceVersion,
       kind: AssetKind.DISPLAY,
@@ -123,7 +126,35 @@ async function writeOfficialRenditions(
       height: thumbnail.info.height,
       version: data.version
     })
-  ]);
+  ];
+  if (plainPair) {
+    const [plainDisplay, plainThumbnail] = plainPair;
+    if (!plainDisplay.info.width || !plainDisplay.info.height) throw new Error('无法读取无白边展示图尺寸');
+    if (!plainThumbnail.info.width || !plainThumbnail.info.height) throw new Error('无法读取无白边缩略图尺寸');
+    writes.push(
+      upsertOfficialAsset({
+        officialBagId: data.officialBagId, side: data.side ?? ImageSide.FRONT, sourceVersion: data.sourceVersion,
+        kind: AssetKind.DISPLAY_PLAIN,
+        key: `${baseKey}/display-plain/v${data.version}.png`,
+        contentType: 'image/png',
+        body: plainDisplay.data,
+        width: plainDisplay.info.width,
+        height: plainDisplay.info.height,
+        version: data.version
+      }),
+      upsertOfficialAsset({
+        officialBagId: data.officialBagId, side: data.side ?? ImageSide.FRONT, sourceVersion: data.sourceVersion,
+        kind: AssetKind.THUMBNAIL_PLAIN,
+        key: `${baseKey}/thumbnail-plain/v${data.version}.webp`,
+        contentType: 'image/webp',
+        body: plainThumbnail.data,
+        width: plainThumbnail.info.width,
+        height: plainThumbnail.info.height,
+        version: data.version
+      })
+    );
+  }
+  await Promise.all(writes);
 }
 
 /**

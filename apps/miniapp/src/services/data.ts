@@ -3,18 +3,27 @@ import type { Brand, Collectible, CollectiblePage, OfficialBag, OfficialBagMatch
 import { api } from './http';
 import { localizeCollectibleImages } from './images';
 import { markCollectionDataStale } from './collection-state';
+import { applyStrokePreference, ensureStrokePreference } from './stroke-preference';
+
+/* 先确保白边偏好已加载，再应用偏好覆盖 URL；消除启动时「数据先到、偏好后到」的竞态。 */
+async function applyPreference<T>(item: T): Promise<T> {
+  await ensureStrokePreference();
+  return applyStrokePreference(item);
+}
 
 async function collectible(id: string) {
-  return localizeCollectibleImages(await api<Collectible>(`/collectibles/${id}`));
+  return localizeCollectibleImages(await applyPreference(await api<Collectible>(`/collectibles/${id}`)));
 }
 
 async function collectibles(query = '') {
-  return api<CollectiblePage>(`/collectibles${query ? `?${query}` : ''}`);
+  const page = await api<CollectiblePage>(`/collectibles${query ? `?${query}` : ''}`);
+  return { ...page, items: await Promise.all(page.items.map(applyPreference)) };
 }
 
 /* 发现页「纸袋上新」官方精选（返回完整条目：背面要展示标签与备注） */
 async function feed(query = '') {
-  return api<CollectiblePage>(`/feed${query ? `?${query}` : ''}`);
+  const page = await api<CollectiblePage>(`/feed${query ? `?${query}` : ''}`);
+  return { ...page, items: await Promise.all(page.items.map(applyPreference)) };
 }
 
 async function changed<T>(request: Promise<T>) {
@@ -28,7 +37,7 @@ async function updateCollectible(
   data: Partial<Pick<Collectible, 'name' | 'notes' | 'shelfId' | 'tags' | 'addedAt' | 'quantity' | 'visibility'>>
 ) {
   const item = await changed(api<Collectible>(`/collectibles/${id}`, { method: 'PUT', data }));
-  return localizeCollectibleImages(item);
+  return localizeCollectibleImages(await applyPreference(item));
 }
 
 export const dataService = {
@@ -41,10 +50,13 @@ export const dataService = {
   collectible,
   feed,
   /* 逛袋子页：官方袋子列表（支持 search / brandId / cursor / limit）与品牌分类 */
-  officialBags: (query = '') => api<OfficialBagPage>(`/official-bags${query ? `?${query}` : ''}`),
-  officialBag: (id: string) => api<OfficialBag>(`/official-bags/${id}`),
+  officialBags: async (query = '') => {
+    const page = await api<OfficialBagPage>(`/official-bags${query ? `?${query}` : ''}`);
+    return { ...page, items: await Promise.all(page.items.map(applyPreference)) };
+  },
+  officialBag: async (id: string) => applyPreference(await api<OfficialBag>(`/official-bags/${id}`)),
   officialBagBrands: () => api<Brand[]>('/official-bags/brands'),
-  wishlist: () => api<Collectible[]>(`/wishlist`),
+  wishlist: async () => Promise.all((await api<Collectible[]>(`/wishlist`)).map(applyPreference)),
   addWishlist: (id: string) => api(`/wishlist/${id}`, { method: 'POST' }).then(() => markCollectionDataStale()),
   removeWishlist: (id: string) => api(`/wishlist/${id}`, { method: 'DELETE' }).then(() => markCollectionDataStale()),
   createCollectible: (data: { name: string; shelfId: string; thumbnailUrl?: string; displayImageUrl?: string; notes?: string; tags?: string[] }) =>

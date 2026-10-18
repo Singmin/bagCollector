@@ -169,6 +169,13 @@ export const wechatLoginSchema = z.object({
 export const refreshSchema = z.object({ refreshToken: z.string().min(32) });
 export const logoutSchema = refreshSchema;
 
+/** PUT /account —— 更新用户级偏好（目前只有白边开关，将来可扩展）。
+    用 PUT 而非 PATCH：微信小程序 wx.request 的 method 白名单不含 PATCH。 */
+export const updateAccountSchema = z.object({
+  whiteStrokeEnabled: z.boolean()
+});
+export type UpdateAccountInput = z.infer<typeof updateAccountSchema>;
+
 export const adminLoginSchema = z.object({
   username: z.string().trim().min(1).max(80),
   password: z.string().min(8).max(256)
@@ -270,9 +277,13 @@ export interface CollectibleSummaryDto {
   shelfName: string;
   processingStatus: ProcessingStatus;
   thumbnailUrl?: string;
+  /** 无白边版缩略图：仅「加了白边」的透明口径返回；缺失时前端回退 thumbnailUrl。 */
+  thumbnailUrlPlain?: string;
   /** 摘要级 B 面缩略图：有值即表示该收藏/袋子存在已发布的 B 面图。
       小程序详情卡据此在打开瞬间就按 A/B 并排布局渲染，不必等详情接口返回。 */
   backThumbnailUrl?: string;
+  /** 摘要级 B 面无白边缩略图：与 backThumbnailUrl 对应，缺失回退 backThumbnailUrl。 */
+  backThumbnailUrlPlain?: string;
   addedAt: string;
   updatedAt: string;
   /** 发现页 feed / 心愿袋条目的主人昵称（官方精选时为品牌名）；用户自己的收藏没有该字段。 */
@@ -294,6 +305,8 @@ export interface CollectibleDto extends CollectibleSummaryDto {
   tags: string[];
   processingError?: string;
   displayImageUrl?: string;
+  /** 无白边版展示图：仅「加了白边」的透明口径返回；缺失时前端回退 displayImageUrl。 */
+  displayImageUrlPlain?: string;
   standardImageUrl?: string;
 }
 
@@ -315,6 +328,9 @@ export interface OfficialBagDto {
   publishedAt?: string;
   thumbnailUrl?: string;
   displayImageUrl?: string;
+  /** 无白边版缩略图/展示图：仅「加了白边」的透明口径返回；缺失时前端回退有白边版。 */
+  thumbnailUrlPlain?: string;
+  displayImageUrlPlain?: string;
   /** 用户端专用：当前用户是否已拥有过该袋子。 */
   claimed?: boolean;
   /** 管理后台专用：是否已生成当前扫描模型（DINO）的主参考特征向量。 */

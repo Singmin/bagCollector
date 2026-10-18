@@ -36,6 +36,8 @@ export class OfficialBagsService {
     const resolved = await imageData(this.prisma, this.cos, bag.id, true);
     const thumbnailUrl = resolved.sides.FRONT?.thumbnailUrl;
     const displayUrl = resolved.sides.FRONT?.displayImageUrl;
+    const thumbnailUrlPlain = resolved.sides.FRONT?.thumbnailUrlPlain;
+    const displayUrlPlain = resolved.sides.FRONT?.displayImageUrlPlain;
     return {
       id: bag.id, ...resolved,
       name: bag.name,
@@ -52,6 +54,8 @@ export class OfficialBagsService {
       ...(bag.publishedAt ? { publishedAt: bag.publishedAt.toISOString() } : {}),
       ...(thumbnailUrl ? { thumbnailUrl } : {}),
       ...(displayUrl ? { displayImageUrl: displayUrl } : {}),
+      ...(thumbnailUrlPlain ? { thumbnailUrlPlain } : {}),
+      ...(displayUrlPlain ? { displayImageUrlPlain: displayUrlPlain } : {}),
       ...(claimed !== undefined ? { claimed } : {}),
       createdAt: bag.createdAt.toISOString(),
       updatedAt: bag.updatedAt.toISOString()

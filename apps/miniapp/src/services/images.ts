@@ -1,5 +1,6 @@
 import { runtimeConfig } from '../config';
 import type { Collectible, CollectibleSummary } from '../types';
+import { strokeRevision } from './stroke-preference';
 
 const downloaded = new Map<string, Promise<string>>();
 const thumbnails = new Map<string, Promise<string>>();
@@ -62,7 +63,8 @@ function queuedLocalFile(url: string) {
 export function resolveCollectibleThumbnail(item: CollectibleSummary): Promise<string | undefined> {
   if (!item.thumbnailUrl) return Promise.resolve(undefined);
   if (!needsDownload(item.thumbnailUrl)) return Promise.resolve(item.thumbnailUrl);
-  const key = `${item.id}:${item.imageRevision ?? item.updatedAt}`;
+  /* 缓存 key 纳入白边偏好版本：切换白边开关后缩略图 URL 会变，必须让旧缓存失效重新下载 */
+  const key = `${item.id}:${item.imageRevision ?? item.updatedAt}:${strokeRevision()}`;
   let pending = thumbnails.get(key);
   if (!pending) {
     pending = queuedLocalFile(item.thumbnailUrl);
