@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { onShow } from '@dcloudio/uni-app';
-import type { CollectibleSummary, Shelf, ShelfTheme } from '../../types';
+import type { CollectibleSummary } from '../../types';
 import { dataService } from '../../services/data';
 
 /* ── 收藏日历页（从首页日历入口进入）──
@@ -36,25 +36,43 @@ const viewMonth = ref(now.getMonth()); // 0-11
 const selectedDate = ref('');
 /* 分段视图：纸袋（日历）/ 店铺 */
 const viewMode = ref<'bags' | 'shops'>('bags');
-const shelves = ref<Shelf[]>([]);
-const shelvesLoading = ref(false);
-const shelfError = ref('');
+/* 店铺视图：官方袋子 → 品牌展示图（品牌管理上传的 logo），按 sourceOfficialBagId 间接取 */
+const bagBrandIds = ref<Map<string, string | undefined>>(new Map());
+const brandLogos = ref<Map<string, string>>(new Map());
+const officialLoading = ref(false);
 
-async function loadShelves() {
-  if (shelvesLoading.value || shelves.value.length) return;
-  shelvesLoading.value = true;
-  shelfError.value = '';
+async function loadOfficialImages() {
+  if (officialLoading.value || bagBrandIds.value.size) return;
+  officialLoading.value = true;
   try {
-    shelves.value = await dataService.shelves();
-  } catch (error) {
-    shelfError.value = error instanceof Error ? error.message : '店铺加载失败';
+    const [brands, bagIds] = await Promise.all([
+      dataService.officialBagBrands(),
+      (async () => {
+        const map = new Map<string, string | undefined>();
+        let cursor: string | null = null;
+        let guard = 0;
+        do {
+          const query = `limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
+          const page = await dataService.officialBags(query);
+          for (const bag of page.items) map.set(bag.id, bag.brandId);
+          cursor = page.nextCursor;
+          guard += 1;
+        } while (cursor && guard < 50);
+        return map;
+      })()
+    ]);
+    brandLogos.value = new Map(brands.map((brand) => [brand.id, brand.displayImageUrl ?? '']));
+    bagBrandIds.value = bagIds;
+  } catch {
+    /* 静默失败：回退到收藏自带的缩略图 */
   } finally {
-    shelvesLoading.value = false;
+    officialLoading.value = false;
   }
 }
 
 watch(viewMode, (mode) => {
-  if (mode === 'shops') void loadShelves();
+  failedThumbs.value = {};
+  if (mode === 'shops') void loadOfficialImages();
 });
 
 interface Cell {
@@ -108,27 +126,6 @@ const streak = computed(() => {
   return { current, longest };
 });
 
-/* 店铺视图：主题色映射 + 每家店铺（排序 + 该 shelfId 的缩略图前 3 张） */
-const themeColor = (theme: ShelfTheme): string =>
-  ({ SAGE: '#75a88d', AMBER: '#f09a2a', SKY: '#229ee8', ROSE: '#fd53c0', GRAPHITE: '#6b6b70' } as Record<ShelfTheme, string>)[theme] ?? '#8a8a90';
-
-const shopRows = computed(() =>
-  shelves.value
-    .slice()
-    .sort((a, b) => a.sortOrder - b.sortOrder)
-    .map((shelf) => {
-      const thumbs: string[] = [];
-      for (const list of grouped.value.values()) {
-        for (const item of list) {
-          if (item.shelfId === shelf.id && item.thumbnailUrl && thumbs.length < 3) thumbs.push(item.thumbnailUrl);
-          if (thumbs.length >= 3) break;
-        }
-        if (thumbs.length >= 3) break;
-      }
-      return { shelf, thumbs };
-    })
-);
-
 /* 本月收集的袋子缩略图（照片墙素材，按时间顺序取前 4 张 + 更多计数） */
 const monthThumbs = computed(() => {
   const prefix = `${viewYear.value}-${pad2(viewMonth.value + 1)}`;
@@ -145,7 +142,14 @@ const wallMore = computed(() => Math.max(0, monthThumbs.value.length - 4));
 /* 某天的封面缩略图（当天第一件）；贴纸风优先用无白边抠图 */
 function coverOf(date: string) {
   const item = grouped.value.get(date)?.[0];
-  return item?.thumbnailUrlPlain ?? item?.thumbnailUrl ?? '';
+  if (!item) return '';
+  /* 店铺视图：认领官方袋子时改贴品牌管理的品牌展示图（logo），未配置则回退收藏自带缩略图 */
+  if (viewMode.value === 'shops' && item.sourceOfficialBagId) {
+    const brandId = bagBrandIds.value.get(item.sourceOfficialBagId);
+    const logo = brandId ? brandLogos.value.get(brandId) : '';
+    if (logo) return logo;
+  }
+  return item.thumbnailUrlPlain ?? item.thumbnailUrl ?? '';
 }
 
 /* 稳定伪随机倾斜角：同一天角度固定（-10° ~ +10°） */
@@ -276,7 +280,7 @@ onShow(() => {
           <text class="month__f">全部 ▾</text>
         </view>
 
-        <template v-if="viewMode === 'bags'">
+        <template>
           <!-- 白色日历卡：星期头 + 日期网格 -->
           <view class="cal-card">
             <view class="dow-row">
@@ -345,31 +349,6 @@ onShow(() => {
             </view>
           </view>
         </template>
-
-        <!-- 店铺视图：品牌分组列表 -->
-        <view v-else class="shops">
-          <view v-if="shelvesLoading && !shelves.length" class="shops-empty">
-            <text class="shops-empty__s">店铺加载中…</text>
-          </view>
-          <view v-else-if="shelfError" class="shops-empty">
-            <text class="shops-empty__s">{{ shelfError }}</text>
-          </view>
-          <view v-else-if="!shelves.length" class="shops-empty">
-            <text class="shops-empty__t">还没有店铺</text>
-            <text class="shops-empty__s">在收藏架里新建一个展示架吧</text>
-          </view>
-          <view v-for="row in shopRows" :key="row.shelf.id" class="shop">
-            <view class="shop__logo" :style="{ background: themeColor(row.shelf.theme) }">{{ row.shelf.name.slice(0, 1) }}</view>
-            <view class="shop__info">
-              <text class="shop__nm">{{ row.shelf.name }}</text>
-              <text class="shop__meta">{{ row.shelf.itemCount }} 件收藏</text>
-            </view>
-            <view v-if="row.thumbs.length" class="shop__thumbs">
-              <image v-for="(url, i) in row.thumbs" :key="i" class="shop__thumb" :src="url" mode="aspectFill" />
-            </view>
-            <text class="shop__go">›</text>
-          </view>
-        </view>
       </view>
     </scroll-view>
   </view>
@@ -444,21 +423,6 @@ onShow(() => {
 .cellp__img { position: absolute; left: 0; top: -29%; width: 100%; height: 132%; }
 .cellp--more::after { content: ""; position: absolute; inset: 0; background: rgba(17,17,19,.42); }
 .cellp__em { position: absolute; inset: 0; z-index: 2; display: flex; align-items: center; justify-content: center; font-style: normal; font-size: 22rpx; font-weight: 700; color: #ffffff; }
-
-/* ── 店铺视图：品牌分组列表 ── */
-.shops { display: flex; flex-direction: column; gap: 16rpx; }
-.shop { display: flex; align-items: center; gap: 20rpx; background: #ffffff; border-radius: 20rpx; padding: 20rpx 24rpx; box-shadow: 0 2rpx 6rpx rgba(0,0,0,.045); }
-.shop__logo { flex: none; width: 76rpx; height: 76rpx; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 30rpx; font-weight: 700; color: #ffffff; letter-spacing: -.4rpx; }
-.shop__info { flex: 1 1 auto; min-width: 0; }
-.shop__nm { display: block; font-size: 28rpx; font-weight: 600; color: #111113; letter-spacing: -.2rpx; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.shop__meta { display: block; margin-top: 4rpx; font-size: 21rpx; color: #8a8a90; }
-.shop__thumbs { flex: none; display: flex; gap: 6rpx; }
-.shop__thumb { width: 44rpx; height: 56rpx; border-radius: 8rpx; background: #ffffff; border: 1.6rpx solid #ececee; box-sizing: border-box; }
-.shop__go { flex: none; width: 32rpx; text-align: center; font-size: 28rpx; color: #c2c2c8; }
-
-.shops-empty { display: flex; flex-direction: column; align-items: center; gap: 12rpx; padding: 160rpx 0; }
-.shops-empty__t { font-size: 30rpx; font-weight: 600; color: #111113; }
-.shops-empty__s { font-size: 24rpx; color: #8a8a90; }
 </style>
 
 <style>

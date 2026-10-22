@@ -99,6 +99,8 @@ export interface UploadPolicy {
 export interface Brand {
   id: string;
   name: string;
+  /** 品牌展示图（logo）：品牌管理上传，未上传时缺省 */
+  displayImageUrl?: string;
   /** 旗下可见袋子数量 */
   bagCount: number;
 }

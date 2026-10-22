@@ -63,7 +63,8 @@ export class OfficialBagsService {
   }
 
   /** 用户端品牌分类列表：只返回「旗下有可见袋子」的品牌，按件数从多到少。
-      逛袋子页据此渲染分类 chips；件数只统计已发布且处理完成的袋子，与列表口径一致。
+      逛袋子页据此渲染分类 chips；日历「店铺」视图用 displayImageUrl 渲染品牌展示图（logo）。
+      件数只统计已发布且处理完成的袋子，与列表口径一致。
       排序：件数降序为主键（用户 2026-10-13 要求数量多的靠前），
       同件数时保持上面的 sortOrder desc + 名称序 —— 这里用 sort 的稳定性接住。 */
   async brands() {
@@ -80,10 +81,18 @@ export class OfficialBagsService {
       })
     ]);
     const countMap = new Map(counts.map((row) => [row.brandId as string, row._count._all]));
-    return brands
-      .map((brand) => ({ id: brand.id, name: brand.name, bagCount: countMap.get(brand.id) ?? 0 }))
-      .filter((brand) => brand.bagCount > 0)
+    const visible = brands
+      .map((brand) => ({ brand, bagCount: countMap.get(brand.id) ?? 0 }))
+      .filter((row) => row.bagCount > 0)
       .sort((a, b) => b.bagCount - a.bagCount);
+    return Promise.all(
+      visible.map(async ({ brand, bagCount }) => ({
+        id: brand.id,
+        name: brand.name,
+        ...(brand.displayImageKey ? { displayImageUrl: await this.cos.signedUrl(brand.displayImageKey) } : {}),
+        bagCount
+      }))
+    );
   }
 
   /** 发现页列表：只返回已发布且图片处理完成的袋子，支持按品牌筛选。 */
