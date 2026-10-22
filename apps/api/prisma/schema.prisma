@@ -108,6 +108,9 @@ enum ReleaseNoteStatus {
 model Brand {
   id        String       @id @default(cuid())
   name      String       @unique
+  // 品牌展示图：存 COS objectKey，URL 由 API 按环境动态生成；key 自带 v{n} 版本避免 CDN 缓存。
+  displayImageKey     String?
+  displayImageVersion Int     @default(0)
   sortOrder Int          @default(0)
   createdAt DateTime     @default(now())
   updatedAt DateTime     @updatedAt

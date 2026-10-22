@@ -41,4 +41,18 @@ export class BrandsAdminController {
   remove(@Req() request: FastifyRequest & { adminAuth?: AdminAuth }, @Param('id') id: string) {
     return this.brands.remove(currentAdmin(request).adminId, id);
   }
+
+  /** 上传/替换品牌展示图（multipart 单文件，字段名 file）。 */
+  @Post(':id/image')
+  async uploadImage(@Req() request: FastifyRequest & { adminAuth?: AdminAuth }, @Param('id') id: string) {
+    const file = await request.file();
+    if (!file) throw new ApiError('UPLOAD_INVALID', '没有收到图片文件', HttpStatus.BAD_REQUEST);
+    const body = await file.toBuffer();
+    return this.brands.uploadImage(currentAdmin(request).adminId, id, { body, contentType: file.mimetype });
+  }
+
+  @Delete(':id/image')
+  removeImage(@Req() request: FastifyRequest & { adminAuth?: AdminAuth }, @Param('id') id: string) {
+    return this.brands.removeDisplayImage(currentAdmin(request).adminId, id);
+  }
 }

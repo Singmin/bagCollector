@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, getCurrentInstance, nextTick, ref, watch } from 'vue';
+import { getCurrentInstance, nextTick, ref, watch } from 'vue';
 import { onHide, onShow, onShareAppMessage, onShareTimeline } from '@dcloudio/uni-app';
 import type { Collectible, CollectibleSummary, Shelf } from '../../types';
 import { dataService } from '../../services/data';
@@ -52,8 +52,6 @@ const headerTop = ref(0);
 const exploreTop = ref(0);
 const exploreRight = ref(10);
 const exploreSize = ref(28);
-/* 日历入口：紧贴搜索钮左侧（right = 搜索 right + 尺寸 + 间隙），尺寸与垂直定位同搜索钮 */
-const calendarRight = computed(() => exploreRight.value + exploreSize.value + 10);
 // #ifdef MP-WEIXIN
 try {
   const capsule = uni.getMenuButtonBoundingClientRect();
@@ -158,7 +156,6 @@ function shortDate(value: string) { return formattedDate(value).slice(5).replace
 function isHero(item: CollectibleSummary) { return heroItem.value?.id === item.id; }
 function openLibrary() { uni.switchTab({ url: '/pages/library/index' }); }
 function goExplore() { uni.navigateTo({ url: '/pages/explore/index' }); }
-function goCalendar() { uni.navigateTo({ url: '/pages/calendar/index' }); }
 let refreshPromise: Promise<void> | undefined;
 
 function assertRenderable(nextItems: CollectibleSummary[]) {
@@ -526,23 +523,6 @@ async function onRefresherRefresh() {
         <text class="bags-tagline">收集每一个纸袋的故事</text>
       </view>
     </view>
-
-    <!-- 日历入口：贴搜索钮左侧（同尺寸、同垂直定位），任何状态都在 -->
-    <button
-      class="gallery-entry"
-      aria-label="打开收藏日历"
-      hover-class="gallery-entry--pressed"
-      :hover-stay-time="80"
-      :style="{ top: `${exploreTop}px`, right: `${calendarRight}px`, width: `${exploreSize}px`, height: `${exploreSize}px` }"
-      @tap="goCalendar"
-    >
-      <image
-        class="gallery-entry__icon"
-        :style="{ width: `${Math.round(exploreSize * 0.55)}px`, height: `${Math.round(exploreSize * 0.55)}px` }"
-        src="/static/figma/calendar.svg"
-        mode="aspectFit"
-      />
-    </button>
 
     <!-- 官方图鉴入口：贴微信胶囊左侧，任何状态（空数据/加载失败）都在 -->
     <button

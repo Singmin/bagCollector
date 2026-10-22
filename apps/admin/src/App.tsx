@@ -106,6 +106,7 @@ interface Brand {
   id: string;
   name: string;
   sortOrder: number;
+  displayImageUrl?: string;
   bagCount: number;
   createdAt: string;
   updatedAt: string;
@@ -817,6 +818,15 @@ export function App() {
                   pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (total) => `共 ${total} 个` }}
                   scroll={{ x: 640 }}
                   columns={[
+                    {
+                      title: '展示图',
+                      dataIndex: 'displayImageUrl',
+                      key: 'displayImageUrl',
+                      width: 90,
+                      render: (url?: string) => url
+                        ? <Image src={url} width={48} height={48} style={{ objectFit: 'cover', borderRadius: 4 }} />
+                        : <Typography.Text type="secondary">—</Typography.Text>
+                    },
                     { title: '品牌名称', dataIndex: 'name', key: 'name', render: (name: string) => <Typography.Text strong>{name}</Typography.Text> },
                     { title: '袋子数量', dataIndex: 'bagCount', key: 'bagCount', width: 100 },
                     { title: '排序', dataIndex: 'sortOrder', key: 'sortOrder', width: 100 },
@@ -1983,6 +1993,15 @@ function BrandEditor({
   const { message } = AntdApp.useApp();
   const isMobile = useIsMobile();
   const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [displayFile, setDisplayFile] = useState<UploadFile[]>([]);
+
+  async function uploadTo(brandId: string, file: File) {
+    const data = new FormData();
+    data.append('file', file);
+    return api<Brand>(`/brands/${brandId}/image`, { method: 'POST', body: data });
+  }
 
   async function save(values: BrandFormValues) {
     setSaving(true);
@@ -1991,10 +2010,17 @@ function BrandEditor({
         name: values.name.trim(),
         ...(brand ? { sortOrder: values.sortOrder } : {})
       };
+      let targetId = brand?.id;
       if (brand) {
         await api(`/brands/${brand.id}`, { method: 'PATCH', body: JSON.stringify(payload) });
       } else {
-        await api('/brands', { method: 'POST', body: JSON.stringify(payload) });
+        const created = await api<Brand>('/brands', { method: 'POST', body: JSON.stringify(payload) });
+        targetId = created.id;
+      }
+      const file = displayFile[0]?.originFileObj;
+      if (targetId && file) {
+        await uploadTo(targetId, file);
+        setDisplayFile([]);
       }
       message.success('保存成功');
       onDone();
@@ -2002,6 +2028,39 @@ function BrandEditor({
       message.error(requestError instanceof Error ? requestError.message : '保存失败');
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function replaceImage() {
+    if (!brand) return;
+    const file = displayFile[0]?.originFileObj;
+    if (!file) {
+      message.warning('请先点击「选择图片」选一张图片');
+      return;
+    }
+    setUploading(true);
+    try {
+      await uploadTo(brand.id, file);
+      message.success('展示图已更新');
+      onDone();
+    } catch (requestError) {
+      message.error(requestError instanceof Error ? requestError.message : '上传失败');
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function removeImage() {
+    if (!brand) return;
+    setRemoving(true);
+    try {
+      await api(`/brands/${brand.id}/image`, { method: 'DELETE' });
+      message.success('展示图已移除');
+      onDone();
+    } catch (requestError) {
+      message.error(requestError instanceof Error ? requestError.message : '移除失败');
+    } finally {
+      setRemoving(false);
     }
   }
 
@@ -2026,6 +2085,33 @@ function BrandEditor({
         >
           <Input placeholder="例如：Louis Vuitton" maxLength={80} />
         </Form.Item>
+        <Form.Item label="展示图">
+          <Space direction="vertical" style={{ width: '100%' }}>
+            {brand?.displayImageUrl
+              ? <Image src={brand.displayImageUrl} width={120} height={120} style={{ objectFit: 'contain' }} />
+              : <Typography.Text type="secondary">暂无展示图</Typography.Text>}
+            <Upload
+              accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
+              maxCount={1}
+              fileList={displayFile}
+              beforeUpload={() => false}
+              onChange={({ fileList: files }) => setDisplayFile(files)}
+            >
+              <Button icon={<UploadOutlined />}>选择图片</Button>
+            </Upload>
+            {brand && (
+              <Space>
+                <Button onClick={() => void replaceImage()} loading={uploading}>上传 / 替换</Button>
+                {brand.displayImageUrl && (
+                  <Popconfirm title="移除展示图？" onConfirm={() => void removeImage()}>
+                    <Button danger size="small" loading={removing}>移除图片</Button>
+                  </Popconfirm>
+                )}
+              </Space>
+            )}
+          </Space>
+          <Typography.Text type="secondary">保存后将上传已选择的展示图。</Typography.Text>
+        </Form.Item>
         {brand && (
           <Form.Item name="sortOrder" label="排序（数字越大越靠前）">
             <InputNumber min={0} style={{ width: '100%' }} />
@@ -2034,7 +2120,7 @@ function BrandEditor({
         <Form.Item style={{ marginBottom: 0 }}>
           <Space style={{ display: 'flex', justifyContent: 'flex-end' }}>
             <Button onClick={onClose}>取消</Button>
-            <Button type="primary" htmlType="submit" loading={saving}>保存</Button>
+            <Button type="primary" htmlType="submit" loading={saving || uploading}>保存</Button>
           </Space>
         </Form.Item>
       </Form>

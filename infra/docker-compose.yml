@@ -10,6 +10,12 @@
 # 映射到 127.0.0.1，仅供宿主机上的宝塔面板或数据库客户端连接。
 #
 # 变量来源：infra/.env.deploy（由 deploy.sh 通过 --env-file 指定）。
+#
+# 内存分配（2026-10-21 内存耗尽事故后加的硬限制）：
+# 这台服务器物理内存仅 2GB，若不给容器设上限，任一容器（尤其 postgres / Node worker）
+# 都会随负载膨胀，最终物理内存 + swap 全部耗尽导致系统 thrashing 冻死。
+# 各服务 mem_limit 是「上限」而非「预留」，正常不会同时打满；但总和仍略超 2GB，
+# 根治要靠升配内存（建议 8GB），以下限制只是防单个容器失控的兜底。
 
 # 日志轮转。宝塔服务器上最常见的事故就是容器日志把 /var/lib/docker 撑满，
 # 进而整个 docker daemon 挂掉。默认 json-file 是无限增长的，必须显式限制。
@@ -24,11 +30,15 @@ services:
     image: postgres:17-alpine
     restart: unless-stopped
     logging: *default-logging
+    # 内存上限：2GB 小内存机器必须显式限制，否则 postgres 会随负载膨胀吃光内存。
+    mem_limit: 512m
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-bagcollect}
       POSTGRES_USER: ${POSTGRES_USER:-bagcollect}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
       TZ: Asia/Shanghai
+    # 覆盖默认 CMD，把 shared_buffers 等参数压低到 512m 上限内。
+    command: ["postgres", "-c", "shared_buffers=96MB", "-c", "work_mem=4MB", "-c", "maintenance_work_mem=32MB", "-c", "effective_cache_size=256MB"]
     # 密码会原样拼进 DATABASE_URL，因此 POSTGRES_PASSWORD 必须是 URL-safe 的
     # （只用字母数字）。详见 infra/.env.deploy.example。
     ports:
@@ -45,8 +55,10 @@ services:
     image: redis:7.4-alpine
     restart: unless-stopped
     logging: *default-logging
+    # 内存上限：防止 redis 膨胀。maxmemory 略低于 mem_limit，给 AOF 缓冲留余量。
+    mem_limit: 256m
     # noeviction：BullMQ 的任务队列数据不能被 LRU 逐出，否则会静默丢任务。
-    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction", "--maxmemory", "200mb"]
     ports:
       - "127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"
     volumes:
@@ -65,7 +77,9 @@ services:
   migrate:
     image: ${API_IMAGE:?set API_IMAGE}
     logging: *default-logging
-    command: ["node", "apps/api/node_modules/prisma/build/index.js", "migrate", "deploy", "--schema", "apps/api/prisma/schema.prisma"]
+    # 一次性迁移任务，也加上限，防止 prisma 引擎加载 schema 时内存失控。
+    mem_limit: 512m
+    command: ["node", "--max-old-space-size=384", "apps/api/node_modules/prisma/build/index.js", "migrate", "deploy", "--schema", "apps/api/prisma/schema.prisma"]
     env_file: ${BAGCOLLECT_RUNTIME_ENV_FILE:-.env.deploy}
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-bagcollect}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bagcollect}
@@ -78,9 +92,11 @@ services:
     image: ${API_IMAGE:?set API_IMAGE}
     restart: unless-stopped
     logging: *default-logging
+    # 内存上限 + V8 堆上限，防止 Node 进程在重负载下无限膨胀。
+    mem_limit: 512m
     # api 与 worker 共用同一个镜像（见 infra/Dockerfile 顶部的合并说明），
     # 所以两个服务都必须显式写 command，不依赖镜像的默认 CMD。
-    command: ["node", "apps/api/dist/main.js"]
+    command: ["node", "--max-old-space-size=384", "apps/api/dist/main.js"]
     env_file: ${BAGCOLLECT_RUNTIME_ENV_FILE:-.env.deploy}
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-bagcollect}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bagcollect}
@@ -110,7 +126,9 @@ services:
     image: ${API_IMAGE:?set API_IMAGE}
     restart: unless-stopped
     logging: *default-logging
-    command: ["node", "apps/worker/dist/main.js"]
+    # 内存上限 + V8 堆上限。worker 处理图片 Buffer 属外部内存，主要靠 mem_limit 兜底。
+    mem_limit: 512m
+    command: ["node", "--max-old-space-size=384", "apps/worker/dist/main.js"]
     env_file: ${BAGCOLLECT_RUNTIME_ENV_FILE:-.env.deploy}
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-bagcollect}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bagcollect}
@@ -137,7 +155,9 @@ services:
     image: ${API_IMAGE:?set API_IMAGE}
     restart: unless-stopped
     logging: *default-logging
-    command: ["node", "apps/worker/dist/scan-main.js"]
+    # 内存上限 + V8 堆上限。
+    mem_limit: 512m
+    command: ["node", "--max-old-space-size=384", "apps/worker/dist/scan-main.js"]
     env_file: ${BAGCOLLECT_RUNTIME_ENV_FILE:-.env.deploy}
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-bagcollect}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bagcollect}
@@ -196,6 +216,8 @@ services:
     image: ${ADMIN_IMAGE:?set ADMIN_IMAGE}
     restart: unless-stopped
     logging: *default-logging
+    # 纯静态站点（nginx），很小，给个低上限即可。
+    mem_limit: 64m
     ports:
       - "127.0.0.1:${ADMIN_HOST_PORT:-8081}:80"
 

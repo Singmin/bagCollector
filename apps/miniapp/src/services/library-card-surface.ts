@@ -13,7 +13,8 @@ export const SURFACE_LIMIT = 8;
 export const SURFACE_IDLE_DELAY = 1200;
 export const SURFACE_SCROLL_DELAY = 200;
 export const SURFACE_TRANSITION = 100;
-const DEVICE_SURFACE_SCALE = 0.8;
+// 陀螺仪倾角 → 卡片旋转角度的增益系数。调小可降低卡片随手持抖动的幅度。
+const DEVICE_SURFACE_SCALE = 0.5;
 
 // A delayed start callback from an old card must not stop a newer card's sensor.
 let sensorSequence = 0;

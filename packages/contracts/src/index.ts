@@ -380,6 +380,8 @@ export interface BrandDto {
   id: string;
   name: string;
   sortOrder: number;
+  /** 品牌展示图 URL（管理端返回，未上传时缺省）。 */
+  displayImageUrl?: string;
   /** 旗下袋子数量（管理端返回）。 */
   bagCount: number;
   createdAt: string;
