@@ -12,7 +12,8 @@
         { "path": "pages/add/index", "style": { "navigationStyle": "custom", "disableScroll": true } },
         { "path": "pages/crop/index", "style": { "navigationStyle": "custom", "disableScroll": true } },
         { "path": "pages/processing/index", "style": { "navigationBarTitleText": "自动抠图" } },
-        { "path": "pages/metadata/index", "style": { "navigationStyle": "custom" } }
+        { "path": "pages/metadata/index", "style": { "navigationStyle": "custom" } },
+        { "path": "pages/brand/index", "style": { "navigationStyle": "custom", "disableScroll": true } }
       ]
     },
     {
@@ -35,7 +36,8 @@
     "backgroundColor": "#f2f3f7",
     "list": [
       { "pagePath": "pages/showcase/index", "text": "陈列" },
-      { "pagePath": "pages/library/index", "text": "全部收藏" }
+      { "pagePath": "pages/library/index", "text": "全部收藏" },
+      { "pagePath": "pages/calendar/index", "text": "收藏日历" }
     ]
   },
   "easycom": { "autoscan": true }

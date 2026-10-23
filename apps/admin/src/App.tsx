@@ -1,5 +1,5 @@
 import type { ImageSide, ImageSideDto } from '../../../packages/contracts/src/image-sides';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   App as AntdApp,
   Alert,
@@ -43,6 +43,7 @@ import {
   MenuFoldOutlined,
   PlusOutlined,
   ReloadOutlined,
+  SearchOutlined,
   SettingOutlined,
   ShoppingOutlined,
   TagsOutlined,
@@ -318,6 +319,7 @@ export function App() {
   /** 版本改动页的刷新：自增 key 强制重挂载，让页面重新拉取数据。 */
   const [changelogRefreshKey, setChangelogRefreshKey] = useState(0);
   const [brands, setBrands] = useState<Brand[]>([]);
+  const [brandSearch, setBrandSearch] = useState('');
   const [editingBrand, setEditingBrand] = useState<Brand | 'new' | null>(null);
   const [submissions, setSubmissions] = useState<Submission[]>([]);
   const [submissionStatusFilter, setSubmissionStatusFilter] = useState<'' | Submission['submissionStatus']>('');
@@ -633,6 +635,13 @@ export function App() {
     setPage('bags');
   }
 
+  /** 按关键字过滤品牌（前端过滤，品牌总量小无需走接口）。 */
+  const filteredBrands = useMemo(() => {
+    const keyword = brandSearch.trim().toLowerCase();
+    if (!keyword) return brands;
+    return brands.filter((brand) => brand.name.toLowerCase().includes(keyword));
+  }, [brands, brandSearch]);
+
   function logout() {
     modal.confirm({
       title: '退出登录？',
@@ -809,12 +818,20 @@ export function App() {
                   <Button type="primary" icon={<PlusOutlined />} block={isMobile} onClick={() => setEditingBrand('new')}>
                     新增品牌
                   </Button>
+                  <Input
+                    allowClear
+                    prefix={<SearchOutlined style={{ color: 'rgba(0,0,0,0.45)' }} />}
+                    placeholder="搜索品牌名称"
+                    style={{ width: isMobile ? '100%' : 220 }}
+                    value={brandSearch}
+                    onChange={(e) => setBrandSearch(e.target.value)}
+                  />
                 </Space>
               </Card>
-              <Card title={`品牌列表（共 ${brands.length} 个）`}>
+              <Card title={`品牌列表（共 ${filteredBrands.length} 个）`}>
                 <Table<Brand>
                   rowKey="id"
-                  dataSource={brands}
+                  dataSource={filteredBrands}
                   pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (total) => `共 ${total} 个` }}
                   scroll={{ x: 640 }}
                   columns={[

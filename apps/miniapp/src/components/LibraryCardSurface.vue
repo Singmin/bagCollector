@@ -319,7 +319,8 @@ function activate() {
   suspend();
   enabled = true;
   showGlare.value = true;
-  startDevice();
+  // 陀螺仪功能已注释：不再监听设备方向，卡片不再随手机倾斜旋转。
+  // startDevice();
   armIdle();
 }
 

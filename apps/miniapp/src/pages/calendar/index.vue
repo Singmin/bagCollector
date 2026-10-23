@@ -3,8 +3,10 @@ import { computed, ref, watch } from 'vue';
 import { onShow } from '@dcloudio/uni-app';
 import type { CollectibleSummary } from '../../types';
 import { dataService } from '../../services/data';
+import { syncTabBar } from '../../services/tab-bar';
+import BagTabBar from '../../components/BagTabBar.vue';
 
-/* ── 收藏日历页（从首页日历入口进入）──
+/* ── 收藏日历页（底部第三个 tab）──
    视觉对齐「方案B · 日历定稿」设计稿：暖白底 FFFEFA、贴纸风袋图（白描边 + 随机倾斜）、
    黑色今天格、黄色汇总卡（本月收集 + 连续天数 + 照片墙）、顶部「日 历」标题 + 纸袋/店铺分段。 */
 
@@ -226,10 +228,6 @@ function load() {
   return refreshPromise;
 }
 
-function goBack() {
-  uni.navigateBack({ delta: 1 });
-}
-
 function prevMonth() {
   viewMonth.value -= 1;
   if (viewMonth.value < 0) { viewMonth.value = 11; viewYear.value -= 1; }
@@ -246,21 +244,18 @@ function tapDay(cell: Cell) {
 }
 
 onShow(() => {
+  /* 日历是第三个 tab：底栏高亮日历图标 */
+  syncTabBar(2, false);
   void load();
 });
 </script>
 
 <template>
   <view class="cal-page">
-    <!-- 顶部：状态栏留白 + 返回 + 「日 历」标题 + 纸袋/店铺分段 + 搜索/加号 -->
+    <!-- 顶部：状态栏留白 + 「日 历」标题 + 纸袋/店铺分段 -->
     <view class="cal-head" :style="{ paddingTop: `${statusBarHeight}px` }">
       <view class="nav">
-        <view class="nav__left">
-          <view class="nav__back" hover-class="pressed" :hover-stay-time="80" @tap="goBack">
-            <image class="nav__back-icon" src="/static/figma/back.svg" mode="aspectFit" />
-          </view>
-          <text class="nav__title">日 历</text>
-        </view>
+        <text class="nav__title">日 历</text>
         <view class="seg">
           <text :class="['seg__item', viewMode === 'bags' && 'on']" @tap="viewMode = 'bags'">纸袋</text>
           <text :class="['seg__item', viewMode === 'shops' && 'on']" @tap="viewMode = 'shops'">店铺</text>
@@ -351,6 +346,9 @@ onShow(() => {
         </template>
       </view>
     </scroll-view>
+
+    <!-- 自定义底栏：传入页面同色背景，避免与暖白底出现色差断层 -->
+    <BagTabBar bg="#FFFEFA" />
   </view>
 </template>
 
@@ -359,15 +357,11 @@ onShow(() => {
    收藏日历 —— 方案B 定稿：暖白底 FFFEFA + 贴纸风袋图 + 黑色今天格 + 黄色汇总卡。 */
 .cal-page { position: relative; height: 100vh; display: flex; flex-direction: column; overflow: hidden; background-color: #FFFEFA; }
 .cal-scroll { flex: 1 1 auto; min-height: 0; }
-.cal-body { padding: 8rpx 32rpx 60rpx; }
+.cal-body { padding: 8rpx 32rpx 176rpx; }
 
 /* ── 顶部导航 ── */
 .cal-head { flex: 0 0 auto; padding: 0 30rpx 6rpx; }
 .nav { position: relative; display: flex; align-items: center; height: 96rpx; }
-.nav__left { display: flex; align-items: center; }
-.nav__back { display: flex; align-items: center; justify-content: center; flex: 0 0 44rpx; width: 44rpx; height: 44rpx; margin-left: -10rpx; margin-right: 18rpx; border-radius: 50%; transition: background .18s ease; }
-.nav__back-icon { width: 20rpx; height: 34rpx; }
-.nav__back.pressed { background: rgba(20,20,20,.06); }
 .nav__title { font-size: 40rpx; font-weight: 700; color: #111113; letter-spacing: 3rpx; line-height: 1; }
 
 /* 纸袋 / 店铺 分段控件：整行居中，避开右上角系统胶囊 */
