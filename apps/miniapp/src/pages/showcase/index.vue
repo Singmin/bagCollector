@@ -513,7 +513,7 @@ async function onRefresherRefresh() {
 
 <template>
   <view class="home-page">
-    <BagTabBar />
+    <BagTabBar bg="#FFFEFA" />
     <!-- 头部：与全部收藏页同一套对齐（标题顶 = 胶囊顶，padding-top 由胶囊矩形注入）。
          设置入口已迁至「我的」页头部右上角（2026-09-29）；
          官方图鉴入口固定在胶囊左侧的搜索钮（2026-10-08：原「官方图鉴」横条卡片改为右上角图标） -->
@@ -801,7 +801,7 @@ async function onRefresherRefresh() {
 /* 左右内边距交给各区块自带（H5 就是这么分段的）：
    这样挂袋区的 scroll-view 才能真正铺满整块屏幕 */
 /* 顶部标题区固定：页面改为 100vh 弹性列，头部不滚，内容区独立滚动（scroll-view） */
-.home-page { position: relative; height: 100vh; display: flex; flex-direction: column; overflow: hidden; background-color: #f2f3f7; }
+.home-page { position: relative; height: 100vh; display: flex; flex-direction: column; overflow: hidden; background-color: #FFFEFA; }
 .home-scroll { flex: 1 1 auto; min-height: 0; }
 /* 滚动条兜底：enhanced + show-scrollbar=false 在部分真机/基础库上不生效，
    靠 WebKit 伪元素再挡一层（与 back-scroll 同坑同解） */

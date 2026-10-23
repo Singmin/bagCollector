@@ -175,7 +175,7 @@ onShareTimeline(() => ({ title: '袋袋集 · 我的纸袋收藏架', query: '' 
 
 <template>
   <view class="library-page">
-    <BagTabBar />
+    <BagTabBar bg="#FFFEFA" />
 
     <view v-if="!loadError" class="library-header" :style="{ paddingTop: `${headerTop}px` }">
       <view class="library-copy">
@@ -309,7 +309,7 @@ onShareTimeline(() => ({ title: '袋袋集 · 我的纸袋收藏架', query: '' 
 </template>
 
 <style scoped>
-.library-page { position: relative; height: 100vh; display: flex; flex-direction: column; overflow: hidden; background-color: #f2f3f7; }
+.library-page { position: relative; height: 100vh; display: flex; flex-direction: column; overflow: hidden; background-color: #FFFEFA; }
 .library-scroll { flex: 1 1 auto; min-height: 0; }
 .library-body { padding-bottom: 186rpx; }
 .library-tabs { display: flex; align-items: flex-end; gap: 20rpx; }

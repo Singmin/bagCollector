@@ -310,6 +310,19 @@ function adjustAndRetry() {
   });
 }
 
+/** 点黑色遮罩返回拍照页：关掉弹层、清掉预览图与扫描临时记录，让用户直接重拍。 */
+function retakeFromMatch() {
+  if (uploading.value) return;
+  pollingGeneration++;
+  showCandidates.value = false;
+  correcting.value = false;
+  filePath.value = '';
+  scanId.value = '';
+  const stale = scannedCollectibleId.value;
+  scannedCollectibleId.value = '';
+  if (stale) void dataService.removeCollectible(stale).catch(() => undefined);
+}
+
 /**
  * 命中或点选之后：认领官方袋子，并清掉扫描时那条只用于比对的临时记录。
  * 认领是引用模式（图片直接读官方库、不占用户存储），落库即就绪，所以立刻能在收藏里看到。
@@ -533,8 +546,8 @@ onShow(() => {
     </view>
 
     <!-- 所有候选都由用户确认，包括只有一个候选的情况。 -->
-    <view v-if="showCandidates" class="match-mask">
-      <view class="match-sheet">
+    <view v-if="showCandidates" class="match-mask" @tap="retakeFromMatch">
+      <view class="match-sheet" @tap.stop>
         <template v-if="correcting">
           <text class="match-title">搜索正确款式</text>
           <view class="correction-search"><input v-model="correctionQuery" placeholder="输入款式或品牌名称" confirm-type="search" @confirm="searchCorrectBag()" /><button :disabled="searching || uploading" @tap="searchCorrectBag()">搜索</button></view>

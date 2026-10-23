@@ -111,9 +111,9 @@ export function useLibraryCollection(dependencies: Dependencies = {}) {
       thumbnailVersions.set(item.id, version);
       thumbnailUrls.value[item.id] = url;
       delete failedThumbnails.value[item.id];
-      uni.getImageInfo({ src: url, success(info) {
-        if (currentImage(item) && info.height > 0) thumbnailAspect.value[item.id] = info.width / info.height;
-      } });
+      /* 不再用 uni.getImageInfo 拿宽高比：那会对每张缩略图各下载一次（全量 70 张），
+         是首屏几十个 wx.webp 请求的主因。宽高比改由 <image> 的 @load 事件按需获取，
+         见 LibraryShelfRow.vue；此处只做纯字符串 URL 解析，不发任何网络请求。 */
     }).catch(() => { if (currentImage(item)) failedThumbnails.value[item.id] = true; });
   }
   function hydrateThumbnails(nextItems: CollectibleSummary[]) {

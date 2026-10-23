@@ -7,7 +7,7 @@ import { computed, getCurrentInstance, nextTick, onMounted, onScopeDispose, ref,
 import type { CollectibleSummary } from '../types';
 import type { LibraryShelfGroup } from '../services/use-library-collection';
 import { SHELF_IMAGE_HEIGHT } from '../services/use-library-collection';
-import { cardNodeId, useLibraryCardEvents, type LibraryCardOpen } from '../services/library-card-events';
+import { cardNodeId, useLibraryCardEvents, type LibraryCardOpen, type LibraryDisplayItem } from '../services/library-card-events';
 
 const props = defineProps<{ group: LibraryShelfGroup; index: number; activeId?: string; viewportRevision: number; sorting?: boolean; dragging?: boolean }>();
 const emit = defineEmits<{
@@ -22,6 +22,33 @@ const metrics = { width: 0, max: 0, left: 0 };
 let userScrolling = false;
 let alive = true;
 const tone = computed(() => `acrylic-shelf--${props.group.name.includes('瑞幸') ? 'ROSE' : ['AMBER', 'SKY', 'SAGE'][props.index % 3]}`);
+
+// 按需渲染：竖向进入视口前不渲染任何 <image>（不发请求），进入后先渲染前 6 张，
+// 横向滚动接近右端时再按步进补齐，直至全部。
+const SHELF_INITIAL_RENDER = 6;
+const SHELF_RENDER_STEP = 8;
+const renderCount = ref(0);
+let observer: UniApp.IntersectionObserver | null = null;
+// 图片真实宽高比：由 <image> @load 事件回填，替代原来的 uni.getImageInfo 全量下载方案。
+const imageWidths = ref<Record<string, number>>({});
+
+function reveal() {
+  if (renderCount.value === 0) renderCount.value = Math.min(SHELF_INITIAL_RENDER, props.group.entries.length);
+}
+function onImageLoad(event: { detail?: { width?: number; height?: number } }, entry: LibraryDisplayItem) {
+  const { width, height } = event.detail ?? {};
+  if (width && height && height > 0) {
+    imageWidths.value[entry.item.id] = Math.round(SHELF_IMAGE_HEIGHT * width / height);
+  }
+}
+function ensureHorizontalReveal() {
+  const rendered = renderCount.value;
+  if (rendered >= props.group.entries.length) return;
+  const renderedRight = uni.upx2px(80 + 175 * rendered + 10 * Math.max(0, rendered - 1));
+  if (metrics.left + metrics.width >= renderedRight - uni.upx2px(120)) {
+    renderCount.value = Math.min(props.group.entries.length, rendered + SHELF_RENDER_STEP);
+  }
+}
 
 function updateEdge() {
   const start = metrics.left <= 2, end = metrics.left >= metrics.max - 2;
@@ -47,6 +74,7 @@ function measure() {
 function onScroll(event: { detail: { scrollLeft: number } }) {
   metrics.left = event.detail.scrollLeft;
   updateEdge();
+  ensureHorizontalReveal();
 }
 function scrollBy(direction: 1 | -1) {
   if (metrics.max <= 0) return;
@@ -63,9 +91,14 @@ function snap() {
   scrollLeft.value = metrics.left;
   updateEdge();
 }
-onMounted(measure);
+onMounted(() => {
+  measure();
+  observer = uni.createIntersectionObserver(instance?.proxy as unknown as Record<string, never>, { thresholds: [0] })
+    .relativeToViewport({ top: 80, bottom: 80 })
+    .observe('.shelf-group', res => { if (res.intersectionRatio > 0) reveal(); });
+});
 watch(() => [props.group.entries.length, props.viewportRevision], measure);
-onScopeDispose(() => { alive = false; });
+onScopeDispose(() => { alive = false; observer?.disconnect(); });
 function touchShelf() { userScrolling = true; }
 function cancelShelfTouch() { userScrolling = false; }
 const dragOffsetY = ref(0);
@@ -135,14 +168,15 @@ function onSortTouchEnd() {
           @touchend="snap" @touchcancel="cancelShelfTouch"
         >
           <view class="shelf-items">
-            <button v-for="entry in group.entries" :key="entry.item.id" :id="cardNodeId('shelf', entry.item.id)" class="shelf-item" :class="{ 'is-card-source': activeId === entry.item.id }" @tap="cards.open(entry)" @longpress.stop="cards.longPress(entry.item)" @touchstart="cards.touchStart($event, entry)" @touchmove="cards.touchMove" @touchend="cards.touchEnd" @touchcancel="cards.touchCancel">
+            <button v-for="(entry, i) in group.entries" :key="entry.item.id" :id="cardNodeId('shelf', entry.item.id)" class="shelf-item" :class="{ 'is-card-source': activeId === entry.item.id }" @tap="cards.open(entry)" @longpress.stop="cards.longPress(entry.item)" @touchstart="cards.touchStart($event, entry)" @touchmove="cards.touchMove" @touchend="cards.touchEnd" @touchcancel="cards.touchCancel">
               <image
-                v-if="entry.imageUrl"
+                v-if="i < renderCount && entry.imageUrl"
                 class="shelf-image"
                 :src="entry.imageUrl"
                 mode="aspectFit"
                 lazy-load
-                :style="{ width: `${entry.imageWidth}rpx`, height: `${SHELF_IMAGE_HEIGHT}rpx` }"
+                :style="{ width: `${imageWidths[entry.item.id] ?? entry.imageWidth}rpx`, height: `${SHELF_IMAGE_HEIGHT}rpx` }"
+                @load="onImageLoad($event, entry)"
                 @error="emit('imageError', entry.item)"
               />
               <view v-else class="shelf-image-placeholder" />

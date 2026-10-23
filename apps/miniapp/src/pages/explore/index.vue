@@ -7,7 +7,7 @@ import { dataService } from '../../services/data';
 import { strokeRevision } from '../../services/stroke-preference';
 
 /* ── 官方图鉴页（从首页入口进入）：按品牌分类浏览官方袋子 + 搜索；
-      卡片右上角用角标区分「已有」与「心愿」，顶行给出只数 / 品牌 / 已有 / 心愿概览 ──
+      卡片右上角用快捷圆钮区分「已有」（靶心）与「心愿」（心形），顶行给出只数 / 品牌 / 已有 / 心愿概览 ──
    数据源 = GET /official-bags（search / brandId / cursor / limit），
    品牌分类 = GET /official-bags/brands（只含旗下有可见袋子的品牌）。 */
 
@@ -39,6 +39,17 @@ const detailBag = ref<OfficialBag | null>(null);
 const imagePreview = ref(false);
 /* 标记已有：直接调认领接口，不再拉半窗（claiming 用于防重复点击） */
 const claiming = ref(false);
+
+/* ── 详情 AB 面：官方袋子详情带 sides（FRONT/BACK），有 B 面图时图区切成左右并排，
+      点哪一面大图预览就从哪一面起（无 B 面维持单图） ── */
+const detailFrontImage = computed(() => detailBag.value?.sides?.FRONT?.displayImageUrl || detailBag.value?.displayImageUrl || detailBag.value?.thumbnailUrl || '');
+const detailBackImage = computed(() => detailBag.value?.sides?.BACK?.displayImageUrl || '');
+const hasBackImage = computed(() => !!detailBackImage.value);
+const previewSide = ref<'FRONT' | 'BACK'>('FRONT');
+function openPreview(side: 'FRONT' | 'BACK' = 'FRONT') {
+  previewSide.value = side;
+  imagePreview.value = true;
+}
 
 /* ── 顶部：状态栏留白 + 自绘返回 ── */
 const statusBarHeight = ref(20);
@@ -207,7 +218,9 @@ const cardPadBottom = computed(() => Math.round(cardW.value * 0.0822));
 const cardRadius = computed(() => Math.round(cardW.value * 0.1187));
 const cardNameSize = computed(() => Math.max(18, Math.round(cardW.value * 0.1141)));
 const cardBrandSize = computed(() => Math.max(16, Math.round(cardW.value * 0.0913)));
-const cardBadgeSize = computed(() => Math.max(16, Math.round(cardW.value * 0.0913)));
+/* 快捷圆钮尺寸也随卡宽派生（与首页 hero-quick 同款视觉），但设下限保证 5 列小卡仍可点中 */
+const cardQuickSize = computed(() => Math.max(40, Math.round(cardW.value * 0.2)));
+const cardQuickIconSize = computed(() => Math.round(cardQuickSize.value * 0.55));
 const cardNameGap = computed(() => Math.max(4, Math.round(cardW.value * 0.0639)));
 const cardBrandGap = computed(() => Math.max(2, Math.round(cardW.value * 0.0274)));
 const skeletonH = computed(() => Math.round(cardW.value * 1.4612));
@@ -299,8 +312,9 @@ function isWished(id: string) {
   return wishlistIds.value.has(id);
 }
 
-async function toggleWish() {
-  const bag = detailBag.value;
+/* target 缺省 = 详情浮层里的袋子；卡片快捷圆钮会直接传卡片袋子（与首页 hero-quick 同一套交互） */
+async function toggleWish(target?: OfficialBag) {
+  const bag = target ?? detailBag.value;
   /* 已拥有的袋子不能再进心愿袋（按钮也会置灰，这里兜一层） */
   if (!bag || bag.claimed) return;
   try {
@@ -323,8 +337,8 @@ async function toggleWish() {
 /* 标记已有：直接调认领接口。
    官方袋子的名称 / 品牌 / 标签 / 备注都已在库里，后端会用袋子自带内容建收藏，
    所以图鉴页不需要「先编辑再确认」的半窗（首页翻面卡与收藏架仍保留半窗，那里允许改名归类）。 */
-async function claimBag() {
-  const bag = detailBag.value;
+async function claimBag(target?: OfficialBag) {
+  const bag = target ?? detailBag.value;
   if (!bag || bag.claimed || claiming.value) return;
   claiming.value = true;
   try {
@@ -491,15 +505,38 @@ onShow(() => {
             </view>
             <text class="bag-card__name" :style="{ marginTop: `${cardNameGap}rpx`, fontSize: `${cardNameSize}rpx` }">{{ bag.name }}</text>
             <text class="bag-card__brand" :style="{ marginTop: `${cardBrandGap}rpx`, fontSize: `${cardBrandSize}rpx` }">{{ bag.brand || '官方精选' }}</text>
-            <!-- 状态角标：已有（右上 · 金）；心愿（右上 · 红）。两个状态同时存在时心愿挪到左上，
-                 保证「在心愿单」和「已拥有」都能一眼看到 -->
-            <view v-if="bag.claimed" class="bag-card__badge bag-card__badge--owned" :style="{ fontSize: `${cardBadgeSize}rpx` }">已有</view>
-            <view
-              v-if="isWished(bag.id)"
-              class="bag-card__badge bag-card__badge--wish"
-              :class="{ 'is-corner-left': bag.claimed }"
-              :style="{ fontSize: `${cardBadgeSize}rpx` }"
-            >♥ 心愿</view>
+            <!-- 快捷圆钮（与首页主卡 hero-quick 同一套视觉）：心形 = 心愿，靶心 = 已有。
+                 @tap.stop 防止点按钮时顺手弹开详情浮层 -->
+            <view class="bag-card__quick" @tap.stop>
+              <view
+                class="bag-card__quick-btn"
+                hover-class="is-pressed"
+                :hover-stay-time="80"
+                :style="{ width: `${cardQuickSize}rpx`, height: `${cardQuickSize}rpx` }"
+                @tap.stop="toggleWish(bag)"
+              >
+                <image
+                  class="bag-card__quick-icon"
+                  :style="{ width: `${cardQuickIconSize}rpx`, height: `${cardQuickIconSize}rpx` }"
+                  :src="isWished(bag.id) ? '/static/figma/heart-active.svg' : '/static/figma/heart.svg'"
+                  mode="aspectFit"
+                />
+              </view>
+              <view
+                class="bag-card__quick-btn"
+                hover-class="is-pressed"
+                :hover-stay-time="80"
+                :style="{ width: `${cardQuickSize}rpx`, height: `${cardQuickSize}rpx` }"
+                @tap.stop="claimBag(bag)"
+              >
+                <image
+                  class="bag-card__quick-icon"
+                  :style="{ width: `${cardQuickIconSize}rpx`, height: `${cardQuickIconSize}rpx` }"
+                  :src="bag.claimed ? '/static/figma/target-marked.svg' : '/static/figma/target.svg'"
+                  mode="aspectFit"
+                />
+              </view>
+            </view>
           </button>
         </view>
 
@@ -508,15 +545,25 @@ onShow(() => {
       </view>
     </scroll-view>
 
-    <BagImagePreview :show="imagePreview" :sides="detailBag?.sides" :fallback="detailBag?.displayImageUrl" @close="imagePreview = false" />
+    <BagImagePreview :show="imagePreview" :sides="detailBag?.sides" :fallback="detailBag?.displayImageUrl" :start-side="previewSide" @close="imagePreview = false" />
     <!-- 详情浮层 -->
     <view v-if="detailBag" class="detail-layer">
       <view class="bag-backdrop" @tap="closeDetail" @touchmove.stop.prevent />
       <view class="detail-card">
-        <view class="detail-art" @tap="imagePreview = true">
+        <!-- AB 面：有 B 面图时左右并排（左 A 右 B），点哪面预览从哪面起 -->
+        <view v-if="hasBackImage" class="detail-art detail-art--sides">
+          <view class="detail-art__pane" @tap="openPreview('FRONT')">
+            <image :src="detailFrontImage" mode="aspectFit" />
+          </view>
+          <view class="detail-art__divider" />
+          <view class="detail-art__pane" @tap="openPreview('BACK')">
+            <image :src="detailBackImage" mode="aspectFit" />
+          </view>
+        </view>
+        <view v-else class="detail-art" @tap="openPreview('FRONT')">
           <image
-            v-if="detailBag.displayImageUrl || detailBag.thumbnailUrl"
-            :src="detailBag.displayImageUrl || detailBag.thumbnailUrl"
+            v-if="detailFrontImage"
+            :src="detailFrontImage"
             mode="aspectFit"
           />
           <view v-else class="bag-card__placeholder" />
@@ -604,12 +651,13 @@ onShow(() => {
 .bag-card__placeholder { width: 112rpx; height: 156rpx; border-radius: 20rpx; background: rgba(255,255,255,.62); }
 .bag-card__name { width: 100%; margin-top: 14rpx; color: #17150f; font-size: 25rpx; font-weight: 700; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center; }
 .bag-card__brand { width: 100%; margin-top: 6rpx; color: #8d877c; font-size: 20rpx; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center; }
-/* 角标：已有 = 金（右上优先位），心愿 = 红（已有同时存在时挪到左上）。
-   字号随卡宽派生（内联），内边距保持固定 —— 缩到 5 列时角标仍能看清又不至于盖住整张卡 */
-.bag-card__badge { position: absolute; z-index: 2; top: 12rpx; right: 12rpx; padding: 6rpx 14rpx; border-radius: 999rpx; font-size: 20rpx; font-weight: 600; line-height: 1.2; }
-.bag-card__badge--owned { background: #c8a24a; color: #ffffff; box-shadow: 0 4rpx 12rpx rgba(162,124,38,.3); }
-.bag-card__badge--wish { background: #c50405; color: #ffffff; box-shadow: 0 4rpx 12rpx rgba(197,4,5,.26); }
-.bag-card__badge--wish.is-corner-left { right: auto; left: 12rpx; }
+/* 右上角快捷圆钮：与首页主卡 .hero-quick 同一套视觉（白色半透明圆底 + 心形/靶心 SVG）。
+   钮径与图标尺寸随卡宽派生（内联注入），并设下限保证缩到 5 列时仍可点中；
+   已有态由 target-marked.svg 红靶心直接表达，心愿态由 heart-active.svg 红心表达 */
+.bag-card__quick { position: absolute; z-index: 2; top: 12rpx; right: 12rpx; display: flex; gap: 10rpx; }
+.bag-card__quick-btn { display: flex; align-items: center; justify-content: center; border-radius: 50%; background: rgba(255,255,255,.88); box-shadow: 0 2rpx 8rpx rgba(0,0,0,.08); transition: transform .18s ease; }
+.bag-card__quick-btn.is-pressed { transform: scale(.86); }
+.bag-card__quick-icon { width: 24rpx; height: 24rpx; }
 
 /* ── 空态 / 无结果 ── */
 .explore-empty { padding: 120rpx 60rpx 60rpx; text-align: center; }
@@ -627,6 +675,12 @@ onShow(() => {
 @keyframes card-in { from { opacity: 0; transform: scale(.92); } to { opacity: 1; transform: scale(1); } }
 .detail-art { display: flex; align-items: center; justify-content: center; flex: 0 0 auto; height: 400rpx; padding: 20rpx; }
 .detail-art image { width: 100%; height: 100%; filter: drop-shadow(0 7rpx 18rpx rgba(0,0,0,.18)); }
+/* ── 详情 AB 面并排：有 B 面图时图区切成左右两栏（左 A 右 B），中间竖分隔线；
+   点任一面放大预览会从对应面起播。pane 用 stretch 撑满图区高，图仍 aspectFit 等比居中 ── */
+.detail-art--sides { align-items: stretch; padding: 20rpx 14rpx; }
+.detail-art__pane { flex: 1 1 0; min-width: 0; display: flex; align-items: center; justify-content: center; }
+.detail-art__pane image { width: 100%; height: 100%; filter: drop-shadow(0 7rpx 18rpx rgba(0,0,0,.18)); }
+.detail-art__divider { flex: 0 0 1rpx; align-self: stretch; margin: 10rpx 0; background: rgba(20,20,20,.1); }
 .detail-scroll { flex: 1 1 auto; min-height: 0; padding: 10rpx 44rpx 30rpx; }
 .detail-name { display: block; color: #1d1a15; font-family: Georgia, "Iowan Old Style", "Songti SC", serif; font-size: 40rpx; font-weight: 700; line-height: 1.2; }
 .detail-brand { display: block; margin-top: 12rpx; color: #8d877c; font-size: 24rpx; line-height: 1.4; }

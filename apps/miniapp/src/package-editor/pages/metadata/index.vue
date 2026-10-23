@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { onLoad, onShow } from '@dcloudio/uni-app';
+import { onLoad, onShow, onUnload } from '@dcloudio/uni-app';
 import type { Collectible, Shelf } from '../../../types';
 import { SIDES, getSide, sideLabel, readEditor, writeEditor, clearEditor, clearSideEditor, type ImageSide, type ImageOperation } from '../../../services/image-editor';
 import { daysAgoText } from '../../../services/format';
@@ -59,9 +59,17 @@ function removeTag(tag: string) {
 }
 /* 聚焦字段：小程序 input/textarea 的 :focus 伪类不可靠，靠 focus/blur 切 is-focus 类 */
 const focusField = ref('');
-/* 品牌 / 店铺：填写式输入；保存时按名称找同名展架，没有就自动创建（数据模型仍落到 shelfId） */
+/* 品牌 / 店铺：从品牌库选择（package-editor/pages/brand?pick=1）——
+   保存时仍按名称找同名展架，没有就自动创建（数据模型仍落到 shelfId） */
 const shelves = ref<Shelf[]>([]);
 const brand = ref('');
+/* 品牌库选中 / 自定义回传（品牌页 uni.$emit） */
+function onBrandPicked(name: unknown) {
+  if (typeof name === 'string' && name.trim()) brand.value = name.trim().slice(0, 30);
+}
+function openBrandPicker() {
+  uni.navigateTo({ url: '/package-editor/pages/brand/index?pick=1' });
+}
 /* 抠图按钮（自动抠图）显隐判据是「有没有抠图结果（cutoutImageUrl）」而不是 processingStatus ——
    裁剪（/crop，只裁剪）之后状态也是 READY，若按状态判断按钮会永久消失（Bug）。
    裁剪按钮始终在「空闲态」展示：包括已抠图之后也能再裁（/crop 会顺带重新抠图，保持透明图与展示图对齐）。 */
@@ -160,7 +168,7 @@ async function save() {
   if (saving.value || !item.value) return;
   const normalizedName = name.value.trim(); const normalizedBrand = brand.value.trim();
   if (!normalizedName) return void uni.showToast({ title: '请填写纸袋名称', icon: 'none' });
-  if (!normalizedBrand) return void uni.showToast({ title: '请填写品牌 / 店铺', icon: 'none' });
+  if (!normalizedBrand) return void uni.showToast({ title: '请选择品牌', icon: 'none' });
   if (saving.value) return; saving.value = true;
   try {
     /* 没敲回车的半截词一并收走（与编辑半窗同口径） */
@@ -188,8 +196,10 @@ onLoad((query) => {
   if (typeof query?.id !== 'string') return void (loadError.value = '收藏页面参数无效');
   id.value = query.id; isEdit.value = query.edit === '1';
   selectedSide.value = query.side === 'BACK' ? 'BACK' : readEditor<ImageSide>(id.value, 'selected') ?? 'FRONT';
+  uni.$on('brand-picked', onBrandPicked);
   void load();
 });
+onUnload(() => { uni.$off('brand-picked', onBrandPicked); });
 /* 取消 = 放弃填写返回上一页（不保存任何信息） */
 function goBack() { clearEditor(id.value, 'form'); uni.navigateBack({ delta: 1 }); }
 function selectSide(side: ImageSide) { selectedSide.value = side; writeEditor(id.value, 'selected', side); }
@@ -258,7 +268,11 @@ onShow(() => {
       </view>
       <view class="ef-row">
         <text class="ef-key">品牌 / 店铺</text>
-        <view class="ef-val"><input class="ef-input" :class="{ 'is-focus': focusField === 'brand' }" v-model="brand" placeholder="例如：霸王茶姬 / Peet's Coffee" maxlength="30" placeholder-class="ef-placeholder" @focus="focusField = 'brand'" @blur="focusField = ''" /></view>
+        <!-- 只读展示 + 「选择 ▾」胶囊：整行可点，进品牌库挑选或自定义 -->
+        <view class="ef-val ef-brand" @tap="openBrandPicker">
+          <text class="ef-brand__value" :class="{ 'is-empty': !brand }">{{ brand || '请选择品牌' }}</text>
+          <view class="ef-brand__btn">选择<text class="ef-brand__caret">▾</text></view>
+        </view>
       </view>
       <view class="ef-row">
         <text class="ef-key">数量</text>
@@ -352,6 +366,12 @@ onShow(() => {
 /* 收藏日期行：下划线样式与 ef-input 一致，右侧浅色「点按修改」提示 */
 .ef-date-row { display: flex; align-items: center; justify-content: space-between; }
 .ef-date-hint { flex: 0 0 auto; color: #b3afa8; font-size: var(--wc-font-footnote); }
+/* 品牌选择行：下划线与 ef-input 一致；右侧「选择 ▾」白底描边胶囊 */
+.ef-brand { display: flex; align-items: center; justify-content: space-between; gap: 16rpx; padding-bottom: 14rpx; border-bottom: 2rpx solid rgba(20, 20, 20, .13); }
+.ef-brand__value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #141414; font-size: var(--wc-font-description); line-height: 48rpx; }
+.ef-brand__value.is-empty { color: #b3afa8; }
+.ef-brand__btn { flex: 0 0 auto; display: flex; align-items: center; gap: 8rpx; padding: 10rpx 26rpx; border: 2rpx solid rgba(20, 20, 20, .14); border-radius: 28rpx; background: #ffffff; color: #141414; font-size: var(--wc-font-footnote); font-weight: 650; line-height: 1.2; }
+.ef-brand__caret { font-size: 18rpx; color: #b3afa8; }
 .error { padding: 24rpx; border-radius: 20rpx; background: #fae2de; color: #943d37; font-size: var(--wc-font-footnote); }
 /* 底部按钮条：无背景（透明坐在页面底色上），固定视口底部（含安全区留白）；
    按钮组复用 edit-form.css 的 detail-actions（半窗场景 margin 此处清零） */
