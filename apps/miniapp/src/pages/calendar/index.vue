@@ -252,10 +252,9 @@ onShow(() => {
 
 <template>
   <view class="cal-page">
-    <!-- 顶部：状态栏留白 + 「日 历」标题 + 纸袋/店铺分段 -->
+    <!-- 顶部：状态栏留白 + 纸袋/店铺分段 -->
     <view class="cal-head" :style="{ paddingTop: `${statusBarHeight}px` }">
       <view class="nav">
-        <text class="nav__title">日 历</text>
         <view class="seg">
           <text :class="['seg__item', viewMode === 'bags' && 'on']" @tap="viewMode = 'bags'">纸袋</text>
           <text :class="['seg__item', viewMode === 'shops' && 'on']" @tap="viewMode = 'shops'">店铺</text>
@@ -362,7 +361,6 @@ onShow(() => {
 /* ── 顶部导航 ── */
 .cal-head { flex: 0 0 auto; padding: 0 30rpx 6rpx; }
 .nav { position: relative; display: flex; align-items: center; height: 96rpx; }
-.nav__title { font-size: 40rpx; font-weight: 700; color: #111113; letter-spacing: 3rpx; line-height: 1; }
 
 /* 纸袋 / 店铺 分段控件：整行居中，避开右上角系统胶囊 */
 .seg { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); display: flex; gap: 4rpx; padding: 4rpx; background: #f4f4f6; border-radius: 999rpx; }

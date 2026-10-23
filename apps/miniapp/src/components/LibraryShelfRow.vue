@@ -35,8 +35,8 @@ const imageWidths = ref<Record<string, number>>({});
 function reveal() {
   if (renderCount.value === 0) renderCount.value = Math.min(SHELF_INITIAL_RENDER, props.group.entries.length);
 }
-function onImageLoad(event: { detail?: { width?: number; height?: number } }, entry: LibraryDisplayItem) {
-  const { width, height } = event.detail ?? {};
+function onImageLoad(event: Event, entry: LibraryDisplayItem) {
+  const { width, height } = (event as unknown as { detail?: { width?: number; height?: number } }).detail ?? {};
   if (width && height && height > 0) {
     imageWidths.value[entry.item.id] = Math.round(SHELF_IMAGE_HEIGHT * width / height);
   }
@@ -93,9 +93,10 @@ function snap() {
 }
 onMounted(() => {
   measure();
-  observer = uni.createIntersectionObserver(instance?.proxy as unknown as Record<string, never>, { thresholds: [0] })
-    .relativeToViewport({ top: 80, bottom: 80 })
-    .observe('.shelf-group', res => { if (res.intersectionRatio > 0) reveal(); });
+  const created = uni.createIntersectionObserver(instance?.proxy as unknown as Record<string, never>, { thresholds: [0] });
+  created.relativeToViewport({ top: 80, bottom: 80 });
+  created.observe('.shelf-group', res => { if (res.intersectionRatio > 0) reveal(); });
+  observer = created;
 });
 watch(() => [props.group.entries.length, props.viewportRevision], measure);
 onScopeDispose(() => { alive = false; observer?.disconnect(); });
