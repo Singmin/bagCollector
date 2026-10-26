@@ -172,7 +172,6 @@ export class SubmissionsAdminService {
             ? [
                 ProcessingStatus.UPLOADING,
                 ProcessingStatus.NORMALIZING,
-                ProcessingStatus.AWAITING_CROP,
                 ProcessingStatus.CROPPING,
                 ProcessingStatus.MATTING
               ]
@@ -181,6 +180,11 @@ export class SubmissionsAdminService {
       /* 认领官方袋子生成的收藏（sourceOfficialBagId 非空）不是用户上传，
          不参与审核 —— 它们展示在「认领收藏」页签。 */
       sourceOfficialBagId: null,
+      /* AWAITING_CROP 是「等用户裁剪」的过渡态：用户中途退出后就成了孤儿记录，
+         不会再回到这个状态（收藏列表只返回 READY，无继续编辑入口），
+         由 worker 定时清理（reconcileAbandonedCrops）。这里不进入审核列表，
+         避免运营看到一批永远处理不了的死数据。 */
+      processingStatus: { not: ProcessingStatus.AWAITING_CROP },
       ...(query.status ? { submissionStatus: query.status } : {}),
       ...(processStatuses ? { processingStatus: { in: processStatuses } } : {}),
       ...(fromDate || toDate
@@ -270,7 +274,8 @@ export class SubmissionsAdminService {
   /**
    * 把用户上传的袋子纳入官方库：创建一条官方袋子（名称/备注/标签沿用用户填写内容），
    * 把用户已处理好的 STANDARD / DISPLAY / THUMBNAIL（有抠图则带上 CUTOUT）复制到官方路径，
-   * 图片直接就绪（READY），管理员可在官方袋子库直接发布，无需再跑处理任务。
+   * 图片直接就绪（READY），无需再跑处理任务。
+   * publish=true 时直接上架（PUBLISHED），否则为草稿，由管理员在官方袋子库手动发布。
    */
   async promote(adminId: string, id: string, input: PromoteSubmissionInput) {
     const collectible = await this.prisma.collectible.findUnique({
@@ -307,7 +312,8 @@ export class SubmissionsAdminService {
         tags,
         matting,
         sortOrder: (max._max.sortOrder ?? -1) + 1,
-        status: OfficialBagStatus.DRAFT,
+        status: input.publish ? OfficialBagStatus.PUBLISHED : OfficialBagStatus.DRAFT,
+        ...(input.publish ? { publishedAt: new Date() } : {}),
         processStatus: OfficialProcessStatus.READY,
         version: 1,
         createdById: adminId
@@ -359,6 +365,7 @@ export class SubmissionsAdminService {
       officialBagId: bag.id,
       name,
       brandId,
+      published: !!input.publish,
       objectCount: copiedKeys.length
     });
     return { officialBagId: bag.id, officialBagName: bag.name, submissionStatus: SubmissionStatus.APPROVED };

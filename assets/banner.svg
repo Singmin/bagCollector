@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="500" viewBox="0 0 1600 500" role="img" aria-labelledby="title description">
+  <title id="title">bagCollector</title>
+  <desc id="description">A personal archive for the bags worth keeping. WeChat Mini Program by Singmin.</desc>
+  <rect width="1600" height="500" fill="#f3f1eb"/>
+  <path d="M64 61H1536" stroke="#c5c0b5"/>
+  <path d="M64 438H1536" stroke="#c5c0b5"/>
+  <text x="64" y="110" fill="#a62220" font-family="Arial,Helvetica,sans-serif" font-size="19" letter-spacing="4">PAPER BAGS. PERSONAL STORIES.</text>
+  <text x="58" y="252" fill="#24251f" font-family="Georgia,'Times New Roman',serif" font-size="112" letter-spacing="-6">bagCollector</text>
+  <text x="64" y="318" fill="#4c5148" font-family="Arial,Helvetica,sans-serif" font-size="31">A personal archive for the bags worth keeping.</text>
+  <text x="64" y="402" fill="#676c62" font-family="Arial,Helvetica,sans-serif" font-size="18" letter-spacing="2">WECHAT MINI PROGRAM</text>
+  <text x="1534" y="402" text-anchor="end" fill="#676c62" font-family="Arial,Helvetica,sans-serif" font-size="18" letter-spacing="2">BY SINGMIN</text>
+  <g transform="translate(1120 100)">
+    <path d="M34 91L230 74L257 269L16 285Z" fill="#e3e7da" stroke="#777e6d" stroke-width="2"/>
+    <path d="M104 98C93 10 177 7 178 91" fill="none" stroke="#777e6d" stroke-width="7"/>
+    <path d="M106 112L282 128L266 289L82 277Z" fill="#b13a30"/>
+    <path d="M145 138C149 46 232 53 229 145" fill="none" stroke="#6a291e" stroke-width="8"/>
+    <path d="M266 289L246 268L262 127" fill="none" stroke="#f1c1a8" stroke-width="2"/>
+    <text x="183" y="207" text-anchor="middle" fill="#f4eee0" font-family="Georgia,'Times New Roman',serif" font-size="29" transform="rotate(5 183 207)">a small</text>
+    <text x="182" y="241" text-anchor="middle" fill="#f4eee0" font-family="Georgia,'Times New Roman',serif" font-size="29" transform="rotate(5 182 241)">keepsake.</text>
+  </g>
+</svg>

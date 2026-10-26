@@ -238,13 +238,13 @@ const jobStatusColors: Record<string, string> = {
 const submissionStatusLabels: Record<Submission['submissionStatus'], string> = {
   PENDING: '待审核',
   APPROVED: '已纳入',
-  REJECTED: '已驳回'
+  REJECTED: '已忽略'
 };
 
 const submissionStatusColors: Record<Submission['submissionStatus'], string> = {
   PENDING: 'gold',
   APPROVED: 'green',
-  REJECTED: 'volcano'
+  REJECTED: 'default'
 };
 
 const userStatusLabels: Record<AdminUser['status'], string> = {
@@ -332,7 +332,8 @@ export function App() {
   const [submissionSort, setSubmissionSort] = useState<'name' | 'byteSize' | 'addedAt'>();
   const [submissionOrder, setSubmissionOrder] = useState<'asc' | 'desc'>();
   const [promoting, setPromoting] = useState<Submission | null>(null);
-  const [rejecting, setRejecting] = useState<Submission | null>(null);
+  /** 用户上传列表多选：仅用于批量忽略。 */
+  const [selectedSubmissionIds, setSelectedSubmissionIds] = useState<string[]>([]);
   const [processFilter, setProcessFilter] = useState<ProcessFilter>('ALL');
   /** 用户上传审核页的子页签：uploads = 用户上传，claims = 认领收藏。 */
   const [submissionTab, setSubmissionTab] = useState('uploads');
@@ -603,6 +604,34 @@ export function App() {
       await loadSubmissions();
     } catch (requestError) {
       message.error(requestError instanceof Error ? requestError.message : '操作失败');
+    }
+  }
+
+  /** 忽略用户上传（沿用后端 reject 接口置为 REJECTED，但语义是忽略、无需审核意见）。 */
+  async function ignoreSubmission(submission: Submission) {
+    setError('');
+    try {
+      await api(`/submissions/${submission.id}/reject`, { method: 'POST', body: JSON.stringify({}) });
+      message.success('已忽略');
+      await loadSubmissions();
+    } catch (requestError) {
+      message.error(requestError instanceof Error ? requestError.message : '操作失败');
+    }
+  }
+
+  /** 批量忽略：并发调用单条 reject 接口（后端无批量接口），完成后清空选择并刷新。 */
+  async function ignoreSubmissions(ids: string[]) {
+    if (!ids.length) return;
+    setError('');
+    try {
+      await Promise.all(
+        ids.map((id) => api(`/submissions/${id}/reject`, { method: 'POST', body: JSON.stringify({}) }))
+      );
+      message.success(`已忽略 ${ids.length} 条上传`);
+      setSelectedSubmissionIds([]);
+      await loadSubmissions();
+    } catch (requestError) {
+      message.error(requestError instanceof Error ? requestError.message : '批量忽略失败');
     }
   }
 
@@ -902,7 +931,7 @@ export function App() {
                       { value: '', label: '全部状态' },
                       { value: 'PENDING', label: '待审核' },
                       { value: 'APPROVED', label: '已纳入' },
-                      { value: 'REJECTED', label: '已驳回' }
+                      { value: 'REJECTED', label: '已忽略' }
                     ]}
                   />
                   <Select<ProcessFilter>
@@ -947,11 +976,33 @@ export function App() {
                 </Space>
               </Card>
 
-              <Card title={`用户上传（共 ${submissionTotal} 条）`}>
+              <Card
+                title={`用户上传（共 ${submissionTotal} 条）`}
+                extra={
+                  selectedSubmissionIds.length > 0 ? (
+                    <Popconfirm
+                      title={`批量忽略选中的 ${selectedSubmissionIds.length} 条上传？`}
+                      description="忽略后将标记为已忽略，可随时重新审核"
+                      okText="忽略"
+                      cancelText="取消"
+                      onConfirm={() => void ignoreSubmissions(selectedSubmissionIds)}
+                    >
+                      <Button size="small" danger>批量忽略（{selectedSubmissionIds.length}）</Button>
+                    </Popconfirm>
+                  ) : undefined
+                }
+              >
                 <Table<Submission>
                   rowKey="id"
                   dataSource={submissions}
                   loading={loading}
+                  rowSelection={{
+                    selectedRowKeys: selectedSubmissionIds,
+                    onChange: (keys) => setSelectedSubmissionIds(keys as string[]),
+                    getCheckboxProps: (record) => ({
+                      disabled: record.submissionStatus !== 'PENDING' || !!record.promotedBagId
+                    })
+                  }}
                   pagination={{
                     current: submissionPage,
                     pageSize: submissionPageSize,
@@ -961,6 +1012,7 @@ export function App() {
                     onChange: (nextPage, nextPageSize) => {
                       setSubmissionPage(nextPageSize === submissionPageSize ? nextPage : 1);
                       setSubmissionPageSize(nextPageSize);
+                      setSelectedSubmissionIds([]);
                     }
                   }}
                   scroll={{ x: 1100 }}
@@ -977,6 +1029,7 @@ export function App() {
                       setSubmissionOrder(active.order === 'ascend' ? 'asc' : 'desc');
                     }
                     setSubmissionPage(1);
+                    setSelectedSubmissionIds([]);
                   }}
                   columns={[
                     {
@@ -985,7 +1038,7 @@ export function App() {
                       width: 84,
                       render: (_, sub) =>
                         sub.thumbnailUrl ? (
-                          <Image.PreviewGroup><Space><Image src={sub.displayImageUrl ?? sub.thumbnailUrl} alt={`${sub.name} · 正面`} width={56} height={56} style={{ objectFit: 'contain' }} />{sub.sides?.BACK?.displayImageUrl && <Image src={sub.sides.BACK.displayImageUrl} alt={`${sub.name} · 反面`} width={56} height={56} style={{ objectFit: 'contain' }} />}</Space></Image.PreviewGroup>
+                          <Image.PreviewGroup><Space><Image src={sub.thumbnailUrl} preview={{ src: sub.displayImageUrl ?? sub.thumbnailUrl }} loading="lazy" alt={`${sub.name} · 正面`} width={56} height={56} style={{ objectFit: 'contain' }} />{sub.sides?.BACK && <Image src={sub.sides.BACK.thumbnailUrl ?? sub.sides.BACK.displayImageUrl} preview={{ src: sub.sides.BACK.displayImageUrl ?? sub.sides.BACK.thumbnailUrl }} loading="lazy" alt={`${sub.name} · 反面`} width={56} height={56} style={{ objectFit: 'contain' }} />}</Space></Image.PreviewGroup>
                         ) : (
                           <Tag>未处理</Tag>
                         )
@@ -1068,7 +1121,15 @@ export function App() {
                             </Button>
                           )}
                           {sub.submissionStatus === 'PENDING' && !sub.promotedBagId && (
-                            <Button size="small" onClick={() => setRejecting(sub)}>驳回</Button>
+                            <Popconfirm
+                              title="忽略这条上传？"
+                              description="忽略后将标记为已忽略，可随时重新审核"
+                              okText="忽略"
+                              cancelText="取消"
+                              onConfirm={() => void ignoreSubmission(sub)}
+                            >
+                              <Button size="small">忽略</Button>
+                            </Popconfirm>
                           )}
                           {sub.submissionStatus === 'REJECTED' && !sub.promotedBagId && (
                             <Button size="small" onClick={() => void reopenSubmission(sub)}>重新审核</Button>
@@ -1087,14 +1148,6 @@ export function App() {
                 onClose={() => setPromoting(null)}
                 onDone={() => {
                   setPromoting(null);
-                  void loadSubmissions();
-                }}
-              />
-              <RejectSubmissionModal
-                submission={rejecting}
-                onClose={() => setRejecting(null)}
-                onDone={() => {
-                  setRejecting(null);
                   void loadSubmissions();
                 }}
               />
@@ -2165,9 +2218,10 @@ function PromoteSubmissionModal({
 }) {
   const { message } = AntdApp.useApp();
   const isMobile = useIsMobile();
+  const [form] = Form.useForm<PromoteFormValues>();
   const [saving, setSaving] = useState(false);
 
-  async function save(values: PromoteFormValues) {
+  async function save(values: PromoteFormValues, publish: boolean) {
     if (!submission) return;
     setSaving(true);
     try {
@@ -2175,18 +2229,32 @@ function PromoteSubmissionModal({
         name: values.name.trim(),
         brandId: values.brandId ?? null,
         notes: values.notes ?? '',
-        tags: values.tags ? values.tags.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean) : []
+        tags: values.tags ? values.tags.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean) : [],
+        publish
       };
       const result = await api<{ officialBagName: string }>(`/submissions/${submission.id}/promote`, {
         method: 'POST',
         body: JSON.stringify(payload)
       });
-      message.success(`已纳入官方袋子库「${result.officialBagName}」，可在官方袋子库中发布`);
+      message.success(
+        publish
+          ? `已纳入官方袋子库「${result.officialBagName}」并上架，用户端立即可见`
+          : `已纳入官方袋子库「${result.officialBagName}」，可在官方袋子库中发布`
+      );
       onDone();
     } catch (requestError) {
       message.error(requestError instanceof Error ? requestError.message : '纳入失败');
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function publishNow() {
+    try {
+      const values = await form.validateFields();
+      await save(values, true);
+    } catch {
+      /* 校验失败：表单内已展示错误，无需额外提示 */
     }
   }
 
@@ -2200,8 +2268,9 @@ function PromoteSubmissionModal({
       destroyOnHidden
     >
       <Form<PromoteFormValues>
+        form={form}
         layout="vertical"
-        onFinish={(values) => void save(values)}
+        onFinish={(values) => void save(values, false)}
         initialValues={{
           name: submission?.name ?? '',
           brandId: null,
@@ -2238,71 +2307,12 @@ function PromoteSubmissionModal({
           <Input.TextArea rows={3} maxLength={2000} />
         </Form.Item>
         <Form.Item style={{ marginBottom: 0 }}>
-          <Space style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <Space style={{ display: 'flex', justifyContent: 'flex-end' }} wrap>
             <Button onClick={onClose}>取消</Button>
             <Button type="primary" htmlType="submit" loading={saving}>纳入官方</Button>
-          </Space>
-        </Form.Item>
-      </Form>
-    </Modal>
-  );
-}
-
-interface RejectFormValues {
-  note?: string;
-}
-
-function RejectSubmissionModal({
-  submission,
-  onClose,
-  onDone
-}: {
-  submission: Submission | null;
-  onClose: () => void;
-  onDone: () => void;
-}) {
-  const { message } = AntdApp.useApp();
-  const isMobile = useIsMobile();
-  const [saving, setSaving] = useState(false);
-
-  async function save(values: RejectFormValues) {
-    if (!submission) return;
-    setSaving(true);
-    try {
-      await api(`/submissions/${submission.id}/reject`, {
-        method: 'POST',
-        body: JSON.stringify({ note: values.note ?? '' })
-      });
-      message.success('已驳回');
-      onDone();
-    } catch (requestError) {
-      message.error(requestError instanceof Error ? requestError.message : '驳回失败');
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <Modal
-      title={submission ? `驳回：${submission.name}` : '驳回'}
-      open={submission !== null}
-      onCancel={onClose}
-      width={isMobile ? '100%' : 520}
-      footer={null}
-      destroyOnHidden
-    >
-      <Form<RejectFormValues>
-        layout="vertical"
-        onFinish={(values) => void save(values)}
-        initialValues={{ note: '' }}
-      >
-        <Form.Item name="note" label="审核意见（可选）" rules={[{ max: 500 }]}>
-          <Input.TextArea rows={3} placeholder="说明驳回原因" maxLength={500} />
-        </Form.Item>
-        <Form.Item style={{ marginBottom: 0 }}>
-          <Space style={{ display: 'flex', justifyContent: 'flex-end' }}>
-            <Button onClick={onClose}>取消</Button>
-            <Button danger htmlType="submit" loading={saving}>驳回</Button>
+            <Button type="primary" danger={false} style={{ background: '#52c41a', borderColor: '#52c41a' }} loading={saving} onClick={() => void publishNow()}>
+              纳入官方并上架
+            </Button>
           </Space>
         </Form.Item>
       </Form>

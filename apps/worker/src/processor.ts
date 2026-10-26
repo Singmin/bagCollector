@@ -534,6 +534,63 @@ export async function reconcileAbandonedUploads(before: Date) {
   return result.count;
 }
 
+/**
+ * 被遗弃裁剪对账：AWAITING_CROP 且超过阈值（ABANDONED_CROP_MS，默认 1h）的记录，
+ * 是「用户上传并标准化完成、却在「确定添加」之前退出」的死数据 —— 收藏列表只返回 READY、
+ * 又没有继续编辑入口，用户永远不会再回到这个状态。这类记录不再进审核列表（见
+ * submissions-admin.service），这里连同 COS 对象一起删除，并归还 storageUsedBytes 配额。
+ * CollectibleTag / CollectibleImageSide / ImageAsset / ProcessingJob 由数据库级联清理。
+ * 排除被扫描（MatchScan）或认领（OfficialClaim）引用的记录：前者由 cleanupScans 处理，
+ * 后者有 sourceOfficialBagId（天然被过滤），避免重复删除或留下悬空引用。
+ */
+export async function reconcileAbandonedCrops(before: Date) {
+  const candidates = await prisma.collectible.findMany({
+    where: {
+      processingStatus: ProcessingStatus.AWAITING_CROP,
+      sourceOfficialBagId: null,
+      promotedBagId: null,
+      updatedAt: { lt: before }
+    },
+    select: { id: true, userId: true }
+  });
+  if (!candidates.length) return 0;
+
+  const candidateIds = candidates.map((row) => row.id);
+  const [scanRefs, claimRefs] = await Promise.all([
+    prisma.matchScan.findMany({ where: { collectibleId: { in: candidateIds } }, select: { collectibleId: true } }),
+    prisma.officialClaim.findMany({ where: { collectibleId: { in: candidateIds } }, select: { collectibleId: true } })
+  ]);
+  const referenced = new Set([...scanRefs, ...claimRefs].map((row) => row.collectibleId));
+  const doomed = candidates.filter((row) => !referenced.has(row.id));
+  if (!doomed.length) return 0;
+
+  let deleted = 0;
+  for (const row of doomed) {
+    // 事务里锁行、再确认仍是 AWAITING_CROP（期间可能被推进到 READY），
+    // 然后收集对象键与字节数、删收藏、归还配额；对象删除放在事务成功后，
+    // 保证「先删库后删对象」失败时对象仍可被发现回收（与 cleanupScans 同口径）。
+    const keys = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Collectible" WHERE "id" = ${row.id} FOR UPDATE`;
+      const current = await tx.collectible.findFirst({
+        where: { id: row.id, processingStatus: ProcessingStatus.AWAITING_CROP, sourceOfficialBagId: null, promotedBagId: null },
+        include: { imageAssets: true }
+      });
+      if (!current) return [];
+      const assetKeys = current.imageAssets.map((asset) => asset.objectKey);
+      const bytes = current.imageAssets.reduce((sum, asset) => sum + (asset.status === AssetStatus.AVAILABLE ? asset.byteSize : 0n), 0n);
+      await tx.collectible.delete({ where: { id: row.id } });
+      await tx.$executeRaw`UPDATE "User" SET "storageUsedBytes" = GREATEST(0, "storageUsedBytes" - ${bytes}) WHERE "id" = ${row.userId}`;
+      return assetKeys;
+    });
+    if (keys.length) await deleteObjects(keys);
+    deleted++;
+  }
+  if (deleted > 0) {
+    console.warn(JSON.stringify({ event: 'reconcile_abandoned_crop', count: deleted }));
+  }
+  return deleted;
+}
+
 export async function cleanup(keys: string[]) {
   if (keys.length) await deleteObjects(keys);
 }

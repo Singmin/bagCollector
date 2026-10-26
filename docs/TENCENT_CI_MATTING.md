@@ -309,7 +309,7 @@ node scripts/compare-matting-models.mjs \
 
 ### 上线前
 
-- [x] COS 桶已绑定数据万象并开通抠图服务，地域为公有云地域。（2026-09-22：桶 `bagcollect-1313112155` @ `ap-guangzhou`，万象已随「基础图片处理」自动开通）
+- [x] COS 桶已绑定数据万象并开通抠图服务，地域为公有云地域。（2026-09-22：桶 `bagcollect-<APPID>` @ `ap-guangzhou`，万象已随「基础图片处理」自动开通）
 - [x] CAM 密钥已补上 `cos:GetObject`、`ci:CreateGoodsMattingJob` 与 `ci:CreateS3AIPicMattingJob`（两条 `ci` action 都留着，支持随时切换与 A/B）。（2026-09-22：策略见 `docs/cam-policy-cos-ci.json`）
       **注意：每个抠图接口对应各自的 `ci` action，互不通用。** 漏掉 `ci:CreateS3AIPicMattingJob` 时通用抠图会直接 403，报错是 `AccessDenied`，与「桶名写错」长得一样。
 - [ ] `pnpm ci:verify-matting -- <10 张真实收藏品照片>` 全部通过，覆盖：浅色物体配浅色背景、深色物体配深色背景、毛绒、透明、反光和细带物体、多主体、复杂背景。

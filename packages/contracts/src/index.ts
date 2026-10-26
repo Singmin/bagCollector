@@ -221,12 +221,14 @@ export const createBrandSchema = z.object({
 export const updateBrandSchema = createBrandSchema.partial();
 
 /** POST /admin/submissions/:id/promote —— 把用户上传袋子纳入官方袋子。
- *  全部字段可选：缺省沿用用户上传时的名称/备注/标签，不指定品牌则无品牌。 */
+ *  全部字段可选：缺省沿用用户上传时的名称/备注/标签，不指定品牌则无品牌。
+ *  publish=true 时纳入的同时直接上架（status=PUBLISHED），缺省为草稿。 */
 export const promoteSubmissionSchema = z.object({
   name: z.string().trim().min(1).max(80).optional(),
   brandId: z.string().min(1).nullable().optional(),
   notes: z.string().max(2000).optional(),
-  tags: z.array(z.string().trim().min(1).max(30)).max(30).optional()
+  tags: z.array(z.string().trim().min(1).max(30)).max(30).optional(),
+  publish: z.boolean().optional()
 });
 
 /** POST /admin/submissions/:id/reject —— 驳回，可附审核意见。 */

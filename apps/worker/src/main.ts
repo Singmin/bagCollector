@@ -19,6 +19,7 @@ import {
   failProcessing,
   matImage,
   normalizeImage,
+  reconcileAbandonedCrops,
   reconcileAbandonedUploads,
   reconcileStuckProcessing,
   type ProcessingJobData
@@ -112,10 +113,12 @@ async function reconcileStuckJobs() {
   try {
     const stuckBefore = new Date(Date.now() - config.STUCK_PROCESSING_MS);
     const abandonedBefore = new Date(Date.now() - config.ABANDONED_UPLOAD_MS);
+    const abandonedCropBefore = new Date(Date.now() - config.ABANDONED_CROP_MS);
     await Promise.all([
       reconcileStuckOfficialProcessing(stuckBefore),
       reconcileStuckProcessing(stuckBefore),
-      reconcileAbandonedUploads(abandonedBefore)
+      reconcileAbandonedUploads(abandonedBefore),
+      reconcileAbandonedCrops(abandonedCropBefore)
     ]);
   } catch (error) {
     console.error(

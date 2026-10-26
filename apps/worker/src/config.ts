@@ -64,6 +64,12 @@ const schema = z
     // 视为残骸直接删除（见 processor.ts reconcileAbandonedUploads）。
     // 要远大于正常「申请上传凭证 → 直传 COS → complete」的耗时，避免误删在途上传。
     ABANDONED_UPLOAD_MS: z.coerce.number().int().min(3_600_000).default(86_400_000),
+    // 被遗弃裁剪的清理阈值：AWAITING_CROP（等用户裁剪）且超过这个时长的记录，
+    // 说明用户已在「确定添加」之前退出、且不会再回来（收藏列表只返回 READY，
+    // 无继续编辑入口），视为死数据直接删除（见 processor.ts reconcileAbandonedCrops）。
+    // 要远大于正常「上传 → 标准化 → 裁剪/抠图 → 确定添加」的编辑耗时，
+    // 避免误删正在慢慢编辑的用户；默认 1 小时。
+    ABANDONED_CROP_MS: z.coerce.number().int().min(600_000).default(3_600_000),
 
     // ---------------------------------------------------------------------
     // 官方袋子视觉向量对账（「拍照扫描袋子」的兜底）

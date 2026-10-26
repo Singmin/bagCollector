@@ -19,7 +19,7 @@ DINOv2 Small 输出 384 维 CLS 特征，支持直接最近邻检索，见 [官�
 
 ## 生产部署
 
-先在准备环境导出并核对模型。把 `dinov2-small.onnx` 和 `manifest.json` 放入服务器持久目录 `/www/wwwroot/bagcollect/data/vision-models/`。模型和 Python 开发依赖不加入 Git、不打入 API 构建上下文，也不跟每次源码发布传输。
+先在准备环境导出并核对模型。把 `dinov2-small.onnx` 和 `manifest.json` 放入服务器持久目录 `<DEPLOY_DIR>/data/vision-models/`。模型和 Python 开发依赖不加入 Git、不打入 API 构建上下文，也不跟每次源码发布传输。
 
 在 `infra/.env.deploy` 设置 `VISION_ENABLED=1` 和 `VISION_SERVICE_URL=http://vision:8000`；已有服务器构建脚本会构建独立 vision 镜像，先等待推理服务健康，再启动 API、原 worker 和 scan-worker。vision 仅在 Compose 内网，无宿主机端口，模型目录只读，CPU 限额 1，内存上限 768MB。实际服务器仍需 `docker stats --no-stream` 和实测 P95 来评估内存上限，不把本机测试当服务器性能结论。
 

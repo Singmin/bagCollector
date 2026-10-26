@@ -174,11 +174,24 @@ export async function reconcileScanEmbeddings(limit = 1, featureLimit = Number.P
 }
 
 export async function cleanupScans() {
-  // Retry confirmed draft cleanup independently of the miniapp's DELETE request.
-  // Only untouched AWAITING_CROP drafts that still carry this exact source qualify.
+  // 清理两类 AWAITING_CROP 草稿：
+  //   1. 已确认（feedback SELECTED/CORRECTED）—— 用户已选定/纠正，草稿不再需要；
+  //   2. 被遗弃（feedback NONE 或 null）且超过阈值 —— 用户扫了却没下文，草稿是死数据，
+  //      收藏列表只返回 READY 又没有继续编辑入口，永远不会再回到这个状态。
+  // 只看 sourceOfficialBagId IS NULL（认领得到的收藏由 claim 流程负责）。
+  // 每轮上限 100：新出现的被遗弃草稿量级有限，分摊到后续几轮即可。
+  const abandonedBefore = new Date(Date.now() - config.ABANDONED_CROP_MS);
   const pendingDrafts = await scanPrisma.$queryRaw<{ id: string }[]>`
     SELECT s.id FROM "MatchScan" s JOIN "Collectible" c ON c.id = s."collectibleId" AND c."userId" = s."userId"
-    WHERE s.feedback IN ('SELECTED', 'CORRECTED') AND c."processingStatus" = 'AWAITING_CROP' AND c."sourceOfficialBagId" IS NULL
+    WHERE c."processingStatus" = 'AWAITING_CROP' AND c."sourceOfficialBagId" IS NULL
+      AND (
+        s.feedback IN ('SELECTED', 'CORRECTED')
+        OR (
+          s."finishedAt" IS NOT NULL
+          AND (s.feedback = 'NONE' OR s.feedback IS NULL)
+          AND c."updatedAt" < ${abandonedBefore}
+        )
+      )
     ORDER BY s."createdAt" ASC LIMIT 100`;
   const confirmed = await scanPrisma.matchScan.findMany({ where: { id: { in: pendingDrafts.map(row => row.id) } } });
   for (const scan of confirmed) {
